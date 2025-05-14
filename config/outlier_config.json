@@ -1,0 +1,27 @@
+{
+    "fio2_set": [0.21, 1.0],
+    "resp_rate_set": [0, 60],
+    "resp_rate_obs": [0, 100],
+    "peep_set": [0, 50],
+    "lpm_set": [0, 60],
+
+    "height_cm": [76, 255],
+    "weight_kg": [20, 1100],
+    "spo2": [60 , 100],
+    "map": [0, 150],
+    "dbp": [0,200],
+    "sbp": [0,300],
+    "heart_rate": [0,300],
+    "respiratory_rate": [0,60],
+    
+    "norepinephrine": [0, 3],
+    "epinephrine": [0, 0.1],
+    "phenylephrine": [0, 5],
+    "dopamine": [0, 20],
+    "metaraminol": [0, 10],
+    "angiotensin": [0, 0.2],
+    "vasopressin": [0, 0.1],
+    "dobutamine": [0 , 40],
+
+    "lactate": [0, 40]
+  }
