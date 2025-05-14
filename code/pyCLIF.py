@@ -1131,7 +1131,7 @@ def make_table_one(final_df: pd.DataFrame,
     
     # — 1. Counts —
     N_enc = final_df[id_col].nunique()
-    rows.append(("N: encounters",       f"{N_enc}"))
+    rows.append(("N: ICU encounters",       f"{N_enc}"))
     
     # unique patients in this encounter set
     # assume final_df has a 'patient_id' column
