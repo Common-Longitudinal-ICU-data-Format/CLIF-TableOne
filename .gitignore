@@ -4,3 +4,7 @@ config.json
 *.csv
 *.log
 *.parquet
+output_ucmc
+output_mimic
+config_ucmc.json
+config_mimic.json
