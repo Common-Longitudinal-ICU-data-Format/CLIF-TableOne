@@ -1,8 +1,7 @@
 {
-    "site_name": "Your_Site_Name",
+    "site_name": "Your_Site_Name - UCMC, MIMIC,etc ",
     "tables_path": "/path/to/tables - Note there is no '/' at the end",
     "file_type": "csv/parquet/fst",
     "timezone": "eg. US/Central , US/Eastern ",
     "id_column":"hospitalization_id/hospitalization_joined_id from the hospitalization table"
-
 }
