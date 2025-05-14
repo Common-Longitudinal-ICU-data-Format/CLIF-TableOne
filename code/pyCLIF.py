@@ -1201,14 +1201,16 @@ def make_table_one(final_df: pd.DataFrame,
     rows.append(("Number of pressors received, mean [SD]",
                  f"{npart.mean():.1f} ({npart.std():.1f})"))
     # median/IQR for each agent:
+    
     for agent in ["angiotensin","dopamine","epinephrine",
                   "norepinephrine","phenylephrine","vasopressin"]:
-        med = final_df[f"{agent}_median"].dropna()
-        q1  = final_df[f"{agent}_q1"].dropna()
-        q3  = final_df[f"{agent}_q3"].dropna()
-        if not med.empty:
-            rows.append((f"{agent.capitalize()} dose, median [Q1,Q3]",
-                         f"{med.median():.2f} [{q1.quantile(0.25):.2f},{q3.quantile(0.75):.2f}]"))
+        if f"{agent}_median" in final_df.columns:
+            med = final_df[f"{agent}_median"].dropna()
+            q1  = final_df[f"{agent}_q1"].dropna() 
+            q3  = final_df[f"{agent}_q3"].dropna()
+            if not med.empty:
+                rows.append((f"{agent.capitalize()} dose, median [Q1,Q3]",
+                            f"{med.median():.2f} [{q1.quantile(0.25):.2f},{q3.quantile(0.75):.2f}]"))
     
     # — 8. IMV encounters & ventilator settings —
     imv_subset = final_df[final_df["on_vent"] == 1]
