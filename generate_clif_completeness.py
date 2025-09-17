@@ -3,19 +3,20 @@
 CLIF Table Completeness Generator
 
 This script uses the clifpy package to check the completeness status of CLIF tables
-and generates a report in the format matching sample.json.
+and generates a report in YAML format for better human readability.
 
 Usage:
     python generate_clif_completeness.py [--config CONFIG_PATH] [--output OUTPUT_PATH]
 
 Example:
-    python generate_clif_completeness.py --config config/config.json --output clif_completeness_report.json
+    python generate_clif_completeness.py --config config/config.json --output clif_completeness_report.yaml
 """
 
 import os
 import sys
 import argparse
 import json
+import yaml
 from pathlib import Path
 
 # Add the code directory to the Python path
@@ -38,8 +39,8 @@ def main():
     parser = argparse.ArgumentParser(description='Generate CLIF table completeness report')
     parser.add_argument('--config', default='config/config.json', 
                        help='Path to configuration JSON file (default: config/config.json)')
-    parser.add_argument('--output', default='clif_completeness_report.json',
-                       help='Output JSON file path (default: clif_completeness_report.json)')
+    parser.add_argument('--output', default='clif_completeness_report.yaml',
+                       help='Output YAML file path (default: clif_completeness_report.yaml)')
     parser.add_argument('--tables', nargs='+', 
                        default=['adt', 'hospitalization', 'labs', 'medication_admin_continuous',
                                'patient', 'patient_assessments', 'position', 'respiratory_support', 'vitals'],
@@ -112,16 +113,16 @@ def main():
             
             print(f"{status_icon} {table_name.ljust(25)}: {col_issues} missing columns, {cat_issues} missing categories")
             
-            # Show details if there are issues
-            if status['details'] and status['details'] != f"Table: {table_name}":
-                print(f"    Details: {status['details']}")
+            # # Show details if there are issues
+            # if status['details'] and status['details'] != f"Table: {table_name}":
+            #     print(f"    Details: {status['details']}")
         
         print()
         if total_issues == 0:
             print("🎉 All tables are complete! No missing columns or categories found.")
         else:
             print(f"📊 Total issues found: {total_issues}")
-            print("See the generated JSON file for detailed information.")
+            print("See the generated YAML file for detailed information.")
         
         print(f"\n📄 Full report saved to: {args.output}")
         return 0
