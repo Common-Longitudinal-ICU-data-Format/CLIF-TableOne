@@ -106,6 +106,20 @@ class ClifReportCardGenerator:
         # Store logs directory for clifpy output redirection
         self.logs_dir = str(logs_dir)
 
+        # Create intermediate directory for data files like overlapping_admissions.csv
+        # Go up one level from output_dir if it ends with 'final'
+        output_path = Path(self.output_dir)
+        if output_path.name == 'final':
+            base_output_dir = output_path.parent
+        else:
+            base_output_dir = output_path
+
+        self.intermediate_dir = base_output_dir / 'intermediate'
+        self.intermediate_dir.mkdir(parents=True, exist_ok=True)
+
+        # Path for consolidated validation report (goes in final directory)
+        self.consolidated_report_path = Path(self.output_dir) / 'consolidated_validation_report.csv'
+
     def validate_table(self, table_name: str) -> Dict[str, Any]:
         """
         Run clifpy validation on a table and return user-friendly results.
@@ -125,20 +139,25 @@ class ClifReportCardGenerator:
                 'data_info': {}
             }
 
+        # Create temp directory and initialize variables
+        temp_dir = None
         try:
             # Redirect stdout to capture clifpy's verbose output
             from io import StringIO
             import contextlib
+            import tempfile
+            import shutil
 
             captured_output = StringIO()
+            temp_dir = tempfile.mkdtemp()
 
             with contextlib.redirect_stdout(captured_output):
-                # Initialize table instance with proper parameters - redirect output to .logs
+                # Initialize table instance with temp directory
                 table_instance = table_class.from_file(
                     data_directory=self.data_dir,
                     filetype=self.site_config.get('file_type'),
                     timezone=self.site_config.get('timezone'),
-                    output_directory=self.logs_dir  # Redirect clifpy output files to .logs
+                    output_directory=temp_dir
                 )
 
             # Log the captured output
@@ -174,17 +193,43 @@ class ClifReportCardGenerator:
                 data_info['unique_patients'] = None
 
             # ADT-specific check for overlapping admissions
-            if table_name == 'adt' and hasattr(table_instance, 'check_overlapping_admissions'):
-                try:
-                    overlapping_count = table_instance.check_overlapping_admissions(
-                        save_overlaps=True,
-                        overlaps_output_directory=self.logs_dir
-                    )
-                    data_info['overlapping_admissions'] = overlapping_count
-                    logging.info(f"ADT overlapping admissions check: {overlapping_count} hospitalizations with overlaps")
-                except Exception as e:
-                    logging.warning(f"ADT overlapping admissions check failed: {str(e)}")
+            if table_name == 'adt':
+                # Check for various possible method names for overlapping admissions
+                overlap_methods = ['check_overlapping_admissions', 'overlapping_admissions', 'check_overlaps', 'find_overlapping_admissions']
+                overlap_method = None
+
+                for method_name in overlap_methods:
+                    if hasattr(table_instance, method_name):
+                        overlap_method = method_name
+                        break
+
+                if overlap_method:
+                    try:
+                        logging.info(f"Running overlapping admissions check using method '{overlap_method}', saving to: {self.intermediate_dir}")
+                        method = getattr(table_instance, overlap_method)
+
+                        # Try calling with different parameter patterns
+                        overlapping_count = None
+                        try:
+                            overlapping_count = method(save_overlaps=True, overlaps_output_directory=str(self.intermediate_dir))
+                        except TypeError:
+                            try:
+                                overlapping_count = method(output_directory=str(self.intermediate_dir))
+                            except TypeError:
+                                overlapping_count = method()
+
+                        data_info['overlapping_admissions'] = overlapping_count if overlapping_count is not None else 0
+                        logging.info(f"ADT overlapping admissions check completed: {overlapping_count} hospitalizations with overlaps")
+                    except Exception as e:
+                        logging.error(f"ADT overlapping admissions check failed: {str(e)}")
+                        data_info['overlapping_admissions'] = None
+                else:
+                    # List available methods for debugging
+                    methods = [method for method in dir(table_instance) if not method.startswith('_') and callable(getattr(table_instance, method))]
+                    logging.warning(f"ADT table instance does not have overlapping admissions method. Available methods: {methods}")
                     data_info['overlapping_admissions'] = None
+            else:
+                data_info['overlapping_admissions'] = None
 
             # Run validation
             validation_results = {}
@@ -247,6 +292,30 @@ class ClifReportCardGenerator:
                             'severity': 'medium'
                         })
 
+                    elif error_type == 'missing_categorical_values':
+                        column = error.get('column')
+                        missing_values = error.get('missing_values', [])
+                        total_missing = error.get('total_missing', len(missing_values))
+                        message = error.get('message', f"Column '{column}' is missing {total_missing} expected category values")
+
+                        data_quality_issues.append({
+                            'type': 'Missing Categorical Values',
+                            'description': message,
+                            'severity': 'medium'
+                        })
+
+                    elif error_type == 'datatype_castable':
+                        column = error.get('column')
+                        expected = error.get('expected', 'unknown')
+                        actual = error.get('actual', 'unknown')
+                        message = error.get('message', f"Column '{column}' has type {actual} but cannot be cast to {expected}")
+
+                        schema_errors.append({
+                            'type': 'Datatype Casting Error',
+                            'description': message,
+                            'severity': 'high'
+                        })
+
                     else:
                         validation_errors.append({
                             'type': error_type.replace('_', ' ').title(),
@@ -260,15 +329,53 @@ class ClifReportCardGenerator:
                 'other_errors': validation_errors
             })
 
-            # Determine overall status
-            if schema_errors:
+            # Determine overall status based on new requirements
+            # Red (incomplete): Missing required columns OR datatype casting errors OR 100% missing values
+            has_missing_columns = any(error.get('type') == 'Missing Required Columns' for error in schema_errors)
+            has_datatype_errors = any(error.get('type') == 'Datatype Casting Error' for error in schema_errors)
+
+            # Check for 100% missing values in REQUIRED columns only (red condition)
+            has_100_percent_missing_required = False
+
+            # Get required columns from schema
+            if hasattr(table_instance, 'schema') and table_instance.schema:
+                required_columns = table_instance.schema.get('required_columns', [])
+
+                for error in data_quality_issues:
+                    if error.get('type') == 'Missing Values' and '(100.0%)' in error.get('description', ''):
+                        # Extract column name from description
+                        description = error.get('description', '')
+                        if "Column '" in description:
+                            try:
+                                column_name = description.split("Column '")[1].split("'")[0]
+                                # Check if this column is in the required_columns list
+                                if column_name in required_columns:
+                                    has_100_percent_missing_required = True
+                                    logging.info(f"Found 100% missing values in required column: {column_name}")
+                                    break
+                            except Exception as e:
+                                logging.warning(f"Error checking if column is required: {str(e)}")
+            else:
+                # Fallback: if no schema available, treat all 100% missing as problematic
+                has_100_percent_missing_required = any(
+                    error.get('type') == 'Missing Values' and '(100.0%)' in error.get('description', '')
+                    for error in data_quality_issues
+                )
+
+            # Yellow (partial): Has required columns but missing categorical values
+            has_categorical_issues = any(
+                error.get('type') in ['Invalid Categories', 'Missing Categorical Values']
+                for error in data_quality_issues
+            )
+
+            if has_missing_columns or has_datatype_errors or has_100_percent_missing_required:
+                # Red: Missing required columns OR datatype casting problems OR 100% missing values in required columns
                 status = 'incomplete'
-            elif data_quality_issues:
-                high_severity_issues = [issue for issue in data_quality_issues if issue['severity'] == 'high']
-                status = 'incomplete' if high_severity_issues else 'partial'
-            elif validation_errors:
+            elif has_categorical_issues:
+                # Yellow: Has required columns but missing some required categorical values
                 status = 'partial'
             else:
+                # Green: All required columns present, all categorical values present (missing values < 100% are okay)
                 status = 'complete'
 
             return {
@@ -291,29 +398,10 @@ class ClifReportCardGenerator:
                 'validation_results': {},
                 'data_info': {}
             }
-
-    def calculate_overall_site_status(self, table_results: Dict[str, Dict[str, Any]]) -> str:
-        """
-        Calculate overall site status based on individual table results.
-
-        Args:
-            table_results: Dictionary mapping table names to validation results
-
-        Returns:
-            Overall status: 'complete', 'partial', or 'noinformation'
-        """
-        statuses = [result['status'] for result in table_results.values()]
-
-        # If any tables are missing or have errors, we have incomplete information
-        if 'missing' in statuses or 'error' in statuses:
-            return 'noinformation'
-
-        # If all tables are complete
-        if all(status == 'complete' for status in statuses):
-            return 'complete'
-
-        # Otherwise, partial completeness
-        return 'partial'
+        finally:
+            # Clean up temporary directory in all cases
+            if temp_dir is not None:
+                shutil.rmtree(temp_dir, ignore_errors=True)
 
     def generate_pdf_report_card(self, table_names: List[str], output_file: str) -> Dict[str, Any]:
         """
@@ -339,8 +427,8 @@ class ClifReportCardGenerator:
             logging.info(f"Starting validation for table: {table_name}")
             table_results[table_name] = self.validate_table(table_name)
 
-        # Calculate overall status
-        overall_status = self.calculate_overall_site_status(table_results)
+        # Generate consolidated CSV report
+        self._create_consolidated_csv_report(table_results)
 
         # Generate timestamp
         timestamp = datetime.now()
@@ -348,10 +436,7 @@ class ClifReportCardGenerator:
         # Create report data
         report_data = {
             'site_name': self.site_config.get('site_name', 'Unknown Site'),
-            'site_id': self.site_config.get('site_id', 'unknown_site'),
-            'contact': self.site_config.get('contact', ''),
             'timestamp': timestamp.strftime('%Y-%m-%d %H:%M:%S %Z'),
-            'overall_status': overall_status,
             'table_results': table_results
         }
 
@@ -395,15 +480,13 @@ class ClifReportCardGenerator:
         normal_style = styles['Normal']
 
         # Title
-        title = Paragraph("🏥 CLIF Data Validation Report Card", title_style)
+        title = Paragraph(f"{report_data['site_name']} CLIF Data Report Card", title_style)
         story.append(title)
         story.append(Spacer(1, 12))
 
         # Site information
         site_info = [
             ['Site Name:', report_data['site_name']],
-            ['Site ID:', report_data['site_id']],
-            ['Contact:', report_data['contact']],
             ['Generated:', report_data['timestamp']]
         ]
 
@@ -425,27 +508,37 @@ class ClifReportCardGenerator:
         }
 
         status_labels = {
-            'complete': 'COMPLETE ✅',
-            'partial': 'PARTIAL ⚠️',
-            'noinformation': 'NO INFORMATION ❓'
+            'complete': 'COMPLETE',
+            'partial': 'PARTIAL',
+            'noinformation': 'NO INFORMATION'
         }
 
-        status_color = status_colors.get(report_data['overall_status'], colors.grey)
-        status_label = status_labels.get(report_data['overall_status'], 'UNKNOWN')
+        # Status Legend
+        legend_header = Paragraph("Status Legend", header_style)
+        story.append(legend_header)
 
-        status_table = Table([[f'Overall Status: {status_label}']], colWidths=[6*inch])
-        status_table.setStyle(TableStyle([
-            ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
-            ('FONTNAME', (0, 0), (-1, -1), 'Helvetica-Bold'),
-            ('FONTSIZE', (0, 0), (-1, -1), 16),
-            ('BACKGROUND', (0, 0), (-1, -1), status_color),
-            ('TEXTCOLOR', (0, 0), (-1, -1), colors.white),
-            ('BOX', (0, 0), (-1, -1), 2, colors.black),
-            ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
-            ('TOPPADDING', (0, 0), (-1, -1), 12),
-            ('BOTTOMPADDING', (0, 0), (-1, -1), 12),
+        legend_data = [
+            ['Status', 'Meaning'],
+            ['COMPLETE (Green)', Paragraph('All required columns present, all required categorical values present (missing values < 100% are okay)', normal_style)],
+            ['PARTIAL (Yellow)', Paragraph('All required columns present, but missing some required categorical values', normal_style)],
+            ['INCOMPLETE (Red)', Paragraph('Missing required columns OR datatype casting errors OR 100% missing values for required columns OR table is missing', normal_style)]
+        ]
+
+        legend_table = Table(legend_data, colWidths=[1.5*inch, 4.5*inch])
+        legend_table.setStyle(TableStyle([
+            ('ALIGN', (0, 0), (-1, -1), 'LEFT'),
+            ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+            ('FONTSIZE', (0, 0), (-1, -1), 10),
+            ('BACKGROUND', (0, 0), (-1, 0), colors.lightgrey),
+            ('BACKGROUND', (0, 1), (0, 1), colors.lightgreen),
+            ('BACKGROUND', (0, 2), (0, 2), colors.yellow),
+            ('BACKGROUND', (0, 3), (0, 3), colors.lightcoral),
+            ('GRID', (0, 0), (-1, -1), 1, colors.black),
+            ('VALIGN', (0, 0), (-1, -1), 'TOP'),
+            ('TOPPADDING', (0, 0), (-1, -1), 6),
+            ('BOTTOMPADDING', (0, 0), (-1, -1), 6),
         ]))
-        story.append(status_table)
+        story.append(legend_table)
         story.append(Spacer(1, 30))
 
         # Summary statistics
@@ -453,33 +546,19 @@ class ClifReportCardGenerator:
         total_tables = len(results)
         complete_tables = sum(1 for r in results.values() if r['status'] == 'complete')
         partial_tables = sum(1 for r in results.values() if r['status'] == 'partial')
-        missing_tables = sum(1 for r in results.values() if r['status'] == 'missing')
+        incomplete_tables = sum(1 for r in results.values() if r['status'] in ['missing', 'incomplete', 'error'])
         total_rows = sum(r.get('data_info', {}).get('row_count', 0) for r in results.values())
 
-        summary_header = Paragraph("📊 Summary Statistics", header_style)
+        summary_header = Paragraph("Summary Statistics", header_style)
         story.append(summary_header)
 
-        # Calculate total unique hospitalizations and patients across all tables
-        total_unique_hospitalizations = sum(
-            r.get('data_info', {}).get('unique_hospitalizations', 0) or 0
-            for r in results.values()
-        )
-        total_unique_patients = sum(
-            r.get('data_info', {}).get('unique_patients', 0) or 0
-            for r in results.values()
-        )
+
 
         summary_data = [
             ['Complete Tables', str(complete_tables)],
             ['Partial Tables', str(partial_tables)],
-            ['Missing Tables', str(missing_tables)]
+            ['Incomplete Tables', str(incomplete_tables)]
         ]
-
-        # Add unique counts if available
-        if total_unique_hospitalizations > 0:
-            summary_data.append(['Unique Hospitalizations', f'{total_unique_hospitalizations:,}'])
-        if total_unique_patients > 0:
-            summary_data.append(['Unique Patients', f'{total_unique_patients:,}'])
 
         summary_table = Table(summary_data, colWidths=[3*inch, 2*inch])
         summary_table.setStyle(TableStyle([
@@ -497,7 +576,7 @@ class ClifReportCardGenerator:
         story.append(Spacer(1, 30))
 
         # Table validation results
-        table_header = Paragraph("📋 Table Validation Results", header_style)
+        table_header = Paragraph("Table Validation Results", header_style)
         story.append(table_header)
 
         for table_name, result in report_data['table_results'].items():
@@ -509,22 +588,26 @@ class ClifReportCardGenerator:
 
     def _create_table_section(self, table_name: str, result: Dict[str, Any]):
         """Create a section for a single table's results."""
+        # Get styles for text wrapping
+        from reportlab.lib.styles import getSampleStyleSheet
+        styles = getSampleStyleSheet()
+        normal_style = styles['Normal']
         display_name = self.table_display_names.get(table_name, table_name.title())
         status = result['status']
 
         # Status symbols and colors
         status_info = {
-            'complete': ('✅', colors.green),
-            'partial': ('⚠️', colors.orange),
-            'incomplete': ('❌', colors.red),
-            'missing': ('📋', colors.grey),
-            'error': ('🚫', colors.red)
+            'complete': ('', colors.green),
+            'partial': ('', colors.orange),
+            'incomplete': ('', colors.red),
+            'missing': ('', colors.grey),
+            'error': ('', colors.red)
         }
 
-        symbol, color = status_info.get(status, ('❓', colors.grey))
+        symbol, color = status_info.get(status, ('', colors.grey))
 
         # Create table data
-        table_data = [[f"{symbol} {display_name}", status.upper()]]
+        table_data = [[display_name, status.upper()]]
 
         if status in ['missing', 'error']:
             error_msg = result.get('error', 'Unknown issue')
@@ -545,9 +628,9 @@ class ClifReportCardGenerator:
                 if table_name == 'adt' and data_info.get('overlapping_admissions') is not None:
                     overlapping_count = data_info.get('overlapping_admissions', 0)
                     if overlapping_count > 0:
-                        table_data.append(['⚠️ Overlapping Admissions', f"{overlapping_count:,} hospitalizations"])
+                        table_data.append(['Overlapping Admissions', f"{overlapping_count:,} hospitalizations"])
                     else:
-                        table_data.append(['✅ Overlapping Admissions', "None found"])
+                        table_data.append(['Overlapping Admissions', "None found"])
 
                 # If neither unique ID is available, fall back to total rows
                 if data_info.get('unique_hospitalizations') is None and data_info.get('unique_patients') is None:
@@ -562,21 +645,18 @@ class ClifReportCardGenerator:
 
             if all_issues:
                 table_data.append(['Issues Found:', str(len(all_issues))])
-                for i, issue in enumerate(all_issues[:3]):  # Show max 3 issues
-                    issue_desc = f"{issue.get('type', 'Issue')}: {issue.get('description', 'No description')}"
-                    # Truncate long descriptions
-                    if len(issue_desc) > 80:
-                        issue_desc = issue_desc[:77] + "..."
-                    table_data.append([f"Issue {i+1}:", issue_desc])
-
-                if len(all_issues) > 3:
-                    table_data.append(['...', f"and {len(all_issues) - 3} more issues"])
+                for i, issue in enumerate(all_issues):  # Show ALL issues
+                    issue_type = issue.get('type', 'Issue')
+                    issue_desc = issue.get('description', 'No description')
+                    # Use Paragraph for text wrapping instead of truncating
+                    issue_desc_paragraph = Paragraph(issue_desc, normal_style)
+                    table_data.append([f"{i+1}. {issue_type}:", issue_desc_paragraph])
 
             elif status == 'complete':
                 table_data.append(['Status:', 'All validation checks passed!'])
 
-        # Create table
-        table = Table(table_data, colWidths=[2*inch, 4*inch])
+        # Create table with more space for the description column
+        table = Table(table_data, colWidths=[2.5*inch, 4*inch])
         table.setStyle(TableStyle([
             ('ALIGN', (0, 0), (-1, -1), 'LEFT'),
             ('FONTNAME', (0, 0), (0, 0), 'Helvetica-Bold'),
@@ -591,6 +671,103 @@ class ClifReportCardGenerator:
 
         return table
 
+    def _create_consolidated_csv_report(self, table_results: Dict[str, Any]):
+        """Create a single consolidated CSV file with all validation information."""
+        import csv
+
+        csv_data = []
+
+        for table_name, result in table_results.items():
+            if result['status'] in ['missing', 'error']:
+                # For missing/error tables, just add basic info
+                csv_data.append({
+                    'table_name': self.table_display_names.get(table_name, table_name.title()),
+                    'status': result['status'],
+                    'issue_type': 'Table Status',
+                    'issue_category': 'Critical',
+                    'column_name': '',
+                    'issue_description': result.get('error', 'Table missing or error'),
+                    'severity': 'high',
+                    'unique_hospitalizations': '',
+                    'unique_patients': '',
+                    'total_rows': ''
+                })
+                continue
+
+            data_info = result.get('data_info', {})
+            validation_results = result.get('validation_results', {})
+
+            # Add basic table information row
+            csv_data.append({
+                'table_name': self.table_display_names.get(table_name, table_name.title()),
+                'status': result['status'],
+                'issue_type': 'Table Summary',
+                'issue_category': 'Info',
+                'column_name': '',
+                'issue_description': f"Table loaded successfully",
+                'severity': 'info',
+                'unique_hospitalizations': data_info.get('unique_hospitalizations', ''),
+                'unique_patients': data_info.get('unique_patients', ''),
+                'total_rows': data_info.get('row_count', '')
+            })
+
+            # Add all validation issues
+            all_issues = []
+            all_issues.extend(validation_results.get('schema_errors', []))
+            all_issues.extend(validation_results.get('data_quality_issues', []))
+            all_issues.extend(validation_results.get('other_errors', []))
+
+            for issue in all_issues:
+                issue_type = issue.get('type', 'Unknown')
+                severity = issue.get('severity', 'medium')
+                description = issue.get('description', 'No description')
+
+                # Extract column name from description if possible
+                column_name = ''
+                if 'Column \'' in description:
+                    try:
+                        column_name = description.split("Column '")[1].split("'")[0]
+                    except:
+                        pass
+
+                # Determine issue category
+                if issue_type in ['Missing Required Columns', 'Datatype Casting Error']:
+                    category = 'Schema'
+                elif issue_type in ['Missing Categorical Values', 'Invalid Categories']:
+                    category = 'Categorical'
+                elif issue_type == 'Missing Values':
+                    category = 'Data Quality'
+                else:
+                    category = 'Other'
+
+                csv_data.append({
+                    'table_name': self.table_display_names.get(table_name, table_name.title()),
+                    'status': result['status'],
+                    'issue_type': issue_type,
+                    'issue_category': category,
+                    'column_name': column_name,
+                    'issue_description': description,
+                    'severity': severity,
+                    'unique_hospitalizations': data_info.get('unique_hospitalizations', ''),
+                    'unique_patients': data_info.get('unique_patients', ''),
+                    'total_rows': data_info.get('row_count', '')
+                })
+
+        # Write to CSV
+        if csv_data:
+            fieldnames = [
+                'table_name', 'status', 'issue_type', 'issue_category',
+                'column_name', 'issue_description', 'severity',
+                'unique_hospitalizations', 'unique_patients', 'total_rows'
+            ]
+
+            with open(self.consolidated_report_path, 'w', newline='', encoding='utf-8') as csvfile:
+                writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
+                writer.writeheader()
+                writer.writerows(csv_data)
+
+            print(f"📊 Consolidated validation report saved to: {self.consolidated_report_path}")
+
     def generate_simple_text_report(self, table_names: List[str], output_file: str) -> Dict[str, Any]:
         """
         Generate a simple text-based report card (fallback if PDF not available).
@@ -604,30 +781,22 @@ class ClifReportCardGenerator:
             print(f"Validating table: {table_name}")
             logging.info(f"Starting validation for table: {table_name}")
             table_results[table_name] = self.validate_table(table_name)
-
-        # Calculate overall status
-        overall_status = self.calculate_overall_site_status(table_results)
         timestamp = datetime.now()
 
         # Create report data
         report_data = {
             'site_name': self.site_config.get('site_name', 'Unknown Site'),
-            'site_id': self.site_config.get('site_id', 'unknown_site'),
-            'contact': self.site_config.get('contact', ''),
             'timestamp': timestamp.strftime('%Y-%m-%d %H:%M:%S %Z'),
-            'overall_status': overall_status,
             'table_results': table_results
         }
 
         # Generate text content
         content = []
         content.append("="*60)
-        content.append("🏥 CLIF DATA VALIDATION REPORT CARD")
+        content.append(f"🏥 {report_data["site_name"]} CLIF REPORT CARD")
         content.append("="*60)
         content.append("")
         content.append(f"Site Name: {report_data['site_name']}")
-        content.append(f"Site ID: {report_data['site_id']}")
-        content.append(f"Contact: {report_data['contact']}")
         content.append(f"Generated: {report_data['timestamp']}")
         content.append("")
 
@@ -637,9 +806,6 @@ class ClifReportCardGenerator:
             'partial': '⚠️  PARTIAL',
             'noinformation': '❓ NO INFORMATION'
         }
-        status_display = status_symbols.get(overall_status, '❓ UNKNOWN')
-        content.append(f"Overall Status: {status_display}")
-        content.append("")
 
         # Summary statistics
         results = table_results
@@ -779,10 +945,6 @@ def main():
         print(f"\n🎉 HTML Report Card Generated!")
         print(f"📁 File: {output_file}")
         print("\nNote: Install 'reportlab' package for PDF generation: pip install reportlab")
-
-    # Print summary
-    print(f"🏥 Site: {report_data['site_name']}")
-    print(f"📊 Overall Status: {report_data['overall_status'].upper()}")
 
 
 if __name__ == "__main__":

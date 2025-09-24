@@ -111,8 +111,7 @@ def main():
         # Print summary
         print(f"\n📋 VALIDATION SUMMARY")
         print(f"{'='*40}")
-        print(f"Site: {report_data['site_name']} ({report_data['site_id']})")
-        print(f"Contact: {report_data['contact']}")
+        print(f"Site: {report_data['site_name']}")
         print(f"Generated: {report_data['timestamp']}")
         print()
 
@@ -123,10 +122,6 @@ def main():
             'noinformation': '❓ NO INFORMATION - Critical issues prevent validation'
         }
 
-        status_msg = status_display.get(report_data['overall_status'], '❓ UNKNOWN STATUS')
-        print(f"Overall Status: {status_msg}")
-        print()
-
         # Table-by-table summary with counts
         results = report_data['table_results']
         complete_count = sum(1 for r in results.values() if r['status'] == 'complete')
@@ -136,16 +131,15 @@ def main():
 
         print(f"📊 Table Summary:")
         print(f"   ✅ Complete: {complete_count} tables")
-        print(f"   ⚠️  Issues:   {partial_count} tables")
-        print(f"   ❌ Missing:   {missing_count} tables")
-        print(f"   📈 Total Records: {total_rows:,}")
+        print(f"   ⚠️  Partial:   {partial_count} tables")
+        print(f"   ❌ Incomplete:   {missing_count} tables")
         print()
 
         # Quick status overview
         print(f"🔍 Quick Status Overview:")
         for table_name, result in results.items():
             status = result['status']
-            icons = {'complete': '✅', 'partial': '⚠️', 'incomplete': '❌', 'missing': '📋', 'error': '🚫'}
+            icons = {'complete': '✅', 'partial': '⚠️', 'incomplete': '❌'}
             icon = icons.get(status, '❓')
 
             data_info = result.get('data_info', {})
@@ -156,19 +150,6 @@ def main():
             print(f"   {icon} {table_display:<35} {status.upper()}{row_info}")
 
         print(f"\n📁 Full report available at: {args.output}")
-
-        # Additional recommendations based on status
-        if report_data['overall_status'] == 'noinformation':
-            print(f"\n💡 RECOMMENDATIONS:")
-            print(f"   • Check that all data files are present in: {data_dir}")
-            print(f"   • Verify file permissions and formats")
-            print(f"   • Review configuration settings in: {args.config}")
-        elif report_data['overall_status'] == 'partial':
-            print(f"\n💡 RECOMMENDATIONS:")
-            print(f"   • Review detailed validation results in the report")
-            print(f"   • Address high-priority data quality issues")
-            print(f"   • Consider data cleaning or transformation steps")
-
         return 0
 
     except FileNotFoundError as e:
