@@ -118,7 +118,8 @@ class ClifReportCardGenerator:
         self.intermediate_dir.mkdir(parents=True, exist_ok=True)
 
         # Path for consolidated validation report (goes in final directory)
-        self.consolidated_report_path = Path(self.output_dir) / 'consolidated_validation_report.csv'
+        site_name_clean = self.site_config.get('site_name', 'Unknown_Site').replace(' ', '_').replace('-', '_')
+        self.consolidated_report_path = Path(self.output_dir) / f'{site_name_clean}_consolidated_validation_report.csv'
 
     def validate_table(self, table_name: str) -> Dict[str, Any]:
         """
@@ -612,9 +613,9 @@ class ClifReportCardGenerator:
         site_name = report_data['site_name']
         combined_data = [
             ['Status', site_name, 'Criteria'],
-            ['COMPLETE', str(complete_tables), Paragraph('All required columns present, all required categorical values present', normal_style)],
-            ['PARTIAL', str(partial_tables), Paragraph('All required columns present, but missing some required categorical values', normal_style)],
-            ['INCOMPLETE', str(incomplete_tables), Paragraph('Missing required columns OR datatype casting errors OR 100% missing values for required columns OR table is missing', normal_style)]
+            ['COMPLETE', str(complete_tables), Paragraph('All required columns present, all categorical values present', normal_style)],
+            ['PARTIAL', str(partial_tables), Paragraph('All required columns present, but missing some categorical values', normal_style)],
+            ['INCOMPLETE', str(incomplete_tables), Paragraph('Missing required columns OR Datatype casting errors OR 100% Missing values for required columns OR Missing Table', normal_style)]
         ]
 
         # Add a summary row if there are multiple tables
