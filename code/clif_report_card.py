@@ -316,10 +316,65 @@ class ClifReportCardGenerator:
                             'severity': 'high'
                         })
 
+                    elif error_type == 'duplicate_check':
+                        # Handle duplicate check errors specially
+                        message = error.get('message', '')
+                        if not message and 'duplicate_rows' in error:
+                            duplicate_count = error.get('duplicate_rows', 0)
+                            total_rows = error.get('total_rows', 0)
+                            keys = error.get('composite_keys', [])
+                            keys_str = ', '.join(keys) if keys else 'composite keys'
+                            message = f"Found {duplicate_count} duplicate rows out of {total_rows} total rows based on keys: {keys_str}"
+
+                        data_quality_issues.append({
+                            'type': 'Duplicate Check',
+                            'description': message,
+                            'severity': 'medium'
+                        })
+
+                    elif error_type == 'unit_validation':
+                        # Handle unit validation errors
+                        category = error.get('category', 'unknown')
+                        expected_units = error.get('expected_units', [])
+                        unexpected_units = error.get('unexpected_units', [])
+                        message = error.get('message', '')
+
+                        if not message:
+                            if unexpected_units and expected_units:
+                                message = f"Table '{table_name}' category '{category}' has unexpected units: {', '.join(unexpected_units[:3])}, expected: {', '.join(expected_units)}"
+                            else:
+                                message = f"Unit validation issue for category '{category}'"
+
+                        data_quality_issues.append({
+                            'type': 'Unit Validation',
+                            'description': message,
+                            'severity': 'medium'
+                        })
+
                     else:
+                        # For other error types, try to extract a user-friendly message
+                        message = error.get('message', str(error))
+
+                        # If message is still JSON-like, try to extract a better description
+                        if isinstance(message, str) and message.startswith('{') and 'message' in message:
+                            try:
+                                import re
+                                # Try to extract the message field from JSON-like string
+                                match = re.search(r"'message':\s*'([^']*)'", message)
+                                if match:
+                                    message = match.group(1)
+                                else:
+                                    # Fallback: clean up the string
+                                    message = message.replace("'", "").replace("{", "").replace("}", "")
+                                    if len(message) > 200:
+                                        message = message[:200] + "..."
+                            except:
+                                # If parsing fails, use a generic message
+                                message = f"Validation issue found in table '{table_name}'"
+
                         validation_errors.append({
                             'type': error_type.replace('_', ' ').title(),
-                            'description': str(error),
+                            'description': message,
                             'severity': 'medium'
                         })
 
@@ -645,12 +700,29 @@ class ClifReportCardGenerator:
 
             if all_issues:
                 table_data.append(['Issues Found:', str(len(all_issues))])
-                for i, issue in enumerate(all_issues):  # Show ALL issues
+
+                # Group issues by type for better display
+                issue_groups = {}
+                for issue in all_issues:
                     issue_type = issue.get('type', 'Issue')
-                    issue_desc = issue.get('description', 'No description')
-                    # Use Paragraph for text wrapping instead of truncating
-                    issue_desc_paragraph = Paragraph(issue_desc, normal_style)
-                    table_data.append([f"{i+1}. {issue_type}:", issue_desc_paragraph])
+                    if issue_type not in issue_groups:
+                        issue_groups[issue_type] = []
+                    issue_groups[issue_type].append(issue.get('description', 'No description'))
+
+                # Display grouped issues
+                counter = 1
+                for issue_type, descriptions in issue_groups.items():
+                    if len(descriptions) == 1:
+                        # Single issue - display normally
+                        issue_desc_paragraph = Paragraph(descriptions[0], normal_style)
+                        table_data.append([f"{counter}. {issue_type}:", issue_desc_paragraph])
+                        counter += 1
+                    else:
+                        # Multiple issues of same type - use bullet points
+                        bullet_text = "<br/>".join([f"• {desc}" for desc in descriptions])
+                        issue_desc_paragraph = Paragraph(bullet_text, normal_style)
+                        table_data.append([f"{counter}. {issue_type}:", issue_desc_paragraph])
+                        counter += 1
 
             elif status == 'complete':
                 table_data.append(['Status:', 'All validation checks passed!'])
