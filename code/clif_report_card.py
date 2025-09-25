@@ -430,7 +430,7 @@ class ClifReportCardGenerator:
                 # Yellow: Has required columns but missing some required categorical values
                 status = 'partial'
             else:
-                # Green: All required columns present, all categorical values present (missing values < 100% are okay)
+                # Green: All required columns present, all categorical values present 
                 status = 'complete'
 
             return {
@@ -511,49 +511,71 @@ class ClifReportCardGenerator:
         # Container for the 'Flowable' objects
         story = []
 
-        # Define styles
+        # Define professional styles
         styles = getSampleStyleSheet()
+
+        # Professional color palette
+        primary_color = colors.HexColor('#1F4E79')      # Deep blue
+        secondary_color = colors.HexColor('#2F5F8F')    # Medium blue
+        accent_color = colors.HexColor('#4A90A4')       # Teal blue
+        text_dark = colors.HexColor('#2C3E50')          # Dark gray
+        text_medium = colors.HexColor('#5D6D7E')        # Medium gray
 
         title_style = ParagraphStyle(
             'CustomTitle',
             parent=styles['Heading1'],
-            fontSize=24,
-            spaceAfter=30,
+            fontSize=22,
+            spaceAfter=24,
             alignment=TA_CENTER,
-            textColor=colors.HexColor('#2C3E50')
+            textColor=primary_color,
+            fontName='Helvetica-Bold'
         )
 
         header_style = ParagraphStyle(
             'CustomHeader',
             parent=styles['Heading2'],
-            fontSize=16,
-            spaceAfter=12,
-            spaceBefore=20,
-            textColor=colors.HexColor('#34495E')
+            fontSize=14,
+            spaceAfter=10,
+            spaceBefore=16,
+            textColor=text_dark,
+            fontName='Helvetica-Bold'
         )
 
-        normal_style = styles['Normal']
+        normal_style = ParagraphStyle(
+            'CustomNormal',
+            parent=styles['Normal'],
+            fontSize=9,
+            textColor=text_medium,
+            fontName='Helvetica'
+        )
 
-        # Title
+        # Add timestamp in top right corner as separate element
+        timestamp_style = ParagraphStyle(
+            'TimestampStyle',
+            parent=styles['Normal'],
+            fontSize=8,
+            textColor=text_medium,
+            alignment=TA_RIGHT,
+            fontName='Helvetica'
+        )
+
+        # Create a single-cell table for just the timestamp in top right
+        timestamp_table = Table([[Paragraph(f"Generated: {report_data['timestamp']}", timestamp_style)]],
+                               colWidths=[7.5*inch])
+        timestamp_table.setStyle(TableStyle([
+            ('ALIGN', (0, 0), (0, 0), 'RIGHT'),
+            ('VALIGN', (0, 0), (0, 0), 'TOP'),
+            ('TOPPADDING', (0, 0), (0, 0), -24),  # Negative padding to move up
+            ('BOTTOMPADDING', (0, 0), (0, 0), 2),
+            ('LEFTPADDING', (0, 0), (0, 0), 0),
+            ('RIGHTPADDING', (0, 0), (0, 0), 0),
+        ]))
+        story.append(timestamp_table)
+
+        # Add centered title separately
         title = Paragraph(f"{report_data['site_name']} CLIF Data Report Card", title_style)
         story.append(title)
-        story.append(Spacer(1, 12))
-
-        # Site information
-        site_info = [
-            ['Site Name:', report_data['site_name']],
-            ['Generated:', report_data['timestamp']]
-        ]
-
-        site_table = Table(site_info, colWidths=[2*inch, 4*inch])
-        site_table.setStyle(TableStyle([
-            ('ALIGN', (0, 0), (-1, -1), 'LEFT'),
-            ('FONTNAME', (0, 0), (0, -1), 'Helvetica-Bold'),
-            ('FONTSIZE', (0, 0), (-1, -1), 12),
-            ('BOTTOMPADDING', (0, 0), (-1, -1), 6),
-        ]))
-        story.append(site_table)
-        story.append(Spacer(1, 20))
+        story.append(Spacer(1, 18))
 
         # Overall status
         status_colors = {
@@ -568,35 +590,7 @@ class ClifReportCardGenerator:
             'noinformation': 'NO INFORMATION'
         }
 
-        # Status Legend
-        legend_header = Paragraph("Status Legend", header_style)
-        story.append(legend_header)
-
-        legend_data = [
-            ['Status', 'Meaning'],
-            ['COMPLETE (Green)', Paragraph('All required columns present, all required categorical values present (missing values < 100% are okay)', normal_style)],
-            ['PARTIAL (Yellow)', Paragraph('All required columns present, but missing some required categorical values', normal_style)],
-            ['INCOMPLETE (Red)', Paragraph('Missing required columns OR datatype casting errors OR 100% missing values for required columns OR table is missing', normal_style)]
-        ]
-
-        legend_table = Table(legend_data, colWidths=[1.5*inch, 4.5*inch])
-        legend_table.setStyle(TableStyle([
-            ('ALIGN', (0, 0), (-1, -1), 'LEFT'),
-            ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
-            ('FONTSIZE', (0, 0), (-1, -1), 10),
-            ('BACKGROUND', (0, 0), (-1, 0), colors.lightgrey),
-            ('BACKGROUND', (0, 1), (0, 1), colors.lightgreen),
-            ('BACKGROUND', (0, 2), (0, 2), colors.yellow),
-            ('BACKGROUND', (0, 3), (0, 3), colors.lightcoral),
-            ('GRID', (0, 0), (-1, -1), 1, colors.black),
-            ('VALIGN', (0, 0), (-1, -1), 'TOP'),
-            ('TOPPADDING', (0, 0), (-1, -1), 6),
-            ('BOTTOMPADDING', (0, 0), (-1, -1), 6),
-        ]))
-        story.append(legend_table)
-        story.append(Spacer(1, 30))
-
-        # Summary statistics
+        # Calculate summary statistics first
         results = report_data['table_results']
         total_tables = len(results)
         complete_tables = sum(1 for r in results.values() if r['status'] == 'complete')
@@ -604,30 +598,63 @@ class ClifReportCardGenerator:
         incomplete_tables = sum(1 for r in results.values() if r['status'] in ['missing', 'incomplete', 'error'])
         total_rows = sum(r.get('data_info', {}).get('row_count', 0) for r in results.values())
 
-        summary_header = Paragraph("Summary Statistics", header_style)
-        story.append(summary_header)
+        # Combined Status Overview with creative layout
+        combined_header = Paragraph("Status Report Overview", header_style)
+        story.append(combined_header)
 
+        # Professional status colors
+        status_complete = colors.HexColor('#E8F5E8')    # Soft green background
+        status_partial = colors.HexColor('#FFF4E6')     # Soft orange background
+        status_incomplete = colors.HexColor('#FFEAEA')  # Soft red background
+        header_bg = colors.HexColor('#F5F6FA')          # Light gray header
 
-
-        summary_data = [
-            ['Complete Tables', str(complete_tables)],
-            ['Partial Tables', str(partial_tables)],
-            ['Incomplete Tables', str(incomplete_tables)]
+        # Create combined table with site name and description
+        site_name = report_data['site_name']
+        combined_data = [
+            ['Status', site_name, 'Criteria'],
+            ['COMPLETE', str(complete_tables), Paragraph('All required columns present, all required categorical values present', normal_style)],
+            ['PARTIAL', str(partial_tables), Paragraph('All required columns present, but missing some required categorical values', normal_style)],
+            ['INCOMPLETE', str(incomplete_tables), Paragraph('Missing required columns OR datatype casting errors OR 100% missing values for required columns OR table is missing', normal_style)]
         ]
 
-        summary_table = Table(summary_data, colWidths=[3*inch, 2*inch])
-        summary_table.setStyle(TableStyle([
+        # Add a summary row if there are multiple tables
+        if total_tables > 1:
+            combined_data.append(['TOTAL', str(total_tables), Paragraph(f'<b>Total tables analyzed across {total_rows:,} data rows</b>', normal_style)])
+
+        combined_table = Table(combined_data, colWidths=[1.2*inch, 0.8*inch, 4.5*inch])
+
+        # Dynamic styling based on number of rows
+        num_rows = len(combined_data)
+        table_style = [
             ('ALIGN', (0, 0), (-1, -1), 'LEFT'),
-            ('ALIGN', (1, 0), (1, -1), 'RIGHT'),
-            ('FONTNAME', (0, 0), (0, -1), 'Helvetica-Bold'),
-            ('FONTSIZE', (0, 0), (-1, -1), 12),
-            ('GRID', (0, 0), (-1, -1), 1, colors.black),
-            ('BACKGROUND', (0, 0), (-1, 0), colors.lightgrey),
-            ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
-            ('TOPPADDING', (0, 0), (-1, -1), 6),
-            ('BOTTOMPADDING', (0, 0), (-1, -1), 6),
-        ]))
-        story.append(summary_table)
+            ('ALIGN', (1, 0), (1, -1), 'CENTER'),
+            ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+            ('FONTSIZE', (0, 0), (-1, -1), 9),
+            ('TEXTCOLOR', (0, 0), (-1, 0), text_dark),
+            ('TEXTCOLOR', (0, 1), (-1, -1), text_medium),
+            ('BACKGROUND', (0, 0), (-1, 0), header_bg),
+            ('GRID', (0, 0), (-1, -1), 0.5, colors.HexColor('#DADADA')),
+            ('VALIGN', (0, 0), (-1, -1), 'TOP'),
+            ('TOPPADDING', (0, 0), (-1, -1), 8),
+            ('BOTTOMPADDING', (0, 0), (-1, -1), 8),
+            ('LEFTPADDING', (0, 0), (-1, -1), 12),
+            ('RIGHTPADDING', (0, 0), (-1, -1), 12),
+            # Color-code the status column
+            ('BACKGROUND', (0, 1), (0, 1), status_complete),
+            ('BACKGROUND', (0, 2), (0, 2), status_partial),
+            ('BACKGROUND', (0, 3), (0, 3), status_incomplete),
+        ]
+
+        # Add total row styling if it exists
+        if num_rows > 4:  # Has total row
+            table_style.extend([
+                ('BACKGROUND', (0, 4), (-1, 4), colors.HexColor('#F0F0F0')),
+                ('FONTNAME', (0, 4), (-1, 4), 'Helvetica-Bold'),
+                ('LINEABOVE', (0, 4), (-1, 4), 1, colors.HexColor('#DADADA')),
+            ])
+
+        combined_table.setStyle(TableStyle(table_style))
+        story.append(combined_table)
         story.append(Spacer(1, 30))
 
         # Table validation results
@@ -646,20 +673,31 @@ class ClifReportCardGenerator:
         # Get styles for text wrapping
         from reportlab.lib.styles import getSampleStyleSheet
         styles = getSampleStyleSheet()
-        normal_style = styles['Normal']
+
+        # Define color palette (same as in main method)
+        text_dark = colors.HexColor('#2C3E50')          # Dark gray
+        text_medium = colors.HexColor('#5D6D7E')        # Medium gray
+
+        normal_style = ParagraphStyle(
+            'CustomNormal',
+            parent=styles['Normal'],
+            fontSize=9,
+            textColor=text_medium,
+            fontName='Helvetica'
+        )
         display_name = self.table_display_names.get(table_name, table_name.title())
         status = result['status']
 
-        # Status symbols and colors
-        status_info = {
-            'complete': ('', colors.green),
-            'partial': ('', colors.orange),
-            'incomplete': ('', colors.red),
-            'missing': ('', colors.grey),
-            'error': ('', colors.red)
+        # Use the exact same background colors as the Status Overview table
+        status_colors_exact = {
+            'complete': colors.HexColor('#E8F5E8'),      # Same soft green background
+            'partial': colors.HexColor('#FFF4E6'),       # Same soft orange background
+            'incomplete': colors.HexColor('#FFEAEA'),    # Same soft red background
+            'missing': colors.HexColor('#F5F6FA'),       # Same light gray background
+            'error': colors.HexColor('#FFEAEA')          # Same soft red background
         }
 
-        symbol, color = status_info.get(status, ('', colors.grey))
+        color = status_colors_exact.get(status, colors.HexColor('#F5F6FA'))
 
         # Create table data
         table_data = [[display_name, status.upper()]]
@@ -718,27 +756,41 @@ class ClifReportCardGenerator:
                         table_data.append([f"{counter}. {issue_type}:", issue_desc_paragraph])
                         counter += 1
                     else:
-                        # Multiple issues of same type - use bullet points
+                        # Multiple issues of same type - use bullet points with professional styling
+                        bullet_style = ParagraphStyle(
+                            'BulletStyle',
+                            parent=normal_style,
+                            fontSize=8,
+                            leftIndent=12,
+                            bulletIndent=6,
+                            spaceAfter=2
+                        )
                         bullet_text = "<br/>".join([f"• {desc}" for desc in descriptions])
-                        issue_desc_paragraph = Paragraph(bullet_text, normal_style)
+                        issue_desc_paragraph = Paragraph(bullet_text, bullet_style)
                         table_data.append([f"{counter}. {issue_type}:", issue_desc_paragraph])
                         counter += 1
 
             elif status == 'complete':
                 table_data.append(['Status:', 'All validation checks passed!'])
 
-        # Create table with more space for the description column
+        # Create table with professional styling
         table = Table(table_data, colWidths=[2.5*inch, 4*inch])
         table.setStyle(TableStyle([
             ('ALIGN', (0, 0), (-1, -1), 'LEFT'),
             ('FONTNAME', (0, 0), (0, 0), 'Helvetica-Bold'),
-            ('FONTSIZE', (0, 0), (-1, -1), 10),
+            ('FONTNAME', (1, 0), (1, 0), 'Helvetica-Bold'),
+            ('FONTSIZE', (0, 0), (-1, -1), 9),
             ('BACKGROUND', (0, 0), (-1, 0), color),
-            ('TEXTCOLOR', (0, 0), (-1, 0), colors.white),
-            ('GRID', (0, 0), (-1, -1), 1, colors.black),
+            ('TEXTCOLOR', (0, 0), (-1, 0), text_dark),  # Use dark text on light backgrounds
+            ('TEXTCOLOR', (0, 1), (-1, -1), text_medium),
+            ('GRID', (0, 0), (-1, -1), 0.5, colors.HexColor('#DADADA')),
             ('VALIGN', (0, 0), (-1, -1), 'TOP'),
-            ('TOPPADDING', (0, 0), (-1, -1), 4),
-            ('BOTTOMPADDING', (0, 0), (-1, -1), 4),
+            ('TOPPADDING', (0, 0), (-1, -1), 6),
+            ('BOTTOMPADDING', (0, 0), (-1, -1), 6),
+            ('LEFTPADDING', (0, 0), (-1, -1), 10),
+            ('RIGHTPADDING', (0, 0), (-1, -1), 10),
+            # Alternate row background for better readability
+            ('BACKGROUND', (0, 1), (-1, -1), colors.HexColor('#FAFBFC')),
         ]))
 
         return table
@@ -868,7 +920,6 @@ class ClifReportCardGenerator:
         content.append(f"🏥 {report_data["site_name"]} CLIF REPORT CARD")
         content.append("="*60)
         content.append("")
-        content.append(f"Site Name: {report_data['site_name']}")
         content.append(f"Generated: {report_data['timestamp']}")
         content.append("")
 

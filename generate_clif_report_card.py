@@ -108,47 +108,6 @@ def main():
             report_data = generator.generate_simple_text_report(args.tables, args.output)
             print(f"\n📝 Text Report Card Generated Successfully!")
 
-        # Print summary
-        print(f"\n📋 VALIDATION SUMMARY")
-        print(f"{'='*40}")
-        print(f"Site: {report_data['site_name']}")
-        print(f"Generated: {report_data['timestamp']}")
-        print()
-
-        # Overall status with visual indicator
-        status_display = {
-            'complete': '✅ COMPLETE - All tables validated successfully!',
-            'partial': '⚠️  PARTIAL - Some issues found but data is usable',
-            'noinformation': '❓ NO INFORMATION - Critical issues prevent validation'
-        }
-
-        # Table-by-table summary with counts
-        results = report_data['table_results']
-        complete_count = sum(1 for r in results.values() if r['status'] == 'complete')
-        partial_count = sum(1 for r in results.values() if r['status'] in ['partial', 'incomplete'])
-        missing_count = sum(1 for r in results.values() if r['status'] in ['missing', 'error'])
-        total_rows = sum(r.get('data_info', {}).get('row_count', 0) for r in results.values())
-
-        print(f"📊 Table Summary:")
-        print(f"   ✅ Complete: {complete_count} tables")
-        print(f"   ⚠️  Partial:   {partial_count} tables")
-        print(f"   ❌ Incomplete:   {missing_count} tables")
-        print()
-
-        # Quick status overview
-        print(f"🔍 Quick Status Overview:")
-        for table_name, result in results.items():
-            status = result['status']
-            icons = {'complete': '✅', 'partial': '⚠️', 'incomplete': '❌'}
-            icon = icons.get(status, '❓')
-
-            data_info = result.get('data_info', {})
-            rows = data_info.get('row_count', 0)
-            row_info = f" ({rows:,} rows)" if rows > 0 else ""
-
-            table_display = generator.table_display_names.get(table_name, table_name.title())
-            print(f"   {icon} {table_display:<35} {status.upper()}{row_info}")
-
         print(f"\n📁 Full report available at: {args.output}")
         return 0
 
