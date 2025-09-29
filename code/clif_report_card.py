@@ -23,11 +23,20 @@ except ImportError:
 
 from clifpy.clif_orchestrator import ClifOrchestrator
 from clifpy.tables.adt import Adt
+from clifpy.tables.code_status import CodeStatus
+from clifpy.tables.crrt_therapy import CrrtTherapy
+from clifpy.tables.ecmo_mcs import EcmoMcs
+from clifpy.tables.hospital_diagnosis import HospitalDiagnosis
 from clifpy.tables.hospitalization import Hospitalization
 from clifpy.tables.labs import Labs
 from clifpy.tables.medication_admin_continuous import MedicationAdminContinuous
+from clifpy.tables.medication_admin_intermittent import MedicationAdminIntermittent
+from clifpy.tables.microbiology_culture import MicrobiologyCulture
+from clifpy.tables.microbiology_nonculture import MicrobiologyNonculture
+from clifpy.tables.microbiology_susceptibility import MicrobiologySusceptibility
 from clifpy.tables.patient import Patient
 from clifpy.tables.patient_assessments import PatientAssessments
+from clifpy.tables.patient_procedures import PatientProcedures
 from clifpy.tables.position import Position
 from clifpy.tables.respiratory_support import RespiratorySupport
 from clifpy.tables.vitals import Vitals
@@ -54,27 +63,45 @@ class ClifReportCardGenerator:
         # Setup logging to .logs folder
         self._setup_logging()
 
-        # Mapping of table names to clifpy table classes
+        # Mapping of table names to clifpy table classes (including all available tables)
         self.table_mapping = {
             'adt': Adt,
+            'code_status': CodeStatus,
+            'crrt_therapy': CrrtTherapy,
+            'ecmo_mcs': EcmoMcs,
+            'hospital_diagnosis': HospitalDiagnosis,
             'hospitalization': Hospitalization,
             'labs': Labs,
             'medication_admin_continuous': MedicationAdminContinuous,
+            'medication_admin_intermittent': MedicationAdminIntermittent,
+            'microbiology_culture': MicrobiologyCulture,
+            'microbiology_nonculture': MicrobiologyNonculture,
+            'microbiology_susceptibility': MicrobiologySusceptibility,
             'patient': Patient,
             'patient_assessments': PatientAssessments,
+            'patient_procedures': PatientProcedures,
             'position': Position,
             'respiratory_support': RespiratorySupport,
             'vitals': Vitals
         }
 
-        # Human-readable table names
+        # Human-readable table names (including all available tables)
         self.table_display_names = {
             'adt': 'ADT',
+            'code_status': 'Code Status',
+            'crrt_therapy': 'CRRT Therapy',
+            'ecmo_mcs': 'ECMO/MCS',
+            'hospital_diagnosis': 'Hospital Diagnosis',
             'hospitalization': 'Hospitalization',
             'labs': 'Labs',
             'medication_admin_continuous': 'Medication Admin Continuous',
+            'medication_admin_intermittent': 'Medication Admin Intermittent',
+            'microbiology_culture': 'Microbiology Culture',
+            'microbiology_nonculture': 'Microbiology Nonculture',
+            'microbiology_susceptibility': 'Microbiology Susceptibility',
             'patient': 'Patient',
             'patient_assessments': 'Patient Assessments',
+            'patient_procedures': 'Patient Procedures',
             'position': 'Position',
             'respiratory_support': 'Respiratory Support',
             'vitals': 'Vitals'
@@ -297,7 +324,15 @@ class ClifReportCardGenerator:
                         column = error.get('column')
                         missing_values = error.get('missing_values', [])
                         total_missing = error.get('total_missing', len(missing_values))
-                        message = error.get('message', f"Column '{column}' is missing {total_missing} expected category values")
+
+                        # Create detailed message showing all the actual missing values
+                        if missing_values:
+                            # Format as a simple list [a, b, c, d]
+                            values_list = str(missing_values)
+                            message = f"Column '{column}' is missing {total_missing} expected category values: {values_list}"
+                        else:
+                            # Fallback to original message if no missing_values available
+                            message = error.get('message', f"Column '{column}' is missing {total_missing} expected category values")
 
                         data_quality_issues.append({
                             'type': 'Missing Categorical Values',
@@ -348,6 +383,29 @@ class ClifReportCardGenerator:
 
                         data_quality_issues.append({
                             'type': 'Unit Validation',
+                            'description': message,
+                            'severity': 'medium'
+                        })
+
+                    elif error_type in ['below_range', 'above_range', 'unknown_vital_category']:
+                        # Handle vitals range validation errors
+                        vital_category = error.get('vital_category', 'unknown')
+                        message = error.get('message', '')
+
+                        if not message:
+                            if error_type == 'below_range':
+                                min_val = error.get('observed_min', 'N/A')
+                                expected_min = error.get('expected_min', 'N/A')
+                                message = f"Values below expected minimum for {vital_category} (found: {min_val}, expected: >={expected_min})"
+                            elif error_type == 'above_range':
+                                max_val = error.get('observed_max', 'N/A')
+                                expected_max = error.get('expected_max', 'N/A')
+                                message = f"Values above expected maximum for {vital_category} (found: {max_val}, expected: <={expected_max})"
+                            elif error_type == 'unknown_vital_category':
+                                message = f"Unknown vital category '{vital_category}' found in data"
+
+                        data_quality_issues.append({
+                            'type': 'Range Validation',
                             'description': message,
                             'severity': 'medium'
                         })
@@ -791,7 +849,7 @@ class ClifReportCardGenerator:
             ('LEFTPADDING', (0, 0), (-1, -1), 10),
             ('RIGHTPADDING', (0, 0), (-1, -1), 10),
             # Alternate row background for better readability
-            ('BACKGROUND', (0, 1), (-1, -1), colors.HexColor('#FAFBFC')),
+            ('BACKGROUND', (0, 1), (-1, -1), colors.white),
         ]))
 
         return table

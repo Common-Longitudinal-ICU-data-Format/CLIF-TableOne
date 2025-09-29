@@ -43,9 +43,27 @@ def main():
     parser.add_argument('--format', choices=['pdf', 'txt'], default='pdf',
                        help='Output format: pdf or txt (default: pdf)')
     parser.add_argument('--tables', nargs='+',
-                       default=['adt', 'hospitalization', 'labs', 'medication_admin_continuous',
-                               'patient', 'patient_assessments', 'position', 'respiratory_support', 'vitals'],
-                       help='List of tables to check (default: all 9 CLIF tables)')
+                       default=[
+                           'adt',
+                           'code_status',
+                           'crrt_therapy',
+                           'ecmo_mcs',
+                           'hospital_diagnosis',
+                           'hospitalization',
+                           'labs',
+                           'medication_admin_continuous',
+                           'medication_admin_intermittent',
+                           'microbiology_culture',
+                           'microbiology_nonculture',
+                           'microbiology_susceptibility',
+                           'patient',
+                           'patient_assessments',
+                           'patient_procedures',
+                           'position',
+                           'respiratory_support',
+                           'vitals'
+                       ],
+                       help='List of tables to check (default: all available 2.1 CLIF tables)')
 
     args = parser.parse_args()
 
