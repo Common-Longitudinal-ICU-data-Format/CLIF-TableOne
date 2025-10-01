@@ -115,13 +115,13 @@ def main():
                 report_data = generator.generate_pdf_report_card(args.tables, args.output)
                 print(f"\n🎉 PDF Report Card Generated Successfully!")
             except ImportError:
-                print(f"\n⚠️  PDF generation not available. Falling back to text format...")
+                print(f"\n⚠️  PDF generation not available (reportlab not installed). Falling back to text format...")
                 # Change extension to .txt
                 txt_output = args.output.replace('.pdf', '.txt')
                 report_data = generator.generate_simple_text_report(args.tables, txt_output)
                 args.output = txt_output
                 print(f"📝 Text Report Card Generated!")
-                print(f"💡 Install 'reportlab' for PDF generation: pip install reportlab")
+                print(f"💡 To enable PDF generation, install reportlab: pip install reportlab")
         else:
             report_data = generator.generate_simple_text_report(args.tables, args.output)
             print(f"\n📝 Text Report Card Generated Successfully!")

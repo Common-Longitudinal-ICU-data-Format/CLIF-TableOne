@@ -12,7 +12,7 @@ sys.path.insert(0, '/Users/dema/WD/clifpy')
 try:
     from reportlab.lib import colors
     from reportlab.lib.pagesizes import letter, A4
-    from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer, PageBreak
+    from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer, PageBreak, Image
     from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
     from reportlab.lib.units import inch
     from reportlab.lib.enums import TA_CENTER, TA_LEFT, TA_RIGHT
@@ -22,6 +22,7 @@ except ImportError:
     print("WARNING: reportlab not installed. Install with: pip install reportlab")
 
 from clifpy.clif_orchestrator import ClifOrchestrator
+from clifpy.utils import validator
 from clifpy.tables.adt import Adt
 from clifpy.tables.code_status import CodeStatus
 from clifpy.tables.crrt_therapy import CrrtTherapy
@@ -147,6 +148,141 @@ class ClifReportCardGenerator:
         # Path for consolidated validation report (goes in final directory)
         site_name_clean = self.site_config.get('site_name', 'Unknown_Site').replace(' ', '_').replace('-', '_')
         self.consolidated_report_path = Path(self.output_dir) / f'{site_name_clean}_consolidated_validation_report.csv'
+
+    def _format_clifpy_error(self, error: Dict[str, Any], row_count: int, table_name: str) -> Dict[str, Any]:
+        """
+        Format a clifpy error object for display in reports.
+
+        Args:
+            error: Raw error object from clifpy validation
+            row_count: Total number of rows in the table (for percentage calculations)
+            table_name: Name of the table being validated
+
+        Returns:
+            Formatted error dictionary with type, description, severity, and category
+        """
+        error_type = error.get('type', 'unknown')
+
+        # Use clifpy's message if available, otherwise build one
+        message = error.get('message', '')
+
+        # Determine category and severity based on error type
+        category = 'other'
+        severity = 'medium'
+        display_type = error_type.replace('_', ' ').title()
+
+        # Schema-related errors (high severity)
+        if error_type == 'missing_columns':
+            category = 'schema'
+            severity = 'high'
+            display_type = 'Missing Required Columns'
+            if not message:
+                columns = error.get('columns', [])
+                message = f"Required columns not found: {', '.join(columns)}"
+
+        elif error_type in ['datatype_mismatch', 'datatype_castable']:
+            category = 'schema'
+            severity = 'high'
+            display_type = 'Datatype Casting Error'
+            if not message:
+                column = error.get('column', 'unknown')
+                expected = error.get('expected', 'unknown')
+                actual = error.get('actual', 'unknown')
+                message = f"Column '{column}' has type {actual} but expected {expected}"
+
+        # Data quality errors (variable severity)
+        elif error_type == 'null_values':
+            category = 'data_quality'
+            display_type = 'Missing Values'
+            if not message:
+                column = error.get('column', 'unknown')
+                count = error.get('count', 0)
+                percentage = (count / row_count * 100) if row_count > 0 else 0
+                message = f"Column '{column}' has {count:,} missing values ({percentage:.1f}%)"
+                # Dynamic severity based on percentage
+                severity = 'high' if percentage > 50 else 'medium' if percentage > 10 else 'low'
+            else:
+                # Try to extract percentage from existing message for severity calculation
+                try:
+                    count = error.get('count', 0)
+                    percentage = (count / row_count * 100) if row_count > 0 else 0
+                    severity = 'high' if percentage > 50 else 'medium' if percentage > 10 else 'low'
+                except:
+                    severity = 'medium'
+
+        elif error_type in ['invalid_category', 'invalid_categorical_values']:
+            category = 'data_quality'
+            display_type = 'Invalid Categories'
+            if not message:
+                column = error.get('column', 'unknown')
+                invalid_values = error.get('invalid_values', error.get('values', []))
+                truncated = invalid_values[:3]
+                message = f"Column '{column}' contains invalid values: {', '.join(map(str, truncated))}"
+                if len(invalid_values) > 3:
+                    message += f" (and {len(invalid_values) - 3} more)"
+
+        elif error_type == 'missing_categorical_values':
+            category = 'data_quality'
+            display_type = 'Missing Categorical Values'
+            if not message:
+                column = error.get('column', 'unknown')
+                missing_values = error.get('missing_values', [])
+                total_missing = error.get('total_missing', len(missing_values))
+                if missing_values:
+                    # Show all missing values, not just a summary
+                    values_str = str(missing_values) if len(missing_values) <= 10 else str(missing_values[:10]) + f'... ({len(missing_values) - 10} more)'
+                    message = f"Column '{column}' is missing {total_missing} expected category values: {values_str}"
+                else:
+                    message = f"Column '{column}' is missing {total_missing} expected category values"
+
+        elif error_type == 'duplicate_check':
+            category = 'data_quality'
+            display_type = 'Duplicate Check'
+            if not message:
+                duplicate_count = error.get('duplicate_rows', 0)
+                total_rows = error.get('total_rows', row_count)
+                keys = error.get('composite_keys', [])
+                keys_str = ', '.join(keys) if keys else 'composite keys'
+                message = f"Found {duplicate_count} duplicate rows out of {total_rows} total rows based on keys: {keys_str}"
+
+        elif error_type == 'unit_validation':
+            category = 'data_quality'
+            display_type = 'Unit Validation'
+            if not message:
+                cat = error.get('category', 'unknown')
+                unexpected_units = error.get('unexpected_units', [])
+                expected_units = error.get('expected_units', [])
+                if unexpected_units and expected_units:
+                    message = f"Category '{cat}' has unexpected units: {', '.join(unexpected_units[:3])}, expected: {', '.join(expected_units)}"
+                else:
+                    message = f"Unit validation issue for category '{cat}'"
+
+        elif error_type in ['below_range', 'above_range', 'unknown_vital_category']:
+            category = 'data_quality'
+            display_type = 'Range Validation'
+            if not message:
+                vital_category = error.get('vital_category', 'unknown')
+                if error_type == 'below_range':
+                    min_val = error.get('observed_min', 'N/A')
+                    expected_min = error.get('expected_min', 'N/A')
+                    message = f"Values below expected minimum for {vital_category} (found: {min_val}, expected: >={expected_min})"
+                elif error_type == 'above_range':
+                    max_val = error.get('observed_max', 'N/A')
+                    expected_max = error.get('expected_max', 'N/A')
+                    message = f"Values above expected maximum for {vital_category} (found: {max_val}, expected: <={expected_max})"
+                else:  # unknown_vital_category
+                    message = f"Unknown vital category '{vital_category}' found in data"
+
+        # Fallback: use error as-is or stringify
+        if not message:
+            message = str(error)
+
+        return {
+            'type': display_type,
+            'description': message,
+            'severity': severity,
+            'category': category
+        }
 
     def validate_table(self, table_name: str) -> Dict[str, Any]:
         """
@@ -283,164 +419,27 @@ class ClifReportCardGenerator:
             is_valid = table_instance.isvalid() if hasattr(table_instance, 'isvalid') else True
             validation_results['is_valid'] = is_valid
 
-            # Parse validation errors
-            validation_errors = []
+            # Format validation errors using clifpy's error objects
             schema_errors = []
             data_quality_issues = []
+            other_errors = []
 
             if hasattr(table_instance, 'errors') and table_instance.errors:
                 for error in table_instance.errors:
-                    error_type = error.get('type', 'unknown')
+                    formatted_error = self._format_clifpy_error(error, data_info.get('row_count', 0), table_name)
 
-                    if error_type == 'missing_columns':
-                        schema_errors.append({
-                            'type': 'Missing Required Columns',
-                            'description': f"Required columns not found: {', '.join(error.get('columns', []))}",
-                            'severity': 'high'
-                        })
-
-                    elif error_type == 'null_values':
-                        column = error.get('column')
-                        count = error.get('count', 0)
-                        percentage = (count / data_info['row_count'] * 100) if data_info['row_count'] > 0 else 0
-
-                        data_quality_issues.append({
-                            'type': 'Missing Values',
-                            'description': f"Column '{column}' has {count:,} missing values ({percentage:.1f}%)",
-                            'severity': 'high' if percentage > 50 else 'medium' if percentage > 10 else 'low'
-                        })
-
-                    elif error_type in ['invalid_category', 'invalid_categorical_values']:
-                        column = error.get('column')
-                        invalid_values = error.get('invalid_values', error.get('values', []))
-
-                        data_quality_issues.append({
-                            'type': 'Invalid Categories',
-                            'description': f"Column '{column}' contains invalid values: {', '.join(map(str, invalid_values[:3]))}{'...' if len(invalid_values) > 3 else ''}",
-                            'severity': 'medium'
-                        })
-
-                    elif error_type == 'missing_categorical_values':
-                        column = error.get('column')
-                        missing_values = error.get('missing_values', [])
-                        total_missing = error.get('total_missing', len(missing_values))
-
-                        # Create detailed message showing all the actual missing values
-                        if missing_values:
-                            # Format as a simple list [a, b, c, d]
-                            values_list = str(missing_values)
-                            message = f"Column '{column}' is missing {total_missing} expected category values: {values_list}"
-                        else:
-                            # Fallback to original message if no missing_values available
-                            message = error.get('message', f"Column '{column}' is missing {total_missing} expected category values")
-
-                        data_quality_issues.append({
-                            'type': 'Missing Categorical Values',
-                            'description': message,
-                            'severity': 'medium'
-                        })
-
-                    elif error_type == 'datatype_castable':
-                        column = error.get('column')
-                        expected = error.get('expected', 'unknown')
-                        actual = error.get('actual', 'unknown')
-                        message = error.get('message', f"Column '{column}' has type {actual} but cannot be cast to {expected}")
-
-                        schema_errors.append({
-                            'type': 'Datatype Casting Error',
-                            'description': message,
-                            'severity': 'high'
-                        })
-
-                    elif error_type == 'duplicate_check':
-                        # Handle duplicate check errors specially
-                        message = error.get('message', '')
-                        if not message and 'duplicate_rows' in error:
-                            duplicate_count = error.get('duplicate_rows', 0)
-                            total_rows = error.get('total_rows', 0)
-                            keys = error.get('composite_keys', [])
-                            keys_str = ', '.join(keys) if keys else 'composite keys'
-                            message = f"Found {duplicate_count} duplicate rows out of {total_rows} total rows based on keys: {keys_str}"
-
-                        data_quality_issues.append({
-                            'type': 'Duplicate Check',
-                            'description': message,
-                            'severity': 'medium'
-                        })
-
-                    elif error_type == 'unit_validation':
-                        # Handle unit validation errors
-                        category = error.get('category', 'unknown')
-                        expected_units = error.get('expected_units', [])
-                        unexpected_units = error.get('unexpected_units', [])
-                        message = error.get('message', '')
-
-                        if not message:
-                            if unexpected_units and expected_units:
-                                message = f"Table '{table_name}' category '{category}' has unexpected units: {', '.join(unexpected_units[:3])}, expected: {', '.join(expected_units)}"
-                            else:
-                                message = f"Unit validation issue for category '{category}'"
-
-                        data_quality_issues.append({
-                            'type': 'Unit Validation',
-                            'description': message,
-                            'severity': 'medium'
-                        })
-
-                    elif error_type in ['below_range', 'above_range', 'unknown_vital_category']:
-                        # Handle vitals range validation errors
-                        vital_category = error.get('vital_category', 'unknown')
-                        message = error.get('message', '')
-
-                        if not message:
-                            if error_type == 'below_range':
-                                min_val = error.get('observed_min', 'N/A')
-                                expected_min = error.get('expected_min', 'N/A')
-                                message = f"Values below expected minimum for {vital_category} (found: {min_val}, expected: >={expected_min})"
-                            elif error_type == 'above_range':
-                                max_val = error.get('observed_max', 'N/A')
-                                expected_max = error.get('expected_max', 'N/A')
-                                message = f"Values above expected maximum for {vital_category} (found: {max_val}, expected: <={expected_max})"
-                            elif error_type == 'unknown_vital_category':
-                                message = f"Unknown vital category '{vital_category}' found in data"
-
-                        data_quality_issues.append({
-                            'type': 'Range Validation',
-                            'description': message,
-                            'severity': 'medium'
-                        })
-
+                    # Categorize errors
+                    if formatted_error['category'] == 'schema':
+                        schema_errors.append(formatted_error)
+                    elif formatted_error['category'] == 'data_quality':
+                        data_quality_issues.append(formatted_error)
                     else:
-                        # For other error types, try to extract a user-friendly message
-                        message = error.get('message', str(error))
-
-                        # If message is still JSON-like, try to extract a better description
-                        if isinstance(message, str) and message.startswith('{') and 'message' in message:
-                            try:
-                                import re
-                                # Try to extract the message field from JSON-like string
-                                match = re.search(r"'message':\s*'([^']*)'", message)
-                                if match:
-                                    message = match.group(1)
-                                else:
-                                    # Fallback: clean up the string
-                                    message = message.replace("'", "").replace("{", "").replace("}", "")
-                                    if len(message) > 200:
-                                        message = message[:200] + "..."
-                            except:
-                                # If parsing fails, use a generic message
-                                message = f"Validation issue found in table '{table_name}'"
-
-                        validation_errors.append({
-                            'type': error_type.replace('_', ' ').title(),
-                            'description': message,
-                            'severity': 'medium'
-                        })
+                        other_errors.append(formatted_error)
 
             validation_results.update({
                 'schema_errors': schema_errors,
                 'data_quality_issues': data_quality_issues,
-                'other_errors': validation_errors
+                'other_errors': other_errors
             })
 
             # Determine overall status based on new requirements
@@ -489,13 +488,66 @@ class ClifReportCardGenerator:
                 # Yellow: Has required columns but missing some required categorical values
                 status = 'partial'
             else:
-                # Green: All required columns present, all categorical values present 
+                # Green: All required columns present, all categorical values present
                 status = 'complete'
+
+            # Generate outlier plot if table has outlier configuration
+            outlier_plot_paths = []
+            try:
+                outlier_config = validator.load_outlier_config()
+                if outlier_config and hasattr(table_instance, 'schema') and table_instance.schema:
+                    # Check if this table has outlier configuration
+                    if table_name in outlier_config.get('tables', {}):
+                        # Create plots directory in intermediate folder
+                        plots_dir = self.intermediate_dir / 'outlier_plots'
+                        plots_dir.mkdir(exist_ok=True)
+
+                        # Generate plot
+                        plot_path = plots_dir / f'{table_name}_outliers.png'
+                        logging.info(f"Generating outlier plot for {table_name}")
+
+                        fig = validator.plot_outlier_distribution(
+                            df=table_instance.df,
+                            table_name=table_name,
+                            schema=table_instance.schema,
+                            outlier_config=outlier_config,
+                            save_path=str(plot_path),
+                            show_plot=False,  # Don't display in non-interactive mode
+                            figsize=(14, 8)
+                        )
+
+                        if fig is not None:
+                            # Close the figure(s) to free memory
+                            import matplotlib.pyplot as plt
+                            if isinstance(fig, list):
+                                # Multiple figures returned
+                                for f in fig:
+                                    plt.close(f)
+                            else:
+                                # Single figure
+                                plt.close(fig)
+
+                            # Check for multi-part plots (e.g., labs_outliers_part1.png, labs_outliers_part2.png)
+                            import glob
+                            part_pattern = str(plots_dir / f'{table_name}_outliers_part*.png')
+                            part_files = sorted(glob.glob(part_pattern))
+
+                            if part_files:
+                                # Multi-part plots exist, use them instead
+                                outlier_plot_paths = part_files
+                                logging.info(f"Found {len(part_files)} multi-part outlier plots for {table_name}")
+                            elif os.path.exists(plot_path):
+                                # Single plot
+                                outlier_plot_paths = [str(plot_path)]
+                                logging.info(f"Outlier plot saved to: {plot_path}")
+            except Exception as e:
+                logging.warning(f"Could not generate outlier plot for {table_name}: {str(e)}")
 
             return {
                 'status': status,
                 'data_info': data_info,
-                'validation_results': validation_results
+                'validation_results': validation_results,
+                'outlier_plots': outlier_plot_paths  # Changed to plural and list
             }
 
         except FileNotFoundError:
@@ -634,6 +686,28 @@ class ClifReportCardGenerator:
         # Add centered title separately
         title = Paragraph(f"{report_data['site_name']} CLIF Data Report Card", title_style)
         story.append(title)
+        story.append(Spacer(1, 12))
+
+        # Check if outlier plots will be included and add note after title
+        outlier_plots = {name: result.get('outlier_plots', [])
+                        for name, result in report_data['table_results'].items()
+                        if result.get('outlier_plots')}
+
+        if outlier_plots:
+            # Add note about appendix right after title
+            appendix_note = Paragraph(
+                f"<i>Outlier distribution plots for {len(outlier_plots)} table(s) included in Appendix</i>",
+                ParagraphStyle(
+                    'AppendixNote',
+                    parent=normal_style,
+                    fontSize=10,
+                    textColor=text_medium,
+                    alignment=TA_CENTER,
+                    spaceAfter=6
+                )
+            )
+            story.append(appendix_note)
+
         story.append(Spacer(1, 18))
 
         # Overall status
@@ -723,6 +797,41 @@ class ClifReportCardGenerator:
         for table_name, result in report_data['table_results'].items():
             story.append(self._create_table_section(table_name, result))
             story.append(Spacer(1, 20))
+
+        # Add Appendix section with outlier plots if any exist
+        outlier_plots = {name: result.get('outlier_plots', [])
+                        for name, result in report_data['table_results'].items()
+                        if result.get('outlier_plots')}
+
+        if outlier_plots:
+            story.append(PageBreak())
+            appendix_header = Paragraph("Appendix: Outlier Distribution Plots", header_style)
+            story.append(appendix_header)
+            story.append(Spacer(1, 12))
+
+            for table_name, plot_paths in outlier_plots.items():
+                if plot_paths:  # plot_paths is now a list
+                    display_name = self.table_display_names.get(table_name, table_name.title())
+
+                    # Add table name subheader
+                    plot_header = Paragraph(f"{display_name} Table",
+                                           ParagraphStyle('PlotHeader',
+                                                        parent=header_style,
+                                                        fontSize=12,
+                                                        spaceAfter=8))
+                    story.append(plot_header)
+
+                    # Add each plot image (handles multi-part plots)
+                    for i, plot_path in enumerate(plot_paths):
+                        if os.path.exists(plot_path):
+                            try:
+                                img = Image(plot_path, width=7*inch, height=4*inch)
+                                story.append(img)
+                                story.append(Spacer(1, 12))
+                            except Exception as e:
+                                logging.warning(f"Could not add outlier plot {plot_path} for {table_name}: {str(e)}")
+
+                    story.append(Spacer(1, 8))  # Extra space between tables
 
         # Build PDF
         doc.build(story)
@@ -1081,53 +1190,3 @@ class ClifReportCardGenerator:
 
         print(f"Report card saved to: {output_file}")
         return report_data
-
-
-def main():
-    """Main function to generate the report card."""
-    # Load configuration
-    config_path = os.path.join(os.path.dirname(__file__), '..', 'config', 'config.json')
-
-    if os.path.exists(config_path):
-        with open(config_path, 'r') as f:
-            site_config = json.load(f)
-    else:
-        # Default configuration
-        site_config = {
-            'site_name': 'Test Site',
-            'site_id': 'test_site',
-            'contact': 'test@example.com',
-            'tables_path': '../data',
-            'file_type': 'parquet'
-        }
-
-    # Define target tables
-    target_tables = [
-        'adt', 'hospitalization', 'labs', 'medication_admin_continuous',
-        'patient', 'patient_assessments', 'position', 'respiratory_support', 'vitals'
-    ]
-
-    # Initialize generator
-    data_dir = site_config.get('tables_path', '../data')
-    output_dir = '../output'
-
-    generator = ClifReportCardGenerator(data_dir, output_dir, site_config)
-
-    try:
-        # Generate PDF report card
-        output_file = '../output/final/clif_report_card.pdf'
-        report_data = generator.generate_pdf_report_card(target_tables, output_file)
-        print(f"\n🎉 PDF Report Card Generated!")
-        print(f"📁 File: {output_file}")
-
-    except ImportError:
-        # Fallback to HTML report
-        output_file = '../output/final/clif_report_card.html'
-        report_data = generator.generate_html_report_card(target_tables, output_file)
-        print(f"\n🎉 HTML Report Card Generated!")
-        print(f"📁 File: {output_file}")
-        print("\nNote: Install 'reportlab' package for PDF generation: pip install reportlab")
-
-
-if __name__ == "__main__":
-    main()
