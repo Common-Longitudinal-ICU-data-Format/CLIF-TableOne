@@ -159,22 +159,20 @@ class ClifReportCardGenerator:
             table_name: Name of the table being validated
 
         Returns:
-            Formatted error dictionary with type, description, severity, and category
+            Formatted error dictionary with type, description, and category
         """
         error_type = error.get('type', 'unknown')
 
         # Use clifpy's message if available, otherwise build one
         message = error.get('message', '')
 
-        # Determine category and severity based on error type
+        # Determine category based on error type
         category = 'other'
-        severity = 'medium'
         display_type = error_type.replace('_', ' ').title()
 
-        # Schema-related errors (high severity)
+        # Schema-related errors
         if error_type == 'missing_columns':
             category = 'schema'
-            severity = 'high'
             display_type = 'Missing Required Columns'
             if not message:
                 columns = error.get('columns', [])
@@ -182,7 +180,6 @@ class ClifReportCardGenerator:
 
         elif error_type in ['datatype_mismatch', 'datatype_castable']:
             category = 'schema'
-            severity = 'high'
             display_type = 'Datatype Casting Error'
             if not message:
                 column = error.get('column', 'unknown')
@@ -190,7 +187,7 @@ class ClifReportCardGenerator:
                 actual = error.get('actual', 'unknown')
                 message = f"Column '{column}' has type {actual} but expected {expected}"
 
-        # Data quality errors (variable severity)
+        # Data quality errors
         elif error_type == 'null_values':
             category = 'data_quality'
             display_type = 'Missing Values'
@@ -199,16 +196,6 @@ class ClifReportCardGenerator:
                 count = error.get('count', 0)
                 percentage = (count / row_count * 100) if row_count > 0 else 0
                 message = f"Column '{column}' has {count:,} missing values ({percentage:.1f}%)"
-                # Dynamic severity based on percentage
-                severity = 'high' if percentage > 50 else 'medium' if percentage > 10 else 'low'
-            else:
-                # Try to extract percentage from existing message for severity calculation
-                try:
-                    count = error.get('count', 0)
-                    percentage = (count / row_count * 100) if row_count > 0 else 0
-                    severity = 'high' if percentage > 50 else 'medium' if percentage > 10 else 'low'
-                except:
-                    severity = 'medium'
 
         elif error_type in ['invalid_category', 'invalid_categorical_values']:
             category = 'data_quality'
@@ -280,7 +267,6 @@ class ClifReportCardGenerator:
         return {
             'type': display_type,
             'description': message,
-            'severity': severity,
             'category': category
         }
 
@@ -915,8 +901,10 @@ class ClifReportCardGenerator:
                         issue_groups[issue_type] = []
                     issue_groups[issue_type].append(issue.get('description', 'No description'))
 
-                # Display grouped issues
+                # Display grouped issues with truncation to prevent overflow
                 counter = 1
+                MAX_ISSUES_TO_DISPLAY = 10  # Limit to prevent page overflow
+
                 for issue_type, descriptions in issue_groups.items():
                     if len(descriptions) == 1:
                         # Single issue - display normally
@@ -924,7 +912,7 @@ class ClifReportCardGenerator:
                         table_data.append([f"{counter}. {issue_type}:", issue_desc_paragraph])
                         counter += 1
                     else:
-                        # Multiple issues of same type - use bullet points with professional styling
+                        # Multiple issues of same type - use bullet points with truncation
                         bullet_style = ParagraphStyle(
                             'BulletStyle',
                             parent=normal_style,
@@ -933,7 +921,16 @@ class ClifReportCardGenerator:
                             bulletIndent=6,
                             spaceAfter=2
                         )
-                        bullet_text = "<br/>".join([f"• {desc}" for desc in descriptions])
+
+                        # Truncate if too many issues
+                        display_descriptions = descriptions[:MAX_ISSUES_TO_DISPLAY]
+                        truncated_count = len(descriptions) - len(display_descriptions)
+
+                        bullet_points = [f"• {desc}" for desc in display_descriptions]
+                        if truncated_count > 0:
+                            bullet_points.append(f"• <i>...and {truncated_count} more (see CSV report for details)</i>")
+
+                        bullet_text = "<br/>".join(bullet_points)
                         issue_desc_paragraph = Paragraph(bullet_text, bullet_style)
                         table_data.append([f"{counter}. {issue_type}:", issue_desc_paragraph])
                         counter += 1
@@ -979,7 +976,6 @@ class ClifReportCardGenerator:
                     'issue_category': 'Critical',
                     'column_name': '',
                     'issue_description': result.get('error', 'Table missing or error'),
-                    'severity': 'high',
                     'unique_hospitalizations': '',
                     'unique_patients': '',
                     'total_rows': ''
@@ -997,7 +993,6 @@ class ClifReportCardGenerator:
                 'issue_category': 'Info',
                 'column_name': '',
                 'issue_description': f"Table loaded successfully",
-                'severity': 'info',
                 'unique_hospitalizations': data_info.get('unique_hospitalizations', ''),
                 'unique_patients': data_info.get('unique_patients', ''),
                 'total_rows': data_info.get('row_count', '')
@@ -1011,7 +1006,6 @@ class ClifReportCardGenerator:
 
             for issue in all_issues:
                 issue_type = issue.get('type', 'Unknown')
-                severity = issue.get('severity', 'medium')
                 description = issue.get('description', 'No description')
 
                 # Extract column name from description if possible
@@ -1039,7 +1033,6 @@ class ClifReportCardGenerator:
                     'issue_category': category,
                     'column_name': column_name,
                     'issue_description': description,
-                    'severity': severity,
                     'unique_hospitalizations': data_info.get('unique_hospitalizations', ''),
                     'unique_patients': data_info.get('unique_patients', ''),
                     'total_rows': data_info.get('row_count', '')
@@ -1049,7 +1042,7 @@ class ClifReportCardGenerator:
         if csv_data:
             fieldnames = [
                 'table_name', 'status', 'issue_type', 'issue_category',
-                'column_name', 'issue_description', 'severity',
+                'column_name', 'issue_description',
                 'unique_hospitalizations', 'unique_patients', 'total_rows'
             ]
 
