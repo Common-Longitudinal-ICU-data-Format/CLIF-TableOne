@@ -429,35 +429,79 @@ class ClifReportCardGenerator:
             })
 
             # Determine overall status based on new requirements
-            # Red (incomplete): Missing required columns OR datatype casting errors OR 100% missing values
+            # Red (incomplete): Missing required columns OR NON-CASTABLE datatype errors OR 100% missing values
             has_missing_columns = any(error.get('type') == 'Missing Required Columns' for error in schema_errors)
-            has_datatype_errors = any(error.get('type') == 'Datatype Casting Error' for error in schema_errors)
+
+            # Only treat as INCOMPLETE if datatype CANNOT be cast
+            # Errors that say "can be cast to" should not trigger INCOMPLETE
+            has_datatype_errors = any(
+                error.get('type') == 'Datatype Casting Error' and 'can be cast to' not in error.get('description', '')
+                for error in schema_errors
+            )
 
             # Check for 100% missing values in REQUIRED columns only (red condition)
             has_100_percent_missing_required = False
 
+            # Define columns that should NOT trigger INCOMPLETE even if 100% null and required
+            # Table-specific exceptions
+            table_specific_exceptions = {
+                'patient_assessments': {'numerical_value', 'categorical_value', 'text_value'},
+                'crrt_therapy': {'pre_filter_replacement_fluid_rate', 'post_filter_replacement_fluid_rate'},
+                'respiratory_support': {
+                    'device_category', 'mode_category', 'vent_brand_name', 'tracheostomy',
+                    'fio2_set', 'lpm_set', 'tidal_volume_set', 'resp_rate_set',
+                    'pressure_control_set', 'pressure_support_set', 'flow_rate_set',
+                    'peak_inspiratory_pressure_set', 'inspiratory_time_set', 'peep_set',
+                    'tidal_volume_obs', 'resp_rate_obs', 'plateau_pressure_obs',
+                    'peak_inspiratory_pressure_obs', 'peep_obs', 'minute_vent_obs',
+                    'mean_airway_pressure_obs'
+                }
+            }
+
             # Get required columns from schema
             if hasattr(table_instance, 'schema') and table_instance.schema:
                 required_columns = table_instance.schema.get('required_columns', [])
+                logging.info(f"Table {table_name} required columns from schema: {required_columns}")
+
+                # Get exceptions for this specific table
+                exceptions_for_table = table_specific_exceptions.get(table_name, set())
 
                 for error in data_quality_issues:
-                    if error.get('type') == 'Missing Values' and '(100.0%)' in error.get('description', ''):
-                        # Extract column name from description
+                    if error.get('type') == 'Missing Values':
                         description = error.get('description', '')
-                        if "Column '" in description:
-                            try:
-                                column_name = description.split("Column '")[1].split("'")[0]
-                                # Check if this column is in the required_columns list
-                                if column_name in required_columns:
-                                    has_100_percent_missing_required = True
-                                    logging.info(f"Found 100% missing values in required column: {column_name}")
-                                    break
-                            except Exception as e:
-                                logging.warning(f"Error checking if column is required: {str(e)}")
+                        logging.info(f"Checking missing values error: {description}")
+
+                        # Check if this is 100% missing (look for "100.0%" or "100.00%")
+                        if '100.0%' in description or '100.00%' in description:
+                            # Extract column name from description
+                            if "Column '" in description:
+                                try:
+                                    column_name = description.split("Column '")[1].split("'")[0]
+
+                                    # Check if column should be excluded from INCOMPLETE trigger
+                                    # 1. Check if it ends with _type (pattern-based exception)
+                                    # 2. Check if it's in the table-specific exceptions
+                                    if column_name.endswith('_type'):
+                                        logging.info(f"Column '{column_name}' ends with '_type', excluding from INCOMPLETE trigger")
+                                        continue
+                                    elif column_name in exceptions_for_table:
+                                        logging.info(f"Column '{column_name}' is in exception list for {table_name}, excluding from INCOMPLETE trigger")
+                                        continue
+
+                                    # Check if this column is in the required_columns list
+                                    if column_name in required_columns:
+                                        has_100_percent_missing_required = True
+                                        logging.warning(f"INCOMPLETE: Found 100% missing values in required column '{column_name}' for table {table_name}")
+                                        break
+                                    else:
+                                        logging.info(f"Column '{column_name}' has 100% missing but is not required")
+                                except Exception as e:
+                                    logging.warning(f"Error extracting column name from description: {str(e)}")
             else:
                 # Fallback: if no schema available, treat all 100% missing as problematic
+                logging.warning(f"No schema found for table {table_name}, treating all 100% missing as problematic")
                 has_100_percent_missing_required = any(
-                    error.get('type') == 'Missing Values' and '(100.0%)' in error.get('description', '')
+                    error.get('type') == 'Missing Values' and ('100.0%' in error.get('description', '') or '100.00%' in error.get('description', ''))
                     for error in data_quality_issues
                 )
 
@@ -569,6 +613,9 @@ class ClifReportCardGenerator:
         if not REPORTLAB_AVAILABLE:
             raise ImportError("reportlab package is required for PDF generation. Install with: pip install reportlab")
 
+        # Start runtime tracking
+        start_time = datetime.now()
+
         print("Generating CLIF Data Validation Report Card...")
         print(f"📝 Detailed logs will be saved to: {self.log_file}")
 
@@ -582,13 +629,19 @@ class ClifReportCardGenerator:
         # Generate consolidated CSV report
         self._create_consolidated_csv_report(table_results)
 
+        # Calculate runtime
+        end_time = datetime.now()
+        runtime_seconds = (end_time - start_time).total_seconds()
+        runtime_str = f"{runtime_seconds:.2f} seconds"
+
         # Generate timestamp
-        timestamp = datetime.now()
+        timestamp = end_time
 
         # Create report data
         report_data = {
             'site_name': self.site_config.get('site_name', 'Unknown Site'),
             'timestamp': timestamp.strftime('%Y-%m-%d %H:%M:%S %Z'),
+            'runtime': runtime_str,
             'table_results': table_results
         }
 
@@ -597,6 +650,7 @@ class ClifReportCardGenerator:
         self._generate_pdf_content(report_data, output_file)
 
         print(f"Report card saved to: {output_file}")
+        print(f"⏱️  Total runtime: {runtime_str}")
         return report_data
 
     def _generate_pdf_content(self, report_data: Dict[str, Any], output_file: str):
@@ -733,7 +787,7 @@ class ClifReportCardGenerator:
             ['Status', site_name, 'Criteria'],
             ['COMPLETE', str(complete_tables), Paragraph('All required columns present, all categorical values present', normal_style)],
             ['PARTIAL', str(partial_tables), Paragraph('All required columns present, but missing some categorical values', normal_style)],
-            ['INCOMPLETE', str(incomplete_tables), Paragraph('Missing required columns OR Datatype casting errors OR 100% Missing values for required columns OR Missing Table', normal_style)]
+            ['INCOMPLETE', str(incomplete_tables), Paragraph('One or more of: (1) Missing required columns, (2) Non-castable datatype errors, (3) Required columns with no data (100% null count), (4) Table file not found', normal_style)]
         ]
 
         # Add a summary row if there are multiple tables
@@ -891,11 +945,25 @@ class ClifReportCardGenerator:
             all_issues.extend(validation_results.get('other_errors', []))
 
             if all_issues:
+                # Check if this table has outlier plots in appendix
+                has_outlier_plots = bool(result.get('outlier_plots'))
+
+                # Separate outlier validation issues from other issues
+                outlier_issues = []
+                non_outlier_issues = []
+                for issue in all_issues:
+                    issue_type = issue.get('type', 'Issue')
+                    if 'Outlier' in issue_type or issue_type == 'Range Validation':
+                        outlier_issues.append(issue)
+                    else:
+                        non_outlier_issues.append(issue)
+
+                # Count total issues (for display)
                 table_data.append(['Issues Found:', str(len(all_issues))])
 
-                # Group issues by type for better display
+                # Group non-outlier issues by type for better display
                 issue_groups = {}
-                for issue in all_issues:
+                for issue in non_outlier_issues:
                     issue_type = issue.get('type', 'Issue')
                     if issue_type not in issue_groups:
                         issue_groups[issue_type] = []
@@ -935,8 +1003,38 @@ class ClifReportCardGenerator:
                         table_data.append([f"{counter}. {issue_type}:", issue_desc_paragraph])
                         counter += 1
 
+                # Add outlier validation reference if applicable
+                if outlier_issues and has_outlier_plots:
+                    outlier_ref = Paragraph(
+                        f"<i>See Appendix for {len(outlier_issues)} outlier distribution plot(s)</i>",
+                        normal_style
+                    )
+                    table_data.append([f"{counter}. Outlier Validation:", outlier_ref])
+
             elif status == 'complete':
-                table_data.append(['Status:', 'All validation checks passed!'])
+                # Check if there are outlier plots even for complete tables
+                has_outlier_plots = bool(result.get('outlier_plots'))
+                if has_outlier_plots:
+                    # Check if there are any outlier validation issues
+                    all_errors = []
+                    all_errors.extend(validation_results.get('schema_errors', []))
+                    all_errors.extend(validation_results.get('data_quality_issues', []))
+                    all_errors.extend(validation_results.get('other_errors', []))
+
+                    outlier_count = sum(1 for issue in all_errors
+                                       if 'Outlier' in issue.get('type', '') or issue.get('type') == 'Range Validation')
+
+                    if outlier_count > 0:
+                        table_data.append(['Issues Found:', str(outlier_count)])
+                        outlier_ref = Paragraph(
+                            f"<i>See Appendix for {outlier_count} outlier distribution plot(s)</i>",
+                            normal_style
+                        )
+                        table_data.append(['1. Outlier Validation:', outlier_ref])
+                    else:
+                        table_data.append(['Status:', 'All validation checks passed!'])
+                else:
+                    table_data.append(['Status:', 'All validation checks passed!'])
 
         # Create table with professional styling
         table = Table(table_data, colWidths=[2.5*inch, 4*inch])
