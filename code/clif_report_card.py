@@ -1469,15 +1469,15 @@ class ClifReportCardGenerator:
                     'total_rows': missingness_summary.get('total_rows', 0)
                 })
 
-            # Optionally add columns with 0% missing (can be commented out if too verbose)
-            # for col_name in missingness_summary.get('complete_columns', []):
-            #     all_missing_data.append({
-            #         'table': display_name,
-            #         'column': col_name,
-            #         'missing_count': 0,
-            #         'missing_percent': 0.0,
-            #         'total_rows': missingness_summary.get('total_rows', 0)
-            #     })
+            # Add columns with 0% missing (complete columns)
+            for col_name in missingness_summary.get('complete_columns', []):
+                all_missing_data.append({
+                    'table': display_name,
+                    'column': col_name,
+                    'missing_count': 0,
+                    'missing_percent': 0.0,
+                    'total_rows': missingness_summary.get('total_rows', 0)
+                })
 
         if not all_missing_data:
             return None
