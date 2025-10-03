@@ -5,6 +5,7 @@ import sys
 from datetime import datetime
 from typing import Dict, List, Any, Optional, Tuple
 from pathlib import Path
+import pandas as pd
 
 # Add local clifpy development version to path
 sys.path.insert(0, '/Users/dema/WD/clifpy')
@@ -269,6 +270,141 @@ class ClifReportCardGenerator:
             'description': message,
             'category': category
         }
+
+    def _extract_outlier_summary(
+        self,
+        table_name: str,
+        errors: List[Dict[str, Any]],
+        df: Optional[pd.DataFrame]
+    ) -> Dict[str, Any]:
+        """
+        Extract outlier summary from validation errors and outlier config.
+        Returns summary even for tables with 0 outliers if they have outlier checks configured.
+
+        Args:
+            table_name: Name of the table
+            errors: List of validation error objects from clifpy
+            df: DataFrame (used to check which columns exist)
+
+        Returns:
+            Dictionary with outlier summary information
+        """
+        summary = {
+            'has_outlier_config': False,
+            'columns_checked': [],
+            'total_outliers': 0,
+            'outlier_details': []
+        }
+
+        try:
+            # Load outlier config to see what was checked
+            outlier_config = validator.load_outlier_config()
+            if not outlier_config:
+                return summary
+
+            table_config = outlier_config.get('tables', {}).get(table_name, {})
+            if not table_config:
+                return summary
+
+            summary['has_outlier_config'] = True
+
+            # Extract outlier validation errors
+            outlier_errors = [e for e in errors if e.get('type') == 'outlier_validation']
+
+            # Build a map of what was found in errors
+            error_map = {}
+            for error in outlier_errors:
+                # Create unique key based on error structure
+                if 'category' in error:
+                    # Single category pattern
+                    key = (error.get('column'), error.get('category'))
+                elif 'primary_category' in error:
+                    # Double category pattern
+                    key = (error.get('column'), error.get('primary_category'), error.get('secondary_category'))
+                else:
+                    # Simple pattern
+                    key = (error.get('column'),)
+                error_map[key] = error
+
+            # Go through config and create entries for all checked columns
+            for col_name, col_config in table_config.items():
+                # Skip if column doesn't exist in dataframe
+                if df is not None and col_name not in df.columns:
+                    continue
+
+                summary['columns_checked'].append(col_name)
+
+                # Pattern 1: Simple range {min: X, max: Y}
+                if 'min' in col_config and 'max' in col_config:
+                    key = (col_name,)
+                    if key in error_map:
+                        error = error_map[key]
+                        summary['total_outliers'] += error.get('total_outliers', 0)
+                        summary['outlier_details'].append({
+                            'column': col_name,
+                            'category': None,
+                            'total_values': error.get('total_values', 0),
+                            'total_outliers': error.get('total_outliers', 0),
+                            'outlier_percent': error.get('outlier_percent', 0.0),
+                            'below_min_count': error.get('below_min_count', 0),
+                            'above_max_count': error.get('above_max_count', 0),
+                            'min_expected': error.get('min_expected'),
+                            'max_expected': error.get('max_expected')
+                        })
+                    else:
+                        # No outliers found for this column
+                        summary['outlier_details'].append({
+                            'column': col_name,
+                            'category': None,
+                            'total_values': int(df[col_name].notna().sum()) if df is not None else 0,
+                            'total_outliers': 0,
+                            'outlier_percent': 0.0,
+                            'below_min_count': 0,
+                            'above_max_count': 0,
+                            'min_expected': col_config['min'],
+                            'max_expected': col_config['max']
+                        })
+
+                # Pattern 2 & 3: Category-dependent (just count from errors, don't enumerate all categories)
+                else:
+                    # Check if any errors exist for this column (any category)
+                    col_errors = [e for e in outlier_errors if e.get('column') == col_name]
+                    if col_errors:
+                        for error in col_errors:
+                            summary['total_outliers'] += error.get('total_outliers', 0)
+                            category_label = error.get('category')
+                            if 'primary_category' in error:
+                                category_label = f"{error.get('primary_category')} / {error.get('secondary_category')}"
+
+                            summary['outlier_details'].append({
+                                'column': col_name,
+                                'category': category_label,
+                                'total_values': error.get('total_values', 0),
+                                'total_outliers': error.get('total_outliers', 0),
+                                'outlier_percent': error.get('outlier_percent', 0.0),
+                                'below_min_count': error.get('below_min_count', 0),
+                                'above_max_count': error.get('above_max_count', 0),
+                                'min_expected': error.get('min_expected'),
+                                'max_expected': error.get('max_expected')
+                            })
+                    else:
+                        # No outliers found for any category in this column
+                        summary['outlier_details'].append({
+                            'column': col_name,
+                            'category': 'All categories',
+                            'total_values': int(df[col_name].notna().sum()) if df is not None else 0,
+                            'total_outliers': 0,
+                            'outlier_percent': 0.0,
+                            'below_min_count': 0,
+                            'above_max_count': 0,
+                            'min_expected': None,
+                            'max_expected': None
+                        })
+
+        except Exception as e:
+            logging.error(f"Error extracting outlier summary for {table_name}: {str(e)}")
+
+        return summary
 
     def validate_table(self, table_name: str) -> Dict[str, Any]:
         """
@@ -573,11 +709,28 @@ class ClifReportCardGenerator:
             except Exception as e:
                 logging.warning(f"Could not generate outlier plot for {table_name}: {str(e)}")
 
+            # Extract outlier summary from errors and config
+            outlier_summary = self._extract_outlier_summary(
+                table_name,
+                table_instance.errors if hasattr(table_instance, 'errors') else [],
+                table_instance.df if hasattr(table_instance, 'df') else None
+            )
+
+            # Extract missingness summary using clifpy's function
+            missingness_summary = None
+            if hasattr(table_instance, 'df') and table_instance.df is not None:
+                try:
+                    missingness_summary = validator.report_missing_data_summary(table_instance.df)
+                except Exception as e:
+                    logging.warning(f"Could not generate missingness summary for {table_name}: {str(e)}")
+
             return {
                 'status': status,
                 'data_info': data_info,
                 'validation_results': validation_results,
-                'outlier_plots': outlier_plot_paths  # Changed to plural and list
+                'outlier_plots': outlier_plot_paths,  # Changed to plural and list
+                'outlier_summary': outlier_summary,
+                'missingness_summary': missingness_summary
             }
 
         except FileNotFoundError:
@@ -838,40 +991,120 @@ class ClifReportCardGenerator:
             story.append(self._create_table_section(table_name, result))
             story.append(Spacer(1, 20))
 
-        # Add Appendix section with outlier plots if any exist
+        # Add Appendix section with outlier summary and plots
+        # Check if any table has outlier configuration
+        has_outlier_data = any(
+            result.get('outlier_summary', {}).get('has_outlier_config', False)
+            for result in report_data['table_results'].values()
+        )
+
         outlier_plots = {name: result.get('outlier_plots', [])
                         for name, result in report_data['table_results'].items()
                         if result.get('outlier_plots')}
 
-        if outlier_plots:
+        if has_outlier_data or outlier_plots:
             story.append(PageBreak())
-            appendix_header = Paragraph("Appendix: Outlier Distribution Plots", header_style)
+            appendix_header = Paragraph("Appendix: Outlier Validation Summary", header_style)
             story.append(appendix_header)
             story.append(Spacer(1, 12))
 
-            for table_name, plot_paths in outlier_plots.items():
-                if plot_paths:  # plot_paths is now a list
-                    display_name = self.table_display_names.get(table_name, table_name.title())
+            # Add outlier distribution plots FIRST
+            if outlier_plots:
+                plot_section_header = Paragraph(
+                    "Outlier Distribution Plots",
+                    ParagraphStyle('PlotSectionHeader',
+                                 parent=header_style,
+                                 fontSize=11,
+                                 spaceAfter=8)
+                )
+                story.append(plot_section_header)
+                story.append(Spacer(1, 8))
 
-                    # Add table name subheader
-                    plot_header = Paragraph(f"{display_name} Table",
-                                           ParagraphStyle('PlotHeader',
-                                                        parent=header_style,
-                                                        fontSize=12,
-                                                        spaceAfter=8))
-                    story.append(plot_header)
+                for table_name, plot_paths in outlier_plots.items():
+                    if plot_paths:  # plot_paths is now a list
+                        display_name = self.table_display_names.get(table_name, table_name.title())
 
-                    # Add each plot image (handles multi-part plots)
-                    for i, plot_path in enumerate(plot_paths):
-                        if os.path.exists(plot_path):
-                            try:
-                                img = Image(plot_path, width=7*inch, height=4*inch)
-                                story.append(img)
-                                story.append(Spacer(1, 12))
-                            except Exception as e:
-                                logging.warning(f"Could not add outlier plot {plot_path} for {table_name}: {str(e)}")
+                        # Add table name subheader
+                        plot_header = Paragraph(f"{display_name} Table",
+                                               ParagraphStyle('PlotHeader',
+                                                            parent=header_style,
+                                                            fontSize=10,
+                                                            spaceAfter=8))
+                        story.append(plot_header)
 
-                    story.append(Spacer(1, 8))  # Extra space between tables
+                        # Add each plot image (handles multi-part plots)
+                        for i, plot_path in enumerate(plot_paths):
+                            if os.path.exists(plot_path):
+                                try:
+                                    img = Image(plot_path, width=7*inch, height=4*inch)
+                                    story.append(img)
+                                    story.append(Spacer(1, 12))
+                                except Exception as e:
+                                    logging.warning(f"Could not add outlier plot {plot_path} for {table_name}: {str(e)}")
+
+                        story.append(Spacer(1, 8))  # Extra space between tables
+
+            # Add outlier summary table AFTER plots
+            outlier_summary_table = self._create_outlier_summary_table(report_data['table_results'])
+            if outlier_summary_table:
+                # Add section header for summary table
+                summary_subheader = Paragraph(
+                    "Outlier Summary by Column",
+                    ParagraphStyle('SummarySubheader',
+                                 parent=header_style,
+                                 fontSize=11,
+                                 spaceAfter=8,
+                                 spaceBefore=0)
+                )
+                story.append(summary_subheader)
+
+                # Add explanatory note
+                note_style = ParagraphStyle(
+                    'NoteStyle',
+                    parent=normal_style,
+                    fontSize=8,
+                    textColor=text_medium,
+                    spaceAfter=8
+                )
+                note_text = Paragraph(
+                    "<i>Highlighted rows indicate outliers found.</i>",
+                    note_style
+                )
+                story.append(note_text)
+
+                story.append(outlier_summary_table)
+                story.append(Spacer(1, 20))
+
+            # Add missingness summary table AFTER outlier summary
+            missingness_summary_table = self._create_missingness_summary_table(report_data['table_results'])
+            if missingness_summary_table:
+                # Add section header for missingness table
+                missingness_subheader = Paragraph(
+                    "Missingness Summary by Column",
+                    ParagraphStyle('MissingnessSubheader',
+                                 parent=header_style,
+                                 fontSize=11,
+                                 spaceAfter=8,
+                                 spaceBefore=0)
+                )
+                story.append(missingness_subheader)
+
+                # Add explanatory note
+                note_style = ParagraphStyle(
+                    'NoteStyle',
+                    parent=normal_style,
+                    fontSize=8,
+                    textColor=text_medium,
+                    spaceAfter=8
+                )
+                note_text = Paragraph(
+                    "<i>Highlighted rows indicate >50% missing.</i>",
+                    note_style
+                )
+                story.append(note_text)
+
+                story.append(missingness_summary_table)
+                story.append(Spacer(1, 20))
 
         # Build PDF
         doc.build(story)
@@ -1057,6 +1290,244 @@ class ClifReportCardGenerator:
         ]))
 
         return table
+
+    def _create_outlier_summary_table(self, table_results: Dict[str, Any]) -> Optional[Table]:
+        """
+        Create a comprehensive outlier summary table for all tables.
+
+        Args:
+            table_results: Dictionary of validation results for all tables
+
+        Returns:
+            ReportLab Table object or None if no outlier data
+        """
+        from reportlab.lib.styles import getSampleStyleSheet
+        styles = getSampleStyleSheet()
+
+        # Define color palette
+        text_dark = colors.HexColor('#2C3E50')
+        text_medium = colors.HexColor('#5D6D7E')
+        header_bg = colors.HexColor('#F5F6FA')
+        no_outliers_bg = colors.HexColor('#E8F5E8')  # Light green
+        has_outliers_bg = colors.HexColor('#FFF4E6')  # Light orange
+
+        normal_style = ParagraphStyle(
+            'CustomNormal',
+            parent=styles['Normal'],
+            fontSize=8,
+            textColor=text_medium,
+            fontName='Helvetica'
+        )
+
+        # Collect outlier data from all tables
+        all_outlier_data = []
+
+        for table_name, result in table_results.items():
+            outlier_summary = result.get('outlier_summary', {})
+            if not outlier_summary.get('has_outlier_config'):
+                continue
+
+            display_name = self.table_display_names.get(table_name, table_name.title())
+            outlier_details = outlier_summary.get('outlier_details', [])
+
+            if not outlier_details:
+                # Table has config but no details (shouldn't happen, but handle it)
+                all_outlier_data.append({
+                    'table': display_name,
+                    'column': 'N/A',
+                    'category': '',
+                    'total_values': 0,
+                    'total_outliers': 0,
+                    'outlier_percent': 0.0,
+                    'range': 'N/A'
+                })
+            else:
+                for detail in outlier_details:
+                    # Skip entries where no valid range exists (both min and max are None)
+                    if detail.get('min_expected') is None and detail.get('max_expected') is None:
+                        continue
+
+                    range_str = 'N/A'
+                    if detail.get('min_expected') is not None and detail.get('max_expected') is not None:
+                        range_str = f"{detail['min_expected']} - {detail['max_expected']}"
+
+                    category_str = detail.get('category', '')
+                    if category_str:
+                        column_display = f"{detail['column']}\n({category_str})"
+                    else:
+                        column_display = detail['column']
+
+                    all_outlier_data.append({
+                        'table': display_name,
+                        'column': column_display,
+                        'category': category_str or '-',
+                        'total_values': detail.get('total_values', 0),
+                        'total_outliers': detail.get('total_outliers', 0),
+                        'outlier_percent': detail.get('outlier_percent', 0.0),
+                        'range': range_str,
+                        'below_count': detail.get('below_min_count', 0),
+                        'above_count': detail.get('above_max_count', 0)
+                    })
+
+        if not all_outlier_data:
+            return None
+
+        # Create table data
+        table_data = [
+            ['Table', 'Column/Category', 'Total Values', 'Outliers', 'Outlier %', 'Expected Range']
+        ]
+
+        for data in all_outlier_data:
+            table_data.append([
+                Paragraph(data['table'], normal_style),
+                Paragraph(data['column'], normal_style),
+                f"{data['total_values']:,}",
+                f"{data['total_outliers']:,}",
+                f"{data['outlier_percent']:.2f}%",
+                Paragraph(data['range'], normal_style)
+            ])
+
+        # Create table with appropriate column widths
+        col_widths = [1.2*inch, 1.8*inch, 1.0*inch, 0.8*inch, 0.8*inch, 1.2*inch]
+        summary_table = Table(table_data, colWidths=col_widths)
+
+        # Build style with alternating row colors based on outlier status
+        table_style_list = [
+            ('ALIGN', (0, 0), (-1, -1), 'LEFT'),
+            ('ALIGN', (2, 1), (4, -1), 'CENTER'),  # Center numeric columns
+            ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+            ('FONTSIZE', (0, 0), (-1, -1), 8),
+            ('TEXTCOLOR', (0, 0), (-1, 0), text_dark),
+            ('TEXTCOLOR', (0, 1), (-1, -1), text_medium),
+            ('BACKGROUND', (0, 0), (-1, 0), header_bg),
+            ('GRID', (0, 0), (-1, -1), 0.5, colors.HexColor('#DADADA')),
+            ('VALIGN', (0, 0), (-1, -1), 'TOP'),
+            ('TOPPADDING', (0, 0), (-1, -1), 6),
+            ('BOTTOMPADDING', (0, 0), (-1, -1), 6),
+            ('LEFTPADDING', (0, 0), (-1, -1), 8),
+            ('RIGHTPADDING', (0, 0), (-1, -1), 8),
+        ]
+
+        # Color rows based on outlier presence (only highlight rows with outliers)
+        for idx, data in enumerate(all_outlier_data, start=1):
+            if data['total_outliers'] > 0:
+                table_style_list.append(('BACKGROUND', (0, idx), (-1, idx), has_outliers_bg))
+
+        summary_table.setStyle(TableStyle(table_style_list))
+
+        return summary_table
+
+    def _create_missingness_summary_table(self, table_results: Dict[str, Any]) -> Optional[Table]:
+        """
+        Create a comprehensive missingness summary table for all tables.
+
+        Args:
+            table_results: Dictionary of validation results for all tables
+
+        Returns:
+            ReportLab Table object or None if no missingness data
+        """
+        from reportlab.lib.styles import getSampleStyleSheet
+        styles = getSampleStyleSheet()
+
+        # Define color palette
+        text_dark = colors.HexColor('#2C3E50')
+        text_medium = colors.HexColor('#5D6D7E')
+        header_bg = colors.HexColor('#F5F6FA')
+        high_missing_bg = colors.HexColor('#FFF4E6')  # Light orange for >50% missing
+        complete_bg = colors.HexColor('#E8F5E8')  # Light green for 0% missing
+
+        normal_style = ParagraphStyle(
+            'CustomNormal',
+            parent=styles['Normal'],
+            fontSize=8,
+            textColor=text_medium,
+            fontName='Helvetica'
+        )
+
+        # Collect missingness data from all tables
+        all_missing_data = []
+
+        for table_name, result in table_results.items():
+            if result.get('status') in ['missing', 'error']:
+                continue
+
+            missingness_summary = result.get('missingness_summary')
+            if not missingness_summary or 'error' in missingness_summary:
+                continue
+
+            display_name = self.table_display_names.get(table_name, table_name.title())
+            columns_with_missing = missingness_summary.get('columns_with_missing', [])
+
+            # Add columns with missing data
+            for col_info in columns_with_missing:
+                all_missing_data.append({
+                    'table': display_name,
+                    'column': col_info['column'],
+                    'missing_count': col_info['missing_count'],
+                    'missing_percent': col_info['missing_percent'],
+                    'total_rows': missingness_summary.get('total_rows', 0)
+                })
+
+            # Optionally add columns with 0% missing (can be commented out if too verbose)
+            # for col_name in missingness_summary.get('complete_columns', []):
+            #     all_missing_data.append({
+            #         'table': display_name,
+            #         'column': col_name,
+            #         'missing_count': 0,
+            #         'missing_percent': 0.0,
+            #         'total_rows': missingness_summary.get('total_rows', 0)
+            #     })
+
+        if not all_missing_data:
+            return None
+
+        # Sort by table name (alphabetically), then by missing percentage (descending)
+        all_missing_data.sort(key=lambda x: (x['table'], -x['missing_percent']))
+
+        # Create table data
+        table_data = [
+            ['Table', 'Column', 'Missing Count', 'Missing %', 'Total Rows']
+        ]
+
+        for data in all_missing_data:
+            table_data.append([
+                Paragraph(data['table'], normal_style),
+                Paragraph(data['column'], normal_style),
+                f"{data['missing_count']:,}",
+                f"{data['missing_percent']:.2f}%",
+                f"{data['total_rows']:,}"
+            ])
+
+        # Create table with appropriate column widths
+        col_widths = [1.5*inch, 2.0*inch, 1.2*inch, 1.0*inch, 1.0*inch]
+        summary_table = Table(table_data, colWidths=col_widths)
+
+        # Build style with conditional row colors based on missing percentage
+        table_style_list = [
+            ('ALIGN', (0, 0), (-1, -1), 'LEFT'),
+            ('ALIGN', (2, 1), (4, -1), 'CENTER'),  # Center numeric columns
+            ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+            ('FONTSIZE', (0, 0), (-1, -1), 8),
+            ('TEXTCOLOR', (0, 0), (-1, 0), text_dark),
+            ('TEXTCOLOR', (0, 1), (-1, -1), text_medium),
+            ('BACKGROUND', (0, 0), (-1, 0), header_bg),
+            ('GRID', (0, 0), (-1, -1), 0.5, colors.HexColor('#DADADA')),
+            ('VALIGN', (0, 0), (-1, -1), 'TOP'),
+            ('TOPPADDING', (0, 0), (-1, -1), 6),
+            ('BOTTOMPADDING', (0, 0), (-1, -1), 6),
+            ('LEFTPADDING', (0, 0), (-1, -1), 8),
+            ('RIGHTPADDING', (0, 0), (-1, -1), 8),
+        ]
+
+        # Color rows based on missing percentage (only highlight high missingness >50%)
+        for idx, data in enumerate(all_missing_data, start=1):
+            if data['missing_percent'] > 50.0:
+                table_style_list.append(('BACKGROUND', (0, idx), (-1, idx), high_missing_bg))
+
+        summary_table.setStyle(TableStyle(table_style_list))
+
+        return summary_table
 
     def _create_consolidated_csv_report(self, table_results: Dict[str, Any]):
         """Create a single consolidated CSV file with all validation information."""
