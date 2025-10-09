@@ -34,18 +34,55 @@ class PatientAnalyzer(BaseTableAnalyzer):
                 self.table = None
                 return
 
+            # Clifpy saves files directly to output_directory, so pass the final subdirectory
+            clifpy_output_dir = os.path.join(self.output_dir, 'final')
+            os.makedirs(clifpy_output_dir, exist_ok=True)
+
             self.table = Patient.from_file(
                 data_directory=self.data_dir,
                 filetype=self.filetype,
                 timezone=self.timezone,
-                output_directory=self.output_dir
+                output_directory=clifpy_output_dir
             )
+
+            # Move any CSV files that clifpy created in parent directory to final/
+            self._move_clifpy_csvs_to_final()
+
         except ImportError:
             print("Warning: clifpy not installed. Install with: pip install clifpy")
             self.table = None
         except Exception as e:
             print(f"Error loading Patient table: {e}")
             self.table = None
+
+    def _move_clifpy_csvs_to_final(self):
+        """Move any CSV files created by clifpy from output/ to output/final/"""
+        import os
+        import shutil
+
+        # Check parent output directory for CSV files
+        parent_dir = self.output_dir
+        final_dir = os.path.join(parent_dir, 'final')
+
+        if not os.path.exists(parent_dir):
+            return
+
+        # Look for common clifpy CSV files
+        clifpy_csv_patterns = ['missing_data_stats_', 'validation_errors_']
+
+        for filename in os.listdir(parent_dir):
+            if filename.endswith('.csv'):
+                # Check if it matches clifpy patterns
+                for pattern in clifpy_csv_patterns:
+                    if pattern in filename:
+                        source = os.path.join(parent_dir, filename)
+                        dest = os.path.join(final_dir, filename)
+                        try:
+                            shutil.move(source, dest)
+                            print(f"Moved {filename} to final/")
+                        except Exception as e:
+                            print(f"Could not move {filename}: {e}")
+                        break
 
     def get_data_info(self) -> Dict[str, Any]:
         """
@@ -102,16 +139,8 @@ class PatientAnalyzer(BaseTableAnalyzer):
             if column in df.columns:
                 distributions[column] = self.get_categorical_distribution(column)
 
-        # Calculate mortality rate if death_dttm exists
-        if 'death_dttm' in df.columns:
-            death_count = df['death_dttm'].notna().sum()
-            total_patients = len(df)
-            distributions['mortality'] = {
-                'death_count': int(death_count),
-                'total_patients': int(total_patients),
-                'mortality_rate': round((death_count / total_patients * 100) if total_patients > 0 else 0, 2),
-                'alive_count': int(total_patients - death_count)
-            }
+        # Note: death_dttm missingness is shown in the missingness analysis section
+        # No need to calculate mortality statistics separately
 
         return distributions
 
@@ -282,31 +311,60 @@ class PatientAnalyzer(BaseTableAnalyzer):
 
         # Check for duplicate patient IDs
         if 'patient_id' in df.columns:
-            duplicates = df['patient_id'].duplicated().sum()
+            duplicates_mask = df['patient_id'].duplicated(keep=False)
+            duplicates = duplicates_mask.sum()
+
+            # Get examples of duplicate records
+            examples = None
+            if duplicates > 0:
+                dup_ids = df.loc[duplicates_mask, 'patient_id'].unique()[:5]
+                example_cols = ['patient_id', 'sex_category', 'race_category']
+                example_cols = [col for col in example_cols if col in df.columns]
+                examples = df[df['patient_id'].isin(dup_ids)][example_cols].head(10)
+
             quality_checks['duplicate_patient_ids'] = {
                 'count': int(duplicates),
                 'percentage': round((duplicates / len(df) * 100) if len(df) > 0 else 0, 2),
-                'status': 'pass' if duplicates == 0 else 'warning'
+                'status': 'pass' if duplicates == 0 else 'warning',
+                'examples': examples
             }
 
         # Check for invalid sex categories
         if 'sex_category' in df.columns:
             valid_sex = ['Male', 'Female', 'Other', 'Unknown']
-            invalid_sex = ~df['sex_category'].isin(valid_sex + [pd.NA, None])
+            invalid_sex_mask = ~df['sex_category'].isin(valid_sex + [pd.NA, None])
+
+            # Get examples of invalid sex categories
+            examples = None
+            if invalid_sex_mask.sum() > 0:
+                example_cols = ['patient_id', 'sex_category']
+                example_cols = [col for col in example_cols if col in df.columns]
+                examples = df[invalid_sex_mask][example_cols].head(10)
+
             quality_checks['invalid_sex_categories'] = {
-                'count': int(invalid_sex.sum()),
-                'percentage': round((invalid_sex.sum() / len(df) * 100) if len(df) > 0 else 0, 2),
-                'status': 'pass' if invalid_sex.sum() == 0 else 'warning'
+                'count': int(invalid_sex_mask.sum()),
+                'percentage': round((invalid_sex_mask.sum() / len(df) * 100) if len(df) > 0 else 0, 2),
+                'status': 'pass' if invalid_sex_mask.sum() == 0 else 'warning',
+                'examples': examples
             }
 
         # Check for future death dates
         if 'death_dttm' in df.columns:
             from datetime import datetime
-            future_deaths = df['death_dttm'] > pd.Timestamp.now(tz=self.timezone)
+            future_deaths_mask = df['death_dttm'] > pd.Timestamp.now(tz=self.timezone)
+
+            # Get examples of future death dates
+            examples = None
+            if future_deaths_mask.sum() > 0:
+                example_cols = ['patient_id', 'death_dttm']
+                example_cols = [col for col in example_cols if col in df.columns]
+                examples = df[future_deaths_mask][example_cols].head(10)
+
             quality_checks['future_death_dates'] = {
-                'count': int(future_deaths.sum()),
-                'percentage': round((future_deaths.sum() / len(df) * 100) if len(df) > 0 else 0, 2),
-                'status': 'pass' if future_deaths.sum() == 0 else 'error'
+                'count': int(future_deaths_mask.sum()),
+                'percentage': round((future_deaths_mask.sum() / len(df) * 100) if len(df) > 0 else 0, 2),
+                'status': 'pass' if future_deaths_mask.sum() == 0 else 'error',
+                'examples': examples
             }
 
         return quality_checks

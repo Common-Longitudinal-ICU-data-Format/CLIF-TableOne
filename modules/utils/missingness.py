@@ -197,14 +197,7 @@ def get_missingness_summary(df: pd.DataFrame) -> str:
 
     # Overall missingness
     overall_pct = stats['overall_missing_percentage']
-    if overall_pct == 0:
-        summary_parts.append("✅ No missing data found")
-    elif overall_pct < 5:
-        summary_parts.append(f"✅ Low missingness: {overall_pct}% overall")
-    elif overall_pct < 20:
-        summary_parts.append(f"⚠️  Moderate missingness: {overall_pct}% overall")
-    else:
-        summary_parts.append(f"❌ High missingness: {overall_pct}% overall")
+    summary_parts.append(f"{overall_pct}% overall")
 
     # Column statistics
     complete_cols = stats['complete_columns_count']

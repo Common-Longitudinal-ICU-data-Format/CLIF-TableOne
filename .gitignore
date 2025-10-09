@@ -1,19 +1,53 @@
+# macOS
 .DS_Store
+
+# IDE / Editors
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+
+# Virtual environments
+.clif_table_one/
+venv/
+env/
+ENV/
+
+# Configuration
 config.json
-.clif_table_one
-*.csv
-*.log
-*.parquet
-output_ucmc
-output_mimic
 config_ucmc.json
 config_mimic.json
 
-.serena
-clif_summary/
-code/dev_aggregate.ipynb
-plan.md
-reference/
+# Data files
+*.csv
+*.parquet
 
-/output
-__pycache__/
+# Logs
+*.log
+.logs/
+
+# Output directories
+/output/
+output_ucmc/
+output_mimic/
+output_*/
+clif_summary/
+
+# Development / Reference (kept as reference, not tracked)
+reference/
+code/dev_aggregate.ipynb
+
+# Serena AI assistant
+.serena/
+
+# Temporary files
+*.tmp
+*.bak

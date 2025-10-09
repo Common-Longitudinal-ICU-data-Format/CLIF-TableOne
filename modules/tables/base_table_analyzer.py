@@ -130,7 +130,10 @@ class BaseTableAnalyzer(ABC):
         # Get row count if available
         row_count = len(self.table.df) if hasattr(self.table, 'df') and self.table.df is not None else 0
 
-        return format_clifpy_error(error, row_count)
+        # Get table name
+        table_name = self.get_table_name()
+
+        return format_clifpy_error(error, row_count, table_name)
 
     def determine_status(self) -> str:
         """
@@ -152,8 +155,16 @@ class BaseTableAnalyzer(ABC):
         # Format errors to check their types
         formatted_errors = [self.format_single_error(e) for e in errors]
 
+        # Get required columns from schema if available
+        required_columns = []
+        if hasattr(self.table, 'schema') and self.table.schema:
+            required_columns = self.table.schema.get('required_columns', [])
+
+        # Get table name
+        table_name = self.get_table_name()
+
         from ..utils.validation import determine_validation_status
-        return determine_validation_status(formatted_errors)
+        return determine_validation_status(formatted_errors, required_columns, table_name)
 
     @abstractmethod
     def get_data_info(self) -> Dict[str, Any]:
@@ -257,3 +268,42 @@ class BaseTableAnalyzer(ABC):
 
         with open(filepath, 'w') as f:
             json.dump(summary, f, indent=2, default=str)
+
+    def save_validation_feedback(self, feedback: Dict[str, Any]):
+        """
+        Save validation feedback (user accept/reject decisions).
+
+        Parameters:
+        -----------
+        feedback : dict
+            Feedback structure with user decisions
+        """
+        from ..utils.feedback import save_feedback
+
+        table_name = self.__class__.__name__.replace('Analyzer', '').lower()
+        return save_feedback(feedback, self.output_dir, table_name)
+
+    def load_validation_feedback(self) -> Optional[Dict[str, Any]]:
+        """
+        Load existing validation feedback if available.
+
+        Returns:
+        --------
+        dict or None
+            Feedback structure or None if not found
+        """
+        from ..utils.feedback import load_feedback
+
+        table_name = self.__class__.__name__.replace('Analyzer', '').lower()
+        return load_feedback(self.output_dir, table_name)
+
+    def get_table_name(self) -> str:
+        """
+        Get the table name from the analyzer class.
+
+        Returns:
+        --------
+        str
+            Table name
+        """
+        return self.__class__.__name__.replace('Analyzer', '').lower()
