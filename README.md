@@ -33,7 +33,7 @@ The environment setup code is provided in the `generate_table_one.sh` file for m
 
 **For macOS:**
 
-1. Make the script executable and run it
+1. Make the script executable and run it from the root directory
 ```bash
 chmod +x generate_table_one.sh
 ./generate_table_one.sh

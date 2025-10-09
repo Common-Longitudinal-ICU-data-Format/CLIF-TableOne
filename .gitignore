@@ -8,3 +8,12 @@ output_ucmc
 output_mimic
 config_ucmc.json
 config_mimic.json
+
+.serena
+clif_summary/
+code/dev_aggregate.ipynb
+plan.md
+reference/
+
+/output
+__pycache__/
