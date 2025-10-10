@@ -18,7 +18,15 @@ import pandas as pd
 import json
 import os
 from pathlib import Path
-from modules.tables import PatientAnalyzer, HospitalizationAnalyzer, ADTAnalyzer, CodeStatusAnalyzer, CRRTTherapyAnalyzer, ECMOMCSAnalyzer
+from modules.tables import (
+    PatientAnalyzer, HospitalizationAnalyzer, ADTAnalyzer, CodeStatusAnalyzer,
+    CRRTTherapyAnalyzer, ECMOMCSAnalyzer, HospitalDiagnosisAnalyzer, LabsAnalyzer,
+    MedicationAdminContinuousAnalyzer, MedicationAdminIntermittentAnalyzer,
+    MicrobiologyCultureAnalyzer, MicrobiologyNoncultureAnalyzer,
+    MicrobiologySusceptibilityAnalyzer, PatientAssessmentsAnalyzer,
+    PatientProceduresAnalyzer, PositionAnalyzer, RespiratorySupportAnalyzer,
+    VitalsAnalyzer
+)
 from modules.cli import ValidationPDFGenerator
 from modules.utils import (
     get_validation_summary,
@@ -133,7 +141,19 @@ TABLE_ANALYZERS = {
     'adt': ADTAnalyzer,
     'code_status': CodeStatusAnalyzer,
     'crrt_therapy': CRRTTherapyAnalyzer,
-    'ecmo_mcs': ECMOMCSAnalyzer
+    'ecmo_mcs': ECMOMCSAnalyzer,
+    'hospital_diagnosis': HospitalDiagnosisAnalyzer,
+    'labs': LabsAnalyzer,
+    'medication_admin_continuous': MedicationAdminContinuousAnalyzer,
+    'medication_admin_intermittent': MedicationAdminIntermittentAnalyzer,
+    'microbiology_culture': MicrobiologyCultureAnalyzer,
+    'microbiology_nonculture': MicrobiologyNoncultureAnalyzer,
+    'microbiology_susceptibility': MicrobiologySusceptibilityAnalyzer,
+    'patient_assessments': PatientAssessmentsAnalyzer,
+    'patient_procedures': PatientProceduresAnalyzer,
+    'position': PositionAnalyzer,
+    'respiratory_support': RespiratorySupportAnalyzer,
+    'vitals': VitalsAnalyzer
 }
 
 TABLE_DISPLAY_NAMES = {
@@ -219,12 +239,39 @@ def main():
 
         st.divider()
 
+        # All CLIF 2.1 tables are now implemented
+        available_tables = ['patient', 'hospitalization', 'adt', 'code_status', 'crrt_therapy', 'ecmo_mcs',
+                           'hospital_diagnosis', 'labs', 'medication_admin_continuous', 'medication_admin_intermittent',
+                           'microbiology_culture', 'microbiology_nonculture', 'microbiology_susceptibility',
+                           'patient_assessments', 'patient_procedures', 'position', 'respiratory_support', 'vitals']
+
+        # Table selection dropdown
+        selected_table = st.selectbox(
+            "Select Table to Analyze",
+            options=available_tables,
+            format_func=lambda x: TABLE_DISPLAY_NAMES[x]
+        )
+
+        # Show re-analyze option if table is cached
+        force_reanalyze = False
+        if is_table_cached(selected_table):
+            force_reanalyze = st.checkbox("🔄 Re-analyze table", value=False)
+
+        # Run analysis button
+        if st.button("🚀 Run Analysis", type="primary", width='stretch'):
+            st.session_state.run_analysis = True
+            st.session_state.selected_table = selected_table
+            st.session_state.run_validation = True
+            st.session_state.run_outlier_handling = config.get('analysis_settings', {}).get('outlier_detection', False)
+            st.session_state.calculate_sofa = False
+            # Always force reanalyze when Run Analysis is clicked
+            st.session_state.force_reanalyze = True
+            st.rerun()
+
+        st.divider()
+
         # Table selection with status indicators
         st.subheader("📊 Table Status")
-
-        # Currently Patient, Hospitalization, ADT, Code Status, CRRT Therapy, and ECMO/MCS tables are implemented
-        available_tables = ['patient', 'hospitalization', 'adt', 'code_status', 'crrt_therapy', 'ecmo_mcs']
-        other_tables = [t for t in TABLE_DISPLAY_NAMES.keys() if t not in available_tables]
 
         # Show cache status for available tables
         for table in available_tables:
@@ -249,54 +296,6 @@ def main():
                 st.caption(f"{icon} {TABLE_DISPLAY_NAMES[table]} - {status_display} ({timestamp})")
             else:
                 st.caption(f"⭕ {TABLE_DISPLAY_NAMES[table]} - Not analyzed")
-
-        st.write("")  # Spacing
-
-        selected_table = st.selectbox(
-            "Select Table to Analyze",
-            options=available_tables,
-            format_func=lambda x: TABLE_DISPLAY_NAMES[x]
-        )
-
-        # Show re-analyze option if table is cached
-        force_reanalyze = False
-        if is_table_cached(selected_table):
-            force_reanalyze = st.checkbox("🔄 Re-analyze table", value=False)
-
-        if other_tables:
-            with st.expander("🚧 Coming Soon"):
-                st.write("The following tables will be available soon:")
-                for table in other_tables[:5]:
-                    st.write(f"• {TABLE_DISPLAY_NAMES[table]}")
-                if len(other_tables) > 5:
-                    st.write(f"• ... and {len(other_tables) - 5} more")
-
-        st.divider()
-
-        # Analysis options
-        st.subheader("🔍 Analysis Options")
-        run_validation = st.checkbox("Run Validation", value=True)
-        run_outlier_handling = st.checkbox(
-            "Apply Outlier Handling",
-            value=config.get('analysis_settings', {}).get('outlier_detection', False)
-        )
-        calculate_sofa = st.checkbox(
-            "Calculate SOFA Scores",
-            value=config.get('analysis_settings', {}).get('calculate_sofa', False),
-            disabled=True,
-            help="Requires additional clinical tables"
-        )
-
-        # Run analysis button
-        if st.button("🚀 Run Analysis", type="primary", width='stretch'):
-            st.session_state.run_analysis = True
-            st.session_state.selected_table = selected_table
-            st.session_state.run_validation = run_validation
-            st.session_state.run_outlier_handling = run_outlier_handling
-            st.session_state.calculate_sofa = calculate_sofa
-            # Always force reanalyze when Run Analysis is clicked
-            st.session_state.force_reanalyze = True
-            st.rerun()
 
         # Clear cache button
         st.divider()
@@ -334,8 +333,8 @@ def main():
             analyze_table(
                 st.session_state.get('selected_table', selected_table),
                 config,
-                st.session_state.get('run_validation', run_validation),
-                st.session_state.get('run_outlier_handling', run_outlier_handling),
+                st.session_state.get('run_validation', True),
+                st.session_state.get('run_outlier_handling', config.get('analysis_settings', {}).get('outlier_detection', False)),
                 st.session_state.get('force_reanalyze', False)
             )
         else:
@@ -343,8 +342,8 @@ def main():
             analyze_table(
                 selected_table,
                 config,
-                run_validation,
-                run_outlier_handling,
+                True,  # Always run validation
+                config.get('analysis_settings', {}).get('outlier_detection', False),
                 False  # Don't force reanalyze, use cache
             )
     elif 'run_analysis' in st.session_state and st.session_state.run_analysis:
@@ -352,8 +351,8 @@ def main():
         analyze_table(
             st.session_state.get('selected_table', selected_table),
             config,
-            st.session_state.get('run_validation', run_validation),
-            st.session_state.get('run_outlier_handling', run_outlier_handling),
+            st.session_state.get('run_validation', True),
+            st.session_state.get('run_outlier_handling', config.get('analysis_settings', {}).get('outlier_detection', False)),
             st.session_state.get('force_reanalyze', False)
         )
     else:

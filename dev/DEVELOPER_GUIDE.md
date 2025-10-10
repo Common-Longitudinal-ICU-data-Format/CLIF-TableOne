@@ -7,7 +7,7 @@ This guide provides comprehensive instructions for adding new CLIF 2.1 table ana
 When implementing a new table analyzer, use these resources:
 
 ### 1. CLIF Schema Definition
-**Location**: `reference/clif_2_1_data_dict.yaml`
+**Location**: `reference/schemas/`
 - Complete CLIF 2.1 schema definitions
 - Required columns for each table
 - Data types and categorical value sets

@@ -3,7 +3,15 @@
 import os
 import json
 from typing import Dict, Any, List, Optional
-from modules.tables import PatientAnalyzer, HospitalizationAnalyzer, ADTAnalyzer, CodeStatusAnalyzer, CRRTTherapyAnalyzer
+from modules.tables import (
+    PatientAnalyzer, HospitalizationAnalyzer, ADTAnalyzer, CodeStatusAnalyzer,
+    CRRTTherapyAnalyzer, ECMOMCSAnalyzer, HospitalDiagnosisAnalyzer, LabsAnalyzer,
+    MedicationAdminContinuousAnalyzer, MedicationAdminIntermittentAnalyzer,
+    MicrobiologyCultureAnalyzer, MicrobiologyNoncultureAnalyzer,
+    MicrobiologySusceptibilityAnalyzer, PatientAssessmentsAnalyzer,
+    PatientProceduresAnalyzer, PositionAnalyzer, RespiratorySupportAnalyzer,
+    VitalsAnalyzer
+)
 from .formatters import ConsoleFormatter
 from .pdf_generator import ValidationPDFGenerator
 
@@ -16,7 +24,20 @@ class CLIAnalysisRunner:
         'hospitalization': HospitalizationAnalyzer,
         'adt': ADTAnalyzer,
         'code_status': CodeStatusAnalyzer,
-        'crrt_therapy': CRRTTherapyAnalyzer
+        'crrt_therapy': CRRTTherapyAnalyzer,
+        'ecmo_mcs': ECMOMCSAnalyzer,
+        'hospital_diagnosis': HospitalDiagnosisAnalyzer,
+        'labs': LabsAnalyzer,
+        'medication_admin_continuous': MedicationAdminContinuousAnalyzer,
+        'medication_admin_intermittent': MedicationAdminIntermittentAnalyzer,
+        'microbiology_culture': MicrobiologyCultureAnalyzer,
+        'microbiology_nonculture': MicrobiologyNoncultureAnalyzer,
+        'microbiology_susceptibility': MicrobiologySusceptibilityAnalyzer,
+        'patient_assessments': PatientAssessmentsAnalyzer,
+        'patient_procedures': PatientProceduresAnalyzer,
+        'position': PositionAnalyzer,
+        'respiratory_support': RespiratorySupportAnalyzer,
+        'vitals': VitalsAnalyzer
     }
 
     def __init__(self, config: Dict[str, Any], verbose: bool = False, quiet: bool = False,
