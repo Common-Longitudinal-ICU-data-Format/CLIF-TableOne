@@ -12,6 +12,7 @@ from modules.tables import (
     PatientProceduresAnalyzer, PositionAnalyzer, RespiratorySupportAnalyzer,
     VitalsAnalyzer
 )
+from modules.utils import load_sample_list, sample_exists
 from .formatters import ConsoleFormatter
 from .pdf_generator import ValidationPDFGenerator
 
@@ -41,7 +42,7 @@ class CLIAnalysisRunner:
     }
 
     def __init__(self, config: Dict[str, Any], verbose: bool = False, quiet: bool = False,
-                 generate_pdf: bool = True):
+                 generate_pdf: bool = True, use_sample: bool = False):
         """
         Initialize the CLI runner.
 
@@ -55,11 +56,14 @@ class CLIAnalysisRunner:
             Minimize output
         generate_pdf : bool
             Generate PDF reports for validation results
+        use_sample : bool
+            Use 1k ICU sample for faster analysis
         """
         self.config = config
         self.verbose = verbose
         self.quiet = quiet
         self.generate_pdf = generate_pdf
+        self.use_sample = use_sample
         self.formatter = ConsoleFormatter()
         self.pdf_generator = ValidationPDFGenerator()
 
@@ -110,9 +114,26 @@ class CLIAnalysisRunner:
                 self.log(self.formatter.error(f"Analyzer not available for {table_name}"))
                 return result
 
+            # Load sample if requested
+            sample_filter = None
+            if self.use_sample:
+                if sample_exists(self.output_dir):
+                    sample_filter = load_sample_list(self.output_dir)
+                    if sample_filter:
+                        self.log(self.formatter.info(f"📊 Using 1k ICU sample ({len(sample_filter):,} hospitalizations)"))
+                    else:
+                        self.log(self.formatter.warning("⚠️  Sample file exists but could not be loaded. Loading full table."))
+                else:
+                    self.log(self.formatter.warning("⚠️  Sample file not found. Loading full table."))
+                    self.log(self.formatter.info("   Generate sample by running: python run_analysis.py --adt --validate --summary"))
+
             # Load table
-            self.log(self.formatter.progress(f"Loading {table_name} table"))
-            analyzer = analyzer_class(self.data_dir, self.filetype, self.timezone, self.output_dir)
+            if sample_filter:
+                self.log(self.formatter.progress(f"Loading {table_name} table with 1k sample"))
+            else:
+                self.log(self.formatter.progress(f"Loading {table_name} table"))
+
+            analyzer = analyzer_class(self.data_dir, self.filetype, self.timezone, self.output_dir, sample_filter)
 
             if analyzer.table is None:
                 result['error'] = f"Failed to load {table_name} table"
@@ -249,6 +270,7 @@ class CLIAnalysisRunner:
         self.log(f"📋 Tables: {', '.join(tables)}", force=True)
         self.log(f"🔍 Validation: {'✓' if run_validation else '✗'}", force=True)
         self.log(f"📊 Summary: {'✓' if run_summary else '✗'}", force=True)
+        self.log(f"🎯 Sample Mode: {'✓ (1k ICU hospitalizations)' if self.use_sample else '✗'}", force=True)
         self.log("", force=True)
 
         results = {

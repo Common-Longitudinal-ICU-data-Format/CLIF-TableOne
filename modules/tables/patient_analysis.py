@@ -12,11 +12,21 @@ from .base_table_analyzer import BaseTableAnalyzer
 class PatientAnalyzer(BaseTableAnalyzer):
     """Analyzer for Patient table using clifpy."""
 
-    def load_table(self):
-        """Load Patient table using clifpy."""
+    def load_table(self, sample_filter=None):
+        """
+        Load Patient table using clifpy.
+
+        Parameters:
+        -----------
+        sample_filter : list, optional
+            List of hospitalization_ids to filter to (not applicable to patient table)
+        """
         try:
             from clifpy.tables.patient import Patient
             import os
+
+            # Note: Patient table doesn't have hospitalization_id, so sample_filter is not applicable
+            # The patient table is loaded in full regardless of sample setting
 
             # Check for both naming conventions
             possible_names = ['patient', 'clif_patient']

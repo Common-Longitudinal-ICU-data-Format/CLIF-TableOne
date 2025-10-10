@@ -46,6 +46,13 @@ from .cache_manager import (
 from .categorical_numeric_viz import (
     show_categorical_numeric_distribution
 )
+from .sampling import (
+    get_icu_hospitalizations_from_adt,
+    generate_stratified_sample,
+    save_sample_list,
+    load_sample_list,
+    sample_exists
+)
 
 __all__ = [
     # Validation
@@ -87,5 +94,11 @@ __all__ = [
     'get_completion_status',
     'get_status_display',
     # Categorical-Numeric Visualization
-    'show_categorical_numeric_distribution'
+    'show_categorical_numeric_distribution',
+    # Sampling
+    'get_icu_hospitalizations_from_adt',
+    'generate_stratified_sample',
+    'save_sample_list',
+    'load_sample_list',
+    'sample_exists'
 ]

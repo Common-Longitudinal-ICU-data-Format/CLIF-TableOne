@@ -16,8 +16,15 @@ class CRRTTherapyAnalyzer(BaseTableAnalyzer):
         """Return the correct table name with underscore."""
         return 'crrt_therapy'
 
-    def load_table(self):
-        """Load CRRT Therapy table using clifpy."""
+    def load_table(self, sample_filter=None):
+        """
+        Load CRRT Therapy table using clifpy.
+
+        Parameters:
+        -----------
+        sample_filter : list, optional
+            List of hospitalization_ids to filter to (uses clifpy filters)
+        """
         try:
             from clifpy.tables.crrt_therapy import CrrtTherapy
             import os
@@ -41,12 +48,22 @@ class CRRTTherapyAnalyzer(BaseTableAnalyzer):
             clifpy_output_dir = os.path.join(self.output_dir, 'final')
             os.makedirs(clifpy_output_dir, exist_ok=True)
 
-            self.table = CrrtTherapy.from_file(
-                data_directory=self.data_dir,
-                filetype=self.filetype,
-                timezone=self.timezone,
-                output_directory=clifpy_output_dir
-            )
+            # Use filters parameter ONLY when sample is provided
+            if sample_filter is not None:
+                self.table = CrrtTherapy.from_file(
+                    data_directory=self.data_dir,
+                    filetype=self.filetype,
+                    timezone=self.timezone,
+                    output_directory=clifpy_output_dir,
+                    filters={'hospitalization_id': list(sample_filter)}
+                )
+            else:
+                self.table = CrrtTherapy.from_file(
+                    data_directory=self.data_dir,
+                    filetype=self.filetype,
+                    timezone=self.timezone,
+                    output_directory=clifpy_output_dir
+                )
 
             # Move any CSV files that clifpy created in parent directory to final/
             self._move_clifpy_csvs_to_final()

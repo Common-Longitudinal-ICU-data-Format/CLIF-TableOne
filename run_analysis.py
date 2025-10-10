@@ -14,6 +14,9 @@ Usage Examples:
     # All implemented tables
     python run_analysis.py --all --validate --summary
 
+    # Use 1k ICU sample for faster analysis
+    python run_analysis.py --labs --validate --summary --sample
+
     # Specify custom config file
     python run_analysis.py --config path/to/config.json --patient --validate
 
@@ -133,6 +136,8 @@ Examples:
                              help='Minimize output (only show errors and final summary)')
     output_group.add_argument('--no-pdf', action='store_true',
                              help='Disable PDF report generation (only generate JSON)')
+    output_group.add_argument('--sample', action='store_true',
+                             help='Use 1k ICU sample for faster analysis (requires sample file from ADT analysis)')
 
     args = parser.parse_args()
 
@@ -217,7 +222,7 @@ Examples:
 
     # Initialize runner
     generate_pdf = not args.no_pdf
-    runner = CLIAnalysisRunner(config, verbose=args.verbose, quiet=args.quiet, generate_pdf=generate_pdf)
+    runner = CLIAnalysisRunner(config, verbose=args.verbose, quiet=args.quiet, generate_pdf=generate_pdf, use_sample=args.sample)
 
     # Run analysis
     try:

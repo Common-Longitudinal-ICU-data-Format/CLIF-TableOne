@@ -24,9 +24,14 @@ class MedicationAdminContinuousAnalyzer(BaseTableAnalyzer):
         """Return the table name."""
         return 'medication_admin_continuous'
 
-    def load_table(self):
+    def load_table(self, sample_filter=None):
         """
         Load Medication Admin Continuous table using clifpy.
+
+        Parameters:
+        -----------
+        sample_filter : list, optional
+            List of hospitalization_ids to filter to (uses clifpy filters)
 
         Handles both naming conventions:
         - medication_admin_continuous.parquet
@@ -48,12 +53,23 @@ class MedicationAdminContinuousAnalyzer(BaseTableAnalyzer):
             return
 
         try:
-            self.table = MedicationAdminContinuous.from_file(
-                data_directory=self.data_dir,
-                filetype=self.filetype,
-                timezone=self.timezone,
-                output_directory=self.output_dir
-            )
+            # Use filters parameter ONLY when sample is provided
+            if sample_filter is not None:
+                self.table = MedicationAdminContinuous.from_file(
+                    data_directory=self.data_dir,
+                    filetype=self.filetype,
+                    timezone=self.timezone,
+                    output_directory=self.output_dir,
+                    filters={'hospitalization_id': list(sample_filter)}
+                )
+            else:
+                # Normal load without filters
+                self.table = MedicationAdminContinuous.from_file(
+                    data_directory=self.data_dir,
+                    filetype=self.filetype,
+                    timezone=self.timezone,
+                    output_directory=self.output_dir
+                )
         except FileNotFoundError:
             print(f"⚠️  medication_admin_continuous table file not found in {self.data_dir}")
             self.table = None
