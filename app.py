@@ -200,6 +200,160 @@ def load_config(config_path: str) -> dict:
         return None
 
 
+def show_home_page(config: dict, available_tables: list):
+    """
+    Display the home page with table status grid and combined report generation.
+
+    Parameters:
+    -----------
+    config : dict
+        Configuration dictionary
+    available_tables : list
+        List of available table names
+    """
+    st.header("📊 CLIF Validation Status Overview")
+    st.markdown("### Table Validation Status")
+
+    # Create status grid (3 columns x 6 rows for 18 tables)
+    cols_per_row = 3
+    rows = []
+    for i in range(0, len(available_tables), cols_per_row):
+        rows.append(available_tables[i:i + cols_per_row])
+
+    # Display grid
+    for row in rows:
+        cols = st.columns(cols_per_row)
+        for idx, table_name in enumerate(row):
+            with cols[idx]:
+                if is_table_cached(table_name):
+                    completion = get_completion_status(table_name)
+                    if completion['validation_complete']:
+                        status = get_table_status(table_name)
+                        status_icons = {
+                            'complete': '🟢',
+                            'partial': '🟡',
+                            'incomplete': '🔴'
+                        }
+                        icon = status_icons.get(status, '📊')
+                        cached = get_cached_analysis(table_name)
+                        timestamp = format_cache_timestamp(cached['timestamp'])
+                        st.markdown(f"{icon} **{TABLE_DISPLAY_NAMES[table_name]}**")
+                        st.caption(f"{status.upper()} • {timestamp}")
+                    else:
+                        st.markdown(f"📋 **{TABLE_DISPLAY_NAMES[table_name]}**")
+                        st.caption("Analyzed (no validation)")
+                else:
+                    st.markdown(f"⭕ **{TABLE_DISPLAY_NAMES[table_name]}**")
+                    st.caption("Not analyzed")
+
+    st.divider()
+
+    # Combined report generation
+    st.markdown("### Combined Validation Report")
+    st.write("Generate a combined PDF report for all validated tables.")
+
+    col1, col2 = st.columns([3, 1])
+    with col1:
+        st.info("This will validate any pending tables and generate a combined PDF report.")
+    with col2:
+        if st.button("📄 Generate Full Report", type="primary", use_container_width=True):
+            st.session_state.generate_combined_report = True
+            st.rerun()
+
+    # Handle report generation
+    if st.session_state.get('generate_combined_report', False):
+        with st.spinner("Generating combined validation report..."):
+            # Check which tables need validation
+            tables_needing_validation = []
+            for table_name in available_tables:
+                completion = get_completion_status(table_name)
+                if not completion['validation_complete']:
+                    tables_needing_validation.append(table_name)
+
+            # Run validation for pending tables (NOT summary)
+            if tables_needing_validation:
+                st.info(f"Running validation for {len(tables_needing_validation)} table(s)...")
+
+                progress_bar = st.progress(0)
+                for idx, table_name in enumerate(tables_needing_validation):
+                    st.write(f"Validating {TABLE_DISPLAY_NAMES[table_name]}...")
+
+                    try:
+                        analyzer_class = TABLE_ANALYZERS.get(table_name)
+                        if analyzer_class:
+                            data_dir = config.get('tables_path', './data')
+                            filetype = config.get('filetype') or config.get('file_type', 'parquet')
+                            timezone = config.get('timezone', 'UTC')
+                            output_dir = config.get('output_dir', 'output')
+
+                            analyzer = analyzer_class(data_dir, filetype, timezone, output_dir)
+                            if analyzer.table is not None:
+                                # Run validation only
+                                validation_results = analyzer.validate()
+
+                                # Save validation results
+                                analyzer.save_summary_data(validation_results, '_validation')
+
+                                # Generate PDF
+                                final_dir = os.path.join(output_dir, 'final')
+                                os.makedirs(final_dir, exist_ok=True)
+
+                                pdf_generator = ValidationPDFGenerator()
+                                pdf_path = os.path.join(final_dir, f"{table_name}_validation_report.pdf")
+
+                                if pdf_generator.is_available():
+                                    pdf_generator.generate_validation_pdf(
+                                        validation_results,
+                                        table_name,
+                                        pdf_path,
+                                        config.get('site_name'),
+                                        config.get('timezone', 'UTC')
+                                    )
+                    except Exception as e:
+                        st.warning(f"Could not validate {table_name}: {e}")
+
+                    progress_bar.progress((idx + 1) / len(tables_needing_validation))
+
+                st.success("✅ Validation complete for all tables!")
+
+            # Generate combined report
+            try:
+                from modules.reports.combined_report_generator import generate_combined_report
+
+                pdf_path = generate_combined_report(
+                    config.get('output_dir', 'output'),
+                    available_tables,
+                    config.get('site_name'),
+                    config.get('timezone', 'UTC')
+                )
+
+                if pdf_path:
+                    st.success("✅ Combined validation report generated!")
+
+                    # Provide download button
+                    with open(pdf_path, 'rb') as f:
+                        pdf_data = f.read()
+
+                    st.download_button(
+                        label="📥 Download Combined Report",
+                        data=pdf_data,
+                        file_name="combined_validation_report.pdf",
+                        mime="application/pdf",
+                        type="primary",
+                        use_container_width=True
+                    )
+                else:
+                    st.error("❌ Failed to generate combined report")
+
+            except Exception as e:
+                st.error(f"❌ Error generating combined report: {e}")
+                import traceback
+                st.code(traceback.format_exc())
+
+        # Clear flag
+        st.session_state.generate_combined_report = False
+
+
 def main():
     """Main application function."""
     # Initialize cache
@@ -350,7 +504,22 @@ def main():
             unsafe_allow_html=True
         )
 
-    # Main content area
+    # Navigation
+    st.divider()
+    page = st.radio(
+        "Navigation",
+        ["🏠 Home", "📊 Table Analysis"],
+        horizontal=True,
+        label_visibility="collapsed"
+    )
+    st.divider()
+
+    # Show appropriate page
+    if page == "🏠 Home":
+        show_home_page(config, available_tables)
+        return
+
+    # Main content area (Table Analysis page)
     # Show analysis results if they exist (cached) or if user clicked Run Analysis
     if is_table_cached(selected_table):
         # Table has cached results - display them

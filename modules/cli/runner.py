@@ -306,4 +306,31 @@ class CLIAnalysisRunner:
 
         self.log(f"\n{self.formatter.FOLDER} Results saved to: {os.path.join(self.output_dir, 'final')}", force=True)
 
+        # Generate combined report if multiple tables were analyzed and validation was run
+        if len(results['tables_analyzed']) > 1 and run_validation and self.generate_pdf:
+            self.log(f"\n{self.formatter.section('Generating Combined Validation Report')}")
+            try:
+                from modules.reports.combined_report_generator import generate_combined_report
+
+                # Include all requested tables (both analyzed and failed)
+                all_tables = tables
+
+                pdf_path = generate_combined_report(
+                    self.output_dir,
+                    all_tables,
+                    self.site_name,
+                    self.timezone
+                )
+
+                if pdf_path:
+                    self.log(self.formatter.success(f"Combined validation report saved: combined_validation_report.pdf"), force=True)
+                else:
+                    self.log(self.formatter.warning("Could not generate combined validation report"), force=True)
+
+            except Exception as e:
+                self.log(self.formatter.warning(f"Could not generate combined report: {e}"), force=True)
+                if self.verbose:
+                    import traceback
+                    traceback.print_exc()
+
         return results
