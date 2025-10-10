@@ -215,25 +215,6 @@ class CodeStatusAnalyzer(BaseTableAnalyzer):
         df = self.table.df
         quality_checks = {}
 
-        # Check for duplicate patient-date combinations
-        if 'patient_id' in df.columns and 'start_dttm' in df.columns:
-            df['start_dttm'] = pd.to_datetime(df['start_dttm'])
-            duplicates_mask = df.duplicated(subset=['patient_id', 'start_dttm'], keep=False)
-            duplicates = duplicates_mask.sum()
-
-            examples = None
-            if duplicates > 0:
-                example_cols = ['patient_id', 'start_dttm', 'code_status_category']
-                example_cols = [col for col in example_cols if col in df.columns]
-                examples = df[duplicates_mask][example_cols].head(10)
-
-            quality_checks['duplicate_patient_datetime'] = {
-                'count': int(duplicates),
-                'percentage': round((duplicates / len(df) * 100) if len(df) > 0 else 0, 2),
-                'status': 'pass' if duplicates == 0 else 'warning',
-                'examples': examples
-            }
-
         # Check for future code status dates
         if 'start_dttm' in df.columns:
             df['start_dttm'] = pd.to_datetime(df['start_dttm'])
@@ -250,19 +231,6 @@ class CodeStatusAnalyzer(BaseTableAnalyzer):
                 'percentage': round((future_dates_mask.sum() / len(df) * 100) if len(df) > 0 else 0, 2),
                 'status': 'pass' if future_dates_mask.sum() == 0 else 'warning',
                 'examples': examples
-            }
-
-        # Check for patients with multiple code status changes
-        if 'patient_id' in df.columns:
-            patient_counts = df['patient_id'].value_counts()
-            multiple_changes = patient_counts[patient_counts > 1]
-
-            quality_checks['patients_with_multiple_changes'] = {
-                'count': int(len(multiple_changes)),
-                'percentage': round((len(multiple_changes) / df['patient_id'].nunique() * 100) if df['patient_id'].nunique() > 0 else 0, 2),
-                'status': 'info',
-                'max_changes_per_patient': int(patient_counts.max()) if len(patient_counts) > 0 else 0,
-                'mean_changes_per_patient': round(patient_counts.mean(), 2) if len(patient_counts) > 0 else 0
             }
 
         # Check for invalid code status categories

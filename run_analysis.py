@@ -89,8 +89,10 @@ Examples:
                             help='Analyze code status table')
     table_group.add_argument('--crrt_therapy', action='store_true',
                             help='Analyze CRRT therapy table')
+    table_group.add_argument('--ecmo_mcs', action='store_true',
+                            help='Analyze ECMO/MCS table')
     table_group.add_argument('--all', action='store_true',
-                            help='Analyze all implemented tables (patient, hospitalization, adt, code_status, crrt_therapy)')
+                            help='Analyze all implemented tables (patient, hospitalization, adt, code_status, crrt_therapy, ecmo_mcs)')
 
     # Operations
     ops_group = parser.add_argument_group('Operations')
@@ -111,8 +113,8 @@ Examples:
     args = parser.parse_args()
 
     # Validate arguments
-    if not (args.patient or args.hospitalization or args.adt or args.code_status or args.crrt_therapy or args.all):
-        parser.error('Please specify at least one table: --patient, --hospitalization, --adt, --code_status, --crrt_therapy, or --all')
+    if not (args.patient or args.hospitalization or args.adt or args.code_status or args.crrt_therapy or args.ecmo_mcs or args.all):
+        parser.error('Please specify at least one table: --patient, --hospitalization, --adt, --code_status, --crrt_therapy, --ecmo_mcs, or --all')
 
     if not (args.validate or args.summary):
         parser.error('Please specify at least one operation: --validate and/or --summary')
@@ -120,7 +122,7 @@ Examples:
     # Determine which tables to analyze
     tables = []
     if args.all:
-        tables = ['patient', 'hospitalization', 'adt', 'code_status', 'crrt_therapy']
+        tables = ['patient', 'hospitalization', 'adt', 'code_status', 'crrt_therapy', 'ecmo_mcs']
     else:
         if args.patient:
             tables.append('patient')
@@ -132,6 +134,8 @@ Examples:
             tables.append('code_status')
         if args.crrt_therapy:
             tables.append('crrt_therapy')
+        if args.ecmo_mcs:
+            tables.append('ecmo_mcs')
 
     # Load configuration
     try:

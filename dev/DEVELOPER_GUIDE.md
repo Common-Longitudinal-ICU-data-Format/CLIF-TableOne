@@ -31,6 +31,7 @@ When implementing a new table analyzer, use these resources:
 - Table loading patterns
 - Built-in validation methods
 - Example usage patterns
+- you can also use `reference/clifpy.txt` to get the clifpy table class name
 
 ## Core Requirements
 

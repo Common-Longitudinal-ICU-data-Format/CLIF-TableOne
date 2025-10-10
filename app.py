@@ -18,7 +18,7 @@ import pandas as pd
 import json
 import os
 from pathlib import Path
-from modules.tables import PatientAnalyzer, HospitalizationAnalyzer, ADTAnalyzer, CodeStatusAnalyzer, CRRTTherapyAnalyzer
+from modules.tables import PatientAnalyzer, HospitalizationAnalyzer, ADTAnalyzer, CodeStatusAnalyzer, CRRTTherapyAnalyzer, ECMOMCSAnalyzer
 from modules.cli import ValidationPDFGenerator
 from modules.utils import (
     get_validation_summary,
@@ -132,7 +132,8 @@ TABLE_ANALYZERS = {
     'hospitalization': HospitalizationAnalyzer,
     'adt': ADTAnalyzer,
     'code_status': CodeStatusAnalyzer,
-    'crrt_therapy': CRRTTherapyAnalyzer
+    'crrt_therapy': CRRTTherapyAnalyzer,
+    'ecmo_mcs': ECMOMCSAnalyzer
 }
 
 TABLE_DISPLAY_NAMES = {
@@ -221,8 +222,8 @@ def main():
         # Table selection with status indicators
         st.subheader("📊 Table Status")
 
-        # Currently Patient, Hospitalization, ADT, Code Status, and CRRT Therapy tables are implemented
-        available_tables = ['patient', 'hospitalization', 'adt', 'code_status', 'crrt_therapy']
+        # Currently Patient, Hospitalization, ADT, Code Status, CRRT Therapy, and ECMO/MCS tables are implemented
+        available_tables = ['patient', 'hospitalization', 'adt', 'code_status', 'crrt_therapy', 'ecmo_mcs']
         other_tables = [t for t in TABLE_DISPLAY_NAMES.keys() if t not in available_tables]
 
         # Show cache status for available tables
@@ -649,7 +650,13 @@ def _get_quality_check_definition(check_name: str) -> str:
         'negative_pre_filter_replacement_fluid_rate': 'Records where pre_filter_replacement_fluid_rate is negative (should be >= 0)',
         'negative_post_filter_replacement_fluid_rate': 'Records where post_filter_replacement_fluid_rate is negative (should be >= 0)',
         'negative_dialysate_flow_rate': 'Records where dialysate_flow_rate is negative (should be >= 0)',
-        'negative_ultrafiltration_out': 'Records where ultrafiltration_out is negative (should be >= 0)'
+        'negative_ultrafiltration_out': 'Records where ultrafiltration_out is negative (should be >= 0)',
+        'invalid_device_categories': 'Records with device_category values not in the standard set (Impella, Centrimag, TandemHeart, HeartMate, ECMO, Other)',
+        'invalid_mcs_groups': 'Records with mcs_group values not in the standard set of 20 device types',
+        'negative_device_rate': 'Records where device_rate is negative (should be >= 0)',
+        'negative_sweep': 'Records where sweep (gas flow rate) is negative (should be >= 0)',
+        'negative_flow': 'Records where flow (blood flow) is negative (should be >= 0)',
+        'invalid_fdO2': 'Records where fdO2 (fraction of delivered oxygen) is outside valid range (0.21-1.0)'
     }
     return definitions.get(check_name, 'No definition available')
 
@@ -1525,6 +1532,161 @@ def display_summary_statistics(analyzer, summary_stats, table_name):
                         table_name=table_name,
                         default_categorical='crrt_mode_category',
                         default_numeric='blood_flow_rate',
+                        raw_df=analyzer.table.df  # Pass raw data for dual plots
+                    )
+                else:
+                    st.warning("Data not available for visualization")
+
+        st.divider()
+
+    # Show dataset duration for ECMO/MCS table
+    if table_name == 'ecmo_mcs' and 'first_year' in data_info and data_info.get('first_year'):
+        first_year = data_info.get('first_year')
+        last_year = data_info.get('last_year')
+        if first_year and last_year:
+            st.info(f"📅 **Dataset Duration (recorded_dttm):** {first_year} - {last_year} ({last_year - first_year + 1} years)")
+
+            # Show year distribution histogram (lazy-load analyzer only when expander is opened)
+            with st.expander("📊 View Year Distribution"):
+                # Lazy load analyzer only when this feature is accessed
+                if analyzer is None:
+                    analyzer = _lazy_load_analyzer(table_name, st.session_state.config, analyzer)
+
+                if analyzer and hasattr(analyzer, 'table') and hasattr(analyzer.table, 'df'):
+                    _show_year_distribution(analyzer.table.df, 'recorded_dttm', 'ECMO/MCS Hospitalizations', count_by='hospitalization_id')
+                else:
+                    st.warning("Data not available for year distribution")
+
+    # ECMO/MCS-specific numeric summary (before outlier handling)
+    if table_name == 'ecmo_mcs':
+        # Lazy load analyzer if needed
+        if analyzer is None:
+            analyzer = _lazy_load_analyzer(table_name, st.session_state.config, analyzer)
+
+        if analyzer and hasattr(analyzer, 'table') and hasattr(analyzer.table, 'df'):
+            st.markdown("#### 📊 Numeric Variable Summary (Raw Data)")
+            st.caption("Summary statistics before outlier handling")
+
+            # Define numeric columns
+            numeric_columns = [
+                'device_rate',
+                'sweep',
+                'flow',
+                'fdO2'
+            ]
+
+            # Calculate summary statistics for raw data
+            summary_rows = []
+            df = analyzer.table.df
+
+            for col in numeric_columns:
+                if col in df.columns:
+                    valid_data = df[col].dropna()
+                    if len(valid_data) > 0:
+                        summary_rows.append({
+                            'Variable': col.replace('_', ' ').title(),
+                            'Count': f"{len(valid_data):,}",
+                            'Mean': f"{valid_data.mean():.2f}",
+                            'Median': f"{valid_data.median():.2f}",
+                            'Std': f"{valid_data.std():.2f}",
+                            'Min': f"{valid_data.min():.2f}",
+                            'Max': f"{valid_data.max():.2f}"
+                        })
+
+            if summary_rows:
+                summary_df = pd.DataFrame(summary_rows)
+                st.dataframe(summary_df, hide_index=True, width='stretch')
+
+            st.divider()
+
+    # ECMO/MCS-specific categorical-numeric visualization
+    if table_name == 'ecmo_mcs':
+        st.markdown("#### 📊 Numeric Distributions by Category")
+        st.caption("Explore how numeric variables vary across different device categories and MCS groups")
+
+        # Try to load cached visualization data first
+        import json
+        output_dir = st.session_state.config.get('output_dir', 'output')
+        viz_data_path = os.path.join(output_dir, 'final', f'{table_name}_visualization_data.json')
+
+        use_cached_data = False
+        viz_data = None
+
+        if os.path.exists(viz_data_path):
+            try:
+                with open(viz_data_path, 'r') as f:
+                    viz_data = json.load(f)
+                use_cached_data = True
+            except Exception as e:
+                st.warning(f"Could not load cached visualization data: {e}")
+                use_cached_data = False
+
+        if not use_cached_data:
+            # Fall back to loading and processing data on-the-fly
+            # Lazy load analyzer if needed
+            if analyzer is None:
+                analyzer = _lazy_load_analyzer(table_name, st.session_state.config, analyzer)
+
+            if analyzer and hasattr(analyzer, 'table') and hasattr(analyzer.table, 'df'):
+                # Apply outlier handling to the data before visualization
+                from modules.utils.outlier_handling import apply_outlier_ranges
+                cleaned_df, outlier_stats = apply_outlier_ranges(
+                    df=analyzer.table.df,
+                    table_name=table_name
+                )
+
+                # Show outlier information
+                total_outliers = sum(stats['outlier_count'] for stats in outlier_stats.values())
+                if total_outliers > 0:
+                    st.info(f"ℹ️ **{total_outliers:,} outliers replaced with NA** across numeric columns based on configured thresholds")
+
+                # Define available columns
+                categorical_columns = ['device_category', 'mcs_group']
+                numeric_columns = [
+                    'device_rate',
+                    'sweep',
+                    'flow',
+                    'fdO2'
+                ]
+
+                show_categorical_numeric_distribution(
+                    df=cleaned_df,
+                    categorical_columns=categorical_columns,
+                    numeric_columns=numeric_columns,
+                    table_name=table_name,
+                    default_categorical='device_category',
+                    default_numeric='flow',
+                    raw_df=analyzer.table.df  # Pass raw data for dual plots
+                )
+            else:
+                st.warning("Data not available for visualization")
+        else:
+            # Use cached data for visualization
+            if viz_data:
+                # Show outlier information from cached data
+                total_outliers = viz_data.get('total_outliers_replaced', 0)
+                if total_outliers > 0:
+                    st.info(f"ℹ️ **{total_outliers:,} outliers replaced with NA** across numeric columns based on configured thresholds")
+
+                # Lazy load analyzer to get the dataframe
+                if analyzer is None:
+                    analyzer = _lazy_load_analyzer(table_name, st.session_state.config, analyzer)
+
+                if analyzer and hasattr(analyzer, 'table') and hasattr(analyzer.table, 'df'):
+                    # Apply outlier handling (same as cached)
+                    from modules.utils.outlier_handling import apply_outlier_ranges
+                    cleaned_df, _ = apply_outlier_ranges(
+                        df=analyzer.table.df,
+                        table_name=table_name
+                    )
+
+                    show_categorical_numeric_distribution(
+                        df=cleaned_df,
+                        categorical_columns=viz_data['categorical_columns'],
+                        numeric_columns=viz_data['numeric_columns'],
+                        table_name=table_name,
+                        default_categorical='device_category',
+                        default_numeric='flow',
                         raw_df=analyzer.table.df  # Pass raw data for dual plots
                     )
                 else:
