@@ -21,12 +21,26 @@ Currently implemented analyzers:
 
 ## Quick Start
 
+### Environment
+
+```bash
+python -m venv .clif_table_one
+source .clif_table_one/bin/activate
+pip install --upgrade pip
+pip install -r requirements.txt
+```
+
+#windows
+```bash
+python -m venv .clif_table_one
+.clif_table_one\Scripts\activate
+pip install --upgrade pip
+pip install -r requirements.txt
+```
+
 ### Web Application
 
 ```bash
-# Install dependencies
-pip install -r requirements.txt
-
 # Run the app
 streamlit run app.py
 ```
@@ -53,11 +67,9 @@ Create or update `config/config.json`:
 ```json
 {
     "site_name": "Your Hospital Name",
-    "site_id": "YOUR_ID",
     "tables_path": "/path/to/clif/data",
     "filetype": "parquet",
     "timezone": "America/Chicago",
-    "output_dir": "output"
 }
 ```
 
@@ -208,31 +220,6 @@ The user feedback system allows sites to classify validation errors based on the
 
 See [FEEDBACK_SYSTEM.md](FEEDBACK_SYSTEM.md) for detailed technical documentation.
 
-## Project Structure
-
-```
-CLIF-TableOne/
-├── app.py                          # Streamlit web application
-├── run_analysis.py                 # Command-line interface
-├── modules/
-│   ├── tables/                     # Table-specific analyzers
-│   │   ├── base_table_analyzer.py  # Base analyzer class
-│   │   ├── patient_analysis.py     # Patient table
-│   │   ├── hospitalization_analysis.py
-│   │   └── adt_analysis.py         # ADT table
-│   ├── utils/                      # Shared utilities
-│   │   ├── validation.py           # Error classification
-│   │   ├── missingness.py          # Missingness analysis
-│   │   ├── feedback.py             # User feedback system
-│   │   └── cache_manager.py        # State persistence
-│   └── cli/                        # CLI-specific modules
-│       └── pdf_generator.py        # PDF report generation
-├── config/
-│   └── config.json                 # Site configuration
-└── output/
-    └── final/                      # Analysis outputs
-```
-
 ## Requirements
 
 **Core:**
@@ -242,15 +229,9 @@ CLIF-TableOne/
 - numpy
 - clifpy
 - plotly
-
-**Optional:**
 - reportlab (for PDF generation)
 - duckdb (for efficient year distributions)
 
-Install all dependencies:
-```bash
-pip install -r requirements.txt
-```
 
 ## Troubleshooting
 
@@ -259,56 +240,9 @@ pip install -r requirements.txt
 - Ensure files match configured `filetype` (parquet/csv)
 - Check file naming: `patient.parquet` or `clif_patient.parquet` (both work)
 
-### clifpy Errors
-```bash
-pip install --upgrade clifpy
-```
-
-### Missing Dependencies
-```bash
-pip install -r requirements.txt
-```
-
-### PDF Generation Fails
-- Install reportlab: `pip install reportlab`
-- CLI will fall back to text reports (.txt) if reportlab unavailable
-
-## Comparison: Web App vs CLI
-
-| Feature | Web App | CLI |
-|---------|---------|-----|
-| **Interface** | Interactive GUI | Terminal |
-| **Best For** | Exploration, review | Automation, batch |
-| **Visualization** | Charts & tables | Text output |
-| **Feedback System** | Interactive review | JSON output |
-| **Automation** | Manual only | Scripts & cron |
-| **Remote Access** | Port forwarding | SSH-friendly |
-
-## Contributing
-
-To add support for a new CLIF table:
-
-1. Create analyzer in `modules/tables/{table}_analysis.py`
-2. Inherit from `BaseTableAnalyzer`
-3. Implement required methods:
-   - `load_table()` - Load using clifpy
-   - `get_data_info()` - Table-specific metrics
-   - `analyze_distributions()` - Distribution analysis
-4. Add to `TABLE_ANALYZERS` dict in `app.py` and `run_analysis.py`
-
-See existing analyzers for examples.
-
 ## License
 
 See CLIF consortium documentation for licensing information.
 
 ---
 
-## Legacy: Table One Generation
-
-The original Table One generation feature for ICU cohort summarization is available in the `code/` directory. This legacy feature generates yearly and overall summaries for ICU encounters.
-
-### Legacy Requirements
-See legacy documentation in `code/` for the original Table One generation requirements and usage.
-
-**Note**: The main focus of this repository is now the CLIF 2.1 Validation & Summarization Tool described above.
