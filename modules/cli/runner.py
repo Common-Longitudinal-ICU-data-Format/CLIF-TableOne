@@ -3,7 +3,7 @@
 import os
 import json
 from typing import Dict, Any, List, Optional
-from modules.tables import PatientAnalyzer, HospitalizationAnalyzer
+from modules.tables import PatientAnalyzer, HospitalizationAnalyzer, ADTAnalyzer, CodeStatusAnalyzer, CRRTTherapyAnalyzer
 from .formatters import ConsoleFormatter
 from .pdf_generator import ValidationPDFGenerator
 
@@ -13,7 +13,10 @@ class CLIAnalysisRunner:
 
     TABLE_ANALYZERS = {
         'patient': PatientAnalyzer,
-        'hospitalization': HospitalizationAnalyzer
+        'hospitalization': HospitalizationAnalyzer,
+        'adt': ADTAnalyzer,
+        'code_status': CodeStatusAnalyzer,
+        'crrt_therapy': CRRTTherapyAnalyzer
     }
 
     def __init__(self, config: Dict[str, Any], verbose: bool = False, quiet: bool = False,
@@ -41,7 +44,8 @@ class CLIAnalysisRunner:
 
         # Extract config values
         self.data_dir = config.get('tables_path', './data')
-        self.filetype = config.get('filetype', 'parquet')
+        # Support both 'filetype' and 'file_type' keys in config
+        self.filetype = config.get('filetype') or config.get('file_type', 'parquet')
         self.timezone = config.get('timezone', 'UTC')
         self.output_dir = config.get('output_dir', 'output')
         self.site_name = config.get('site_name')

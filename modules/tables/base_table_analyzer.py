@@ -238,7 +238,7 @@ class BaseTableAnalyzer(ABC):
         if df is None or df.empty:
             return
 
-        table_name = self.__class__.__name__.replace('Analyzer', '').lower()
+        table_name = self.get_table_name()
         filename = f"{table_name}{suffix}.{self.filetype}"
         filepath = os.path.join(self.output_dir, 'intermediate', filename)
 
@@ -262,7 +262,7 @@ class BaseTableAnalyzer(ABC):
         """
         import json
 
-        table_name = self.__class__.__name__.replace('Analyzer', '').lower()
+        table_name = self.get_table_name()
         filename = f"{table_name}_summary{suffix}.json"
         filepath = os.path.join(self.output_dir, 'final', filename)
 
@@ -280,7 +280,7 @@ class BaseTableAnalyzer(ABC):
         """
         from ..utils.feedback import save_feedback
 
-        table_name = self.__class__.__name__.replace('Analyzer', '').lower()
+        table_name = self.get_table_name()
         return save_feedback(feedback, self.output_dir, table_name)
 
     def load_validation_feedback(self) -> Optional[Dict[str, Any]]:
@@ -294,7 +294,7 @@ class BaseTableAnalyzer(ABC):
         """
         from ..utils.feedback import load_feedback
 
-        table_name = self.__class__.__name__.replace('Analyzer', '').lower()
+        table_name = self.get_table_name()
         return load_feedback(self.output_dir, table_name)
 
     def get_table_name(self) -> str:

@@ -336,10 +336,10 @@ def get_status_display(table_name: str) -> str:
 
     if val_complete and sum_complete:
         status = get_table_status(table_name)
-        return f"{status.upper()} (V+S)"
+        return f"{status.upper()}"
     elif val_complete:
         status = get_table_status(table_name)
-        return f"{status.upper()} (V only)"
+        return f"{status.upper()}"
     elif sum_complete:
         return "SUMMARY ONLY"
     else:

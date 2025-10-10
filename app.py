@@ -7,15 +7,18 @@ CLIF 2.1 data tables using clifpy.
 """
 
 import warnings
-# Suppress Plotly deprecation warnings (Plotly internal issue)
+# Suppress Plotly and Streamlit deprecation warnings
 warnings.filterwarnings('ignore', category=DeprecationWarning, module='plotly')
+warnings.filterwarnings('ignore', category=FutureWarning, module='streamlit')
+warnings.filterwarnings('ignore', message='.*keyword arguments have been deprecated.*')
+warnings.filterwarnings('ignore', message='.*use_container_width.*')
 
 import streamlit as st
 import pandas as pd
 import json
 import os
 from pathlib import Path
-from modules.tables import PatientAnalyzer, HospitalizationAnalyzer, ADTAnalyzer
+from modules.tables import PatientAnalyzer, HospitalizationAnalyzer, ADTAnalyzer, CodeStatusAnalyzer, CRRTTherapyAnalyzer
 from modules.cli import ValidationPDFGenerator
 from modules.utils import (
     get_validation_summary,
@@ -34,7 +37,8 @@ from modules.utils import (
     format_cache_timestamp,
     update_feedback_in_cache,
     get_completion_status,
-    get_status_display
+    get_status_display,
+    show_categorical_numeric_distribution
 )
 import plotly.graph_objects as go
 import plotly.express as px
@@ -126,7 +130,9 @@ st.markdown("""
 TABLE_ANALYZERS = {
     'patient': PatientAnalyzer,
     'hospitalization': HospitalizationAnalyzer,
-    'adt': ADTAnalyzer
+    'adt': ADTAnalyzer,
+    'code_status': CodeStatusAnalyzer,
+    'crrt_therapy': CRRTTherapyAnalyzer
 }
 
 TABLE_DISPLAY_NAMES = {
@@ -213,10 +219,10 @@ def main():
         st.divider()
 
         # Table selection with status indicators
-        st.subheader("📊 Table Selection")
+        st.subheader("📊 Table Status")
 
-        # Currently Patient, Hospitalization, and ADT tables are implemented
-        available_tables = ['patient', 'hospitalization', 'adt']
+        # Currently Patient, Hospitalization, ADT, Code Status, and CRRT Therapy tables are implemented
+        available_tables = ['patient', 'hospitalization', 'adt', 'code_status', 'crrt_therapy']
         other_tables = [t for t in TABLE_DISPLAY_NAMES.keys() if t not in available_tables]
 
         # Show cache status for available tables
@@ -471,7 +477,8 @@ def analyze_table(table_name, config, run_validation, run_outlier_handling, forc
 
         # Extract parameters from config
         data_dir = config.get('tables_path', './data')
-        filetype = config.get('filetype', 'parquet')
+        # Support both 'filetype' and 'file_type' keys in config
+        filetype = config.get('filetype') or config.get('file_type', 'parquet')
         timezone = config.get('timezone', 'UTC')
         output_dir = config.get('output_dir', 'output')
 
@@ -570,6 +577,18 @@ def analyze_table(table_name, config, run_validation, run_outlier_handling, forc
                         csv_filepath = os.path.join(final_dir, f"{table_name}_summary.csv")
                         adt_summary_df.to_csv(csv_filepath, index=False)
                         st.success(f"✅ ADT summary CSV saved")
+
+                # Save CRRT numeric distributions
+                if hasattr(analyzer, 'save_numeric_distributions'):
+                    dist_filepath = analyzer.save_numeric_distributions()
+                    if dist_filepath:
+                        st.success(f"✅ CRRT numeric distributions saved")
+
+                # Save CRRT visualization data (pre-computed with outlier handling)
+                if hasattr(analyzer, 'save_visualization_data'):
+                    viz_filepath = analyzer.save_visualization_data()
+                    if viz_filepath:
+                        st.success(f"✅ CRRT visualization data saved")
             except Exception as e:
                 st.warning(f"Could not save summary CSV files: {e}")
 
@@ -619,7 +638,18 @@ def _get_quality_check_definition(check_name: str) -> str:
         'future_death_dates': 'Records where death_dttm is in the future (after current date/time)',
         'invalid_location_dates': 'Records where out_dttm is earlier than in_dttm',
         'missing_location_category': 'Records with missing location_category values',
-        'duplicate_adt_events': 'Records with duplicate ADT events (same hospitalization_id, in_dttm, and location_category)'
+        'duplicate_adt_events': 'Records with duplicate ADT events (same hospitalization_id, in_dttm, and location_category)',
+        'duplicate_patient_datetime': 'Records where the same patient has multiple code status entries at the same datetime',
+        'future_code_status_dates': 'Records where start_dttm is in the future (after current date/time)',
+        'patients_with_multiple_changes': 'Informational: Patients who have multiple code status changes over time',
+        'invalid_code_status_categories': 'Records with code_status_category values not in the standard set (DNR, DNAR, UDNR, DNR/DNI, DNAR/DNI, AND, Full, Presume Full, Other)',
+        'future_recorded_dates': 'Records where recorded_dttm is in the future (after current date/time)',
+        'invalid_crrt_mode_categories': 'Records with crrt_mode_category values not in the standard set (scuf, cvvh, cvvhd, cvvhdf, avvh)',
+        'negative_blood_flow_rate': 'Records where blood_flow_rate is negative (should be >= 0)',
+        'negative_pre_filter_replacement_fluid_rate': 'Records where pre_filter_replacement_fluid_rate is negative (should be >= 0)',
+        'negative_post_filter_replacement_fluid_rate': 'Records where post_filter_replacement_fluid_rate is negative (should be >= 0)',
+        'negative_dialysate_flow_rate': 'Records where dialysate_flow_rate is negative (should be >= 0)',
+        'negative_ultrafiltration_out': 'Records where ultrafiltration_out is negative (should be >= 0)'
     }
     return definitions.get(check_name, 'No definition available')
 
@@ -992,7 +1022,12 @@ def display_validation_results(analyzer, validation_results, existing_feedback, 
                     st.rerun()
 
 
-def _show_year_distribution(df: pd.DataFrame, datetime_col: str, label: str):
+def _show_year_distribution(
+    df: pd.DataFrame, 
+    datetime_col: str, 
+    label: str,
+    count_by: str = 'hospitalization_id'
+):
     """
     Show year distribution histogram using DuckDB for efficient computation.
 
@@ -1003,7 +1038,12 @@ def _show_year_distribution(df: pd.DataFrame, datetime_col: str, label: str):
     datetime_col : str
         Name of the datetime column to extract years from
     label : str
-        Label for the y-axis (e.g., 'Hospitalizations', 'ADT Events')
+        Label for the y-axis (e.g., 'Hospitalizations', 'Patients', 'ADT Events')
+    count_by : str, optional
+        Column to use for unique counting. Options:
+        - 'hospitalization_id': Count unique hospitalizations per year (default)
+        - 'patient_id': Count unique patients per year
+        - 'rows': Count total rows per year
     """
     if df is None or df.empty or datetime_col not in df.columns:
         st.warning("No data available for year distribution")
@@ -1012,16 +1052,29 @@ def _show_year_distribution(df: pd.DataFrame, datetime_col: str, label: str):
     try:
         import duckdb
 
-        # Use DuckDB to efficiently compute year distribution
-        result = duckdb.query(f"""
-            SELECT
-                EXTRACT(YEAR FROM {datetime_col}) AS year,
-                COUNT(*) AS count
-            FROM df
-            WHERE {datetime_col} IS NOT NULL
-            GROUP BY year
-            ORDER BY year
-        """).df()
+        # Determine aggregation method based on count_by parameter
+        if count_by in ['hospitalization_id', 'patient_id'] and count_by in df.columns:
+            # Count unique hospitalizations or patients per year
+            result = duckdb.query(f"""
+                SELECT
+                    YEAR({datetime_col}) AS year,
+                    COUNT(DISTINCT {count_by}) AS count
+                FROM df
+                WHERE {datetime_col} IS NOT NULL
+                GROUP BY YEAR({datetime_col})
+                ORDER BY year
+            """).df()
+        else:
+            # Fall back to row counting
+            result = duckdb.query(f"""
+                SELECT
+                    YEAR({datetime_col}) AS year,
+                    COUNT(*) AS count
+                FROM df
+                WHERE {datetime_col} IS NOT NULL
+                GROUP BY YEAR({datetime_col})
+                ORDER BY year
+            """).df()
 
         if result.empty:
             st.warning("No valid dates found")
@@ -1135,16 +1188,24 @@ def display_summary_statistics(analyzer, summary_stats, table_name):
             # Show unique hospitalizations for hospitalization table, unique patients otherwise
             if 'unique_hospitalizations' in data_info:
                 st.metric("Unique Hospitalizations", f"{data_info.get('unique_hospitalizations', 0):,}")
-            else:
+            elif 'unique_patients' in data_info and data_info.get('unique_patients', 0) > 0:
                 st.metric("Unique Patients", f"{data_info.get('unique_patients', 0):,}")
+            else:
+                # For tables without patient_id, show unique devices or modes
+                if 'unique_devices' in data_info:
+                    st.metric("Unique Devices", f"{data_info.get('unique_devices', 0):,}")
+                elif 'unique_crrt_modes' in data_info:
+                    st.metric("Unique CRRT Modes", f"{data_info.get('unique_crrt_modes', 0):,}")
         with col3:
             st.metric("Total Columns", data_info.get('column_count', 0))
         with col4:
             # Show death records for patient table only
             if 'has_death_records' in data_info:
                 st.metric("Death Records", f"{int(data_info.get('has_death_records', 0)):,}")
-            else:
+            elif 'unique_patients' in data_info and data_info.get('unique_patients', 0) > 0:
                 st.metric("Unique Patients", f"{data_info.get('unique_patients', 0):,}")
+            elif 'unique_crrt_modes' in data_info:
+                st.metric("Unique CRRT Modes", f"{data_info.get('unique_crrt_modes', 0):,}")
 
     # Show dataset duration for hospitalization table
     if 'first_admission_year' in data_info and data_info.get('first_admission_year'):
@@ -1160,7 +1221,7 @@ def display_summary_statistics(analyzer, summary_stats, table_name):
                     analyzer = _lazy_load_analyzer(table_name, st.session_state.config, analyzer)
 
                 if analyzer and hasattr(analyzer, 'table') and hasattr(analyzer.table, 'df'):
-                    _show_year_distribution(analyzer.table.df, 'admission_dttm', 'Hospitalizations')
+                    _show_year_distribution(analyzer.table.df, 'admission_dttm', 'Hospitalizations', count_by='hospitalization_id')
                 else:
                     st.warning("Data not available for year distribution")
 
@@ -1178,7 +1239,25 @@ def display_summary_statistics(analyzer, summary_stats, table_name):
                     analyzer = _lazy_load_analyzer(table_name, st.session_state.config, analyzer)
 
                 if analyzer and hasattr(analyzer, 'table') and hasattr(analyzer.table, 'df'):
-                    _show_year_distribution(analyzer.table.df, 'in_dttm', 'ADT Events')
+                    _show_year_distribution(analyzer.table.df, 'in_dttm', 'Hospitalizations', count_by='hospitalization_id')
+                else:
+                    st.warning("Data not available for year distribution")
+
+    # Show dataset duration for CRRT table
+    if table_name == 'crrt_therapy' and 'first_year' in data_info and data_info.get('first_year'):
+        first_year = data_info.get('first_year')
+        last_year = data_info.get('last_year')
+        if first_year and last_year:
+            st.info(f"📅 **Dataset Duration (recorded_dttm):** {first_year} - {last_year} ({last_year - first_year + 1} years)")
+
+            # Show year distribution histogram (lazy-load analyzer only when expander is opened)
+            with st.expander("📊 View Year Distribution"):
+                # Lazy load analyzer only when this feature is accessed
+                if analyzer is None:
+                    analyzer = _lazy_load_analyzer(table_name, st.session_state.config, analyzer)
+
+                if analyzer and hasattr(analyzer, 'table') and hasattr(analyzer.table, 'df'):
+                    _show_year_distribution(analyzer.table.df, 'recorded_dttm', 'CRRT Hospitalizations', count_by='hospitalization_id')
                 else:
                     st.warning("Data not available for year distribution")
 
@@ -1313,6 +1392,145 @@ def display_summary_statistics(analyzer, summary_stats, table_name):
                 # Skip mortality statistics display (death_dttm missingness is shown in missingness analysis)
 
                 st.divider()
+
+    # CRRT-specific numeric summary (before outlier handling)
+    if table_name == 'crrt_therapy':
+        # Lazy load analyzer if needed
+        if analyzer is None:
+            analyzer = _lazy_load_analyzer(table_name, st.session_state.config, analyzer)
+
+        if analyzer and hasattr(analyzer, 'table') and hasattr(analyzer.table, 'df'):
+            st.markdown("#### 📊 Numeric Variable Summary (Raw Data)")
+            st.caption("Summary statistics before outlier handling")
+
+            # Define numeric columns
+            numeric_columns = [
+                'blood_flow_rate',
+                'pre_filter_replacement_fluid_rate',
+                'post_filter_replacement_fluid_rate',
+                'dialysate_flow_rate',
+                'ultrafiltration_out'
+            ]
+
+            # Calculate summary statistics for raw data
+            summary_rows = []
+            df = analyzer.table.df
+
+            for col in numeric_columns:
+                if col in df.columns:
+                    valid_data = df[col].dropna()
+                    if len(valid_data) > 0:
+                        summary_rows.append({
+                            'Variable': col.replace('_', ' ').title(),
+                            'Count': f"{len(valid_data):,}",
+                            'Mean': f"{valid_data.mean():.2f}",
+                            'Median': f"{valid_data.median():.2f}",
+                            'Std': f"{valid_data.std():.2f}",
+                            'Min': f"{valid_data.min():.2f}",
+                            'Max': f"{valid_data.max():.2f}"
+                        })
+
+            if summary_rows:
+                summary_df = pd.DataFrame(summary_rows)
+                st.dataframe(summary_df, hide_index=True, width='stretch')
+
+            st.divider()
+
+    # CRRT-specific categorical-numeric visualization
+    if table_name == 'crrt_therapy':
+        st.markdown("#### 📊 Numeric Distributions by Category")
+        st.caption("Explore how numeric variables vary across different CRRT modes")
+
+        # Try to load cached visualization data first
+        import json
+        output_dir = st.session_state.config.get('output_dir', 'output')
+        viz_data_path = os.path.join(output_dir, 'final', f'{table_name}_visualization_data.json')
+
+        use_cached_data = False
+        viz_data = None
+
+        if os.path.exists(viz_data_path):
+            try:
+                with open(viz_data_path, 'r') as f:
+                    viz_data = json.load(f)
+                use_cached_data = True
+            except Exception as e:
+                st.warning(f"Could not load cached visualization data: {e}")
+                use_cached_data = False
+
+        if not use_cached_data:
+            # Fall back to loading and processing data on-the-fly
+            # Lazy load analyzer if needed
+            if analyzer is None:
+                analyzer = _lazy_load_analyzer(table_name, st.session_state.config, analyzer)
+
+            if analyzer and hasattr(analyzer, 'table') and hasattr(analyzer.table, 'df'):
+                # Apply outlier handling to the data before visualization
+                from modules.utils.outlier_handling import apply_outlier_ranges
+                cleaned_df, outlier_stats = apply_outlier_ranges(
+                    df=analyzer.table.df,
+                    table_name=table_name
+                )
+
+                # Show outlier information
+                total_outliers = sum(stats['outlier_count'] for stats in outlier_stats.values())
+                if total_outliers > 0:
+                    st.info(f"ℹ️ **{total_outliers:,} outliers replaced with NA** across numeric columns based on configured thresholds")
+
+                # Define available columns
+                categorical_columns = ['crrt_mode_category']
+                numeric_columns = [
+                    'blood_flow_rate',
+                    'pre_filter_replacement_fluid_rate',
+                    'post_filter_replacement_fluid_rate',
+                    'dialysate_flow_rate',
+                    'ultrafiltration_out'
+                ]
+
+                show_categorical_numeric_distribution(
+                    df=cleaned_df,
+                    categorical_columns=categorical_columns,
+                    numeric_columns=numeric_columns,
+                    table_name=table_name,
+                    default_categorical='crrt_mode_category',
+                    default_numeric='blood_flow_rate',
+                    raw_df=analyzer.table.df  # Pass raw data for dual plots
+                )
+            else:
+                st.warning("Data not available for visualization")
+        else:
+            # Use cached data for visualization
+            if viz_data:
+                # Show outlier information from cached data
+                total_outliers = viz_data.get('total_outliers_replaced', 0)
+                if total_outliers > 0:
+                    st.info(f"ℹ️ **{total_outliers:,} outliers replaced with NA** across numeric columns based on configured thresholds")
+
+                # Lazy load analyzer to get the dataframe
+                if analyzer is None:
+                    analyzer = _lazy_load_analyzer(table_name, st.session_state.config, analyzer)
+
+                if analyzer and hasattr(analyzer, 'table') and hasattr(analyzer.table, 'df'):
+                    # Apply outlier handling (same as cached)
+                    from modules.utils.outlier_handling import apply_outlier_ranges
+                    cleaned_df, _ = apply_outlier_ranges(
+                        df=analyzer.table.df,
+                        table_name=table_name
+                    )
+
+                    show_categorical_numeric_distribution(
+                        df=cleaned_df,
+                        categorical_columns=viz_data['categorical_columns'],
+                        numeric_columns=viz_data['numeric_columns'],
+                        table_name=table_name,
+                        default_categorical='crrt_mode_category',
+                        default_numeric='blood_flow_rate',
+                        raw_df=analyzer.table.df  # Pass raw data for dual plots
+                    )
+                else:
+                    st.warning("Data not available for visualization")
+
+        st.divider()
 
     # Patient-specific summary table
     if analyzer and hasattr(analyzer, 'generate_patient_summary'):

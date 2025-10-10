@@ -83,8 +83,14 @@ Examples:
                             help='Analyze patient table')
     table_group.add_argument('--hospitalization', action='store_true',
                             help='Analyze hospitalization table')
+    table_group.add_argument('--adt', action='store_true',
+                            help='Analyze ADT table')
+    table_group.add_argument('--code_status', action='store_true',
+                            help='Analyze code status table')
+    table_group.add_argument('--crrt_therapy', action='store_true',
+                            help='Analyze CRRT therapy table')
     table_group.add_argument('--all', action='store_true',
-                            help='Analyze all implemented tables (patient, hospitalization)')
+                            help='Analyze all implemented tables (patient, hospitalization, adt, code_status, crrt_therapy)')
 
     # Operations
     ops_group = parser.add_argument_group('Operations')
@@ -105,8 +111,8 @@ Examples:
     args = parser.parse_args()
 
     # Validate arguments
-    if not (args.patient or args.hospitalization or args.all):
-        parser.error('Please specify at least one table: --patient, --hospitalization, or --all')
+    if not (args.patient or args.hospitalization or args.adt or args.code_status or args.crrt_therapy or args.all):
+        parser.error('Please specify at least one table: --patient, --hospitalization, --adt, --code_status, --crrt_therapy, or --all')
 
     if not (args.validate or args.summary):
         parser.error('Please specify at least one operation: --validate and/or --summary')
@@ -114,12 +120,18 @@ Examples:
     # Determine which tables to analyze
     tables = []
     if args.all:
-        tables = ['patient', 'hospitalization']
+        tables = ['patient', 'hospitalization', 'adt', 'code_status', 'crrt_therapy']
     else:
         if args.patient:
             tables.append('patient')
         if args.hospitalization:
             tables.append('hospitalization')
+        if args.adt:
+            tables.append('adt')
+        if args.code_status:
+            tables.append('code_status')
+        if args.crrt_therapy:
+            tables.append('crrt_therapy')
 
     # Load configuration
     try:

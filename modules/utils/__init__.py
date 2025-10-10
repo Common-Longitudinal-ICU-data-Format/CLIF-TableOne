@@ -43,6 +43,9 @@ from .cache_manager import (
     get_completion_status,
     get_status_display
 )
+from .categorical_numeric_viz import (
+    show_categorical_numeric_distribution
+)
 
 __all__ = [
     # Validation
@@ -82,5 +85,7 @@ __all__ = [
     'format_cache_timestamp',
     'get_cache_statistics',
     'get_completion_status',
-    'get_status_display'
+    'get_status_display',
+    # Categorical-Numeric Visualization
+    'show_categorical_numeric_distribution'
 ]
