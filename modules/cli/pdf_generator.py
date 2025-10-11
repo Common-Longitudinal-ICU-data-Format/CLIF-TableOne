@@ -43,7 +43,8 @@ class ValidationPDFGenerator:
     def generate_validation_pdf(self, validation_data: Dict[str, Any],
                                 table_name: str, output_path: str,
                                 site_name: Optional[str] = None,
-                                timezone: Optional[str] = None) -> str:
+                                timezone: Optional[str] = None,
+                                feedback: Optional[Dict[str, Any]] = None) -> str:
         """
         Generate a PDF report from validation JSON data.
 
@@ -59,6 +60,8 @@ class ValidationPDFGenerator:
             Name of the site/hospital
         timezone : str, optional
             Configured timezone for filtering errors (defaults to UTC)
+        feedback : dict, optional
+            User feedback on validation errors with adjusted status
 
         Returns:
         --------
@@ -141,6 +144,14 @@ class ValidationPDFGenerator:
         story.append(self.Paragraph("Status Report Overview", heading_style))
 
         status = validation_data.get('status', 'unknown')
+        original_status = None
+
+        # Check if feedback was provided and status was adjusted
+        if feedback:
+            original_status = feedback.get('original_status')
+            adjusted_status = feedback.get('adjusted_status')
+            if adjusted_status and adjusted_status != original_status:
+                status = adjusted_status  # Use the adjusted status
 
         # Determine which row should be highlighted
         status_counts = {'complete': 0, 'partial': 0, 'incomplete': 0}
@@ -191,8 +202,13 @@ class ValidationPDFGenerator:
 
         if 'error' not in data_info:
             # Show unique IDs instead of rows/columns (matching CLIF Report Card)
+            # Show status change if feedback was provided
+            status_display = status.upper()
+            if feedback and original_status and original_status != status:
+                status_display = f"{original_status.upper()} → {status.upper()}"
+
             data_rows = [
-                [table_name.title(), status.upper()]
+                [table_name.title(), status_display]
             ]
 
             # Add unique hospitalizations if available
@@ -325,6 +341,55 @@ class ValidationPDFGenerator:
         else:
             story.append(self.Paragraph("✓ No validation issues found!", styles['Normal']))
 
+        # Add User Feedback Section if feedback was provided
+        if feedback:
+            rejected_count = feedback.get('rejected_count', 0)
+            accepted_count = feedback.get('accepted_count', 0)
+
+            if rejected_count > 0 or accepted_count > 0:
+                story.append(self.PageBreak())
+                story.append(self.Paragraph("User Feedback Summary", heading_style))
+
+                # Show status change if applicable
+                if original_status and original_status != status:
+                    status_change_text = f"Status updated from <b>{original_status.upper()}</b> to <b>{status.upper()}</b> based on user feedback"
+                    story.append(self.Paragraph(status_change_text, normal_style))
+                    story.append(self.Spacer(1, 0.2 * self.inch))
+
+                # Show feedback counts
+                feedback_counts = []
+                if rejected_count > 0:
+                    feedback_counts.append(f"{rejected_count} error(s) marked as not applicable")
+                if accepted_count > 0:
+                    feedback_counts.append(f"{accepted_count} error(s) confirmed as valid")
+
+                if feedback_counts:
+                    story.append(self.Paragraph(" | ".join(feedback_counts), normal_style))
+                    story.append(self.Spacer(1, 0.2 * self.inch))
+
+                # Show rejected errors with reasons
+                if rejected_count > 0 and 'user_decisions' in feedback:
+                    story.append(self.Paragraph(f"Errors Marked as Not Applicable ({rejected_count})", heading_style))
+
+                    for error_id, decision_info in feedback['user_decisions'].items():
+                        if decision_info.get('decision') == 'rejected':
+                            error_type = decision_info.get('error_type', 'Unknown')
+                            description = decision_info.get('description', 'No description')
+                            reason = decision_info.get('reason', '')
+
+                            story.append(self.Paragraph(f"• <b>{error_type}</b>", styles['Normal']))
+
+                            # Escape any HTML characters in description
+                            from html import escape
+                            description_escaped = escape(description)
+                            story.append(self.Paragraph(f"  {description_escaped}", styles['Normal']))
+
+                            if reason:
+                                reason_escaped = escape(reason)
+                                story.append(self.Paragraph(f"  <i>Reason: {reason_escaped}</i>", styles['Normal']))
+
+                            story.append(self.Spacer(1, 0.1 * self.inch))
+
         # Build PDF
         doc.build(story)
         return output_path
@@ -377,7 +442,8 @@ class ValidationPDFGenerator:
     def generate_text_report(self, validation_data: Dict[str, Any],
                             table_name: str, output_path: str,
                             site_name: Optional[str] = None,
-                            timezone: Optional[str] = None) -> str:
+                            timezone: Optional[str] = None,
+                            feedback: Optional[Dict[str, Any]] = None) -> str:
         """
         Generate a text report as fallback when reportlab is not available.
 
@@ -393,6 +459,8 @@ class ValidationPDFGenerator:
             Name of the site/hospital
         timezone : str, optional
             Configured timezone for filtering errors (defaults to UTC)
+        feedback : dict, optional
+            User feedback on validation errors with adjusted status
 
         Returns:
         --------
@@ -417,7 +485,19 @@ class ValidationPDFGenerator:
         lines.append("-" * 80)
         status = validation_data.get('status', 'unknown').upper()
         is_valid = validation_data.get('is_valid', False)
-        lines.append(f"Status: {status}")
+
+        # Check for feedback and adjusted status
+        if feedback:
+            original_status = feedback.get('original_status', '').upper()
+            adjusted_status = feedback.get('adjusted_status', '').upper()
+            if adjusted_status and adjusted_status != original_status:
+                lines.append(f"Status: {original_status} → {adjusted_status} (Updated based on user feedback)")
+                status = adjusted_status
+            else:
+                lines.append(f"Status: {status}")
+        else:
+            lines.append(f"Status: {status}")
+
         lines.append(f"Valid: {'Yes' if is_valid else 'No'}")
         lines.append("")
 
@@ -560,6 +640,39 @@ class ValidationPDFGenerator:
                             self._add_error_details_text(lines, error['details'])
         else:
             lines.append("✓ No validation issues found!")
+
+        # Add User Feedback Section if feedback was provided
+        if feedback:
+            rejected_count = feedback.get('rejected_count', 0)
+            accepted_count = feedback.get('accepted_count', 0)
+
+            if rejected_count > 0 or accepted_count > 0:
+                lines.append("")
+                lines.append("=" * 80)
+                lines.append("USER FEEDBACK SUMMARY")
+                lines.append("=" * 80)
+
+                # Show feedback counts
+                lines.append(f"Errors marked as not applicable: {rejected_count}")
+                lines.append(f"Errors confirmed as valid: {accepted_count}")
+                lines.append("")
+
+                # Show rejected errors with reasons
+                if rejected_count > 0 and 'user_decisions' in feedback:
+                    lines.append("ERRORS MARKED AS NOT APPLICABLE:")
+                    lines.append("-" * 80)
+
+                    for error_id, decision_info in feedback['user_decisions'].items():
+                        if decision_info.get('decision') == 'rejected':
+                            error_type = decision_info.get('error_type', 'Unknown')
+                            description = decision_info.get('description', 'No description')
+                            reason = decision_info.get('reason', '')
+
+                            lines.append(f"• {error_type}")
+                            lines.append(f"  {description}")
+                            if reason:
+                                lines.append(f"  Reason: {reason}")
+                            lines.append("")
 
         lines.append("")
         lines.append("=" * 80)

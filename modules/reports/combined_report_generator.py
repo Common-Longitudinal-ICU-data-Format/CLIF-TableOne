@@ -6,6 +6,7 @@ This module generates a single combined PDF report from multiple table validatio
 
 import os
 import json
+import csv
 from typing import Dict, Any, List, Optional
 from datetime import datetime
 from pathlib import Path
@@ -13,7 +14,7 @@ from pathlib import Path
 
 def collect_table_results(output_dir: str, table_names: List[str]) -> Dict[str, Any]:
     """
-    Collect validation results from multiple tables.
+    Collect validation results from multiple tables, including user feedback if available.
 
     Parameters:
     -----------
@@ -25,21 +26,50 @@ def collect_table_results(output_dir: str, table_names: List[str]) -> Dict[str, 
     Returns:
     --------
     dict
-        Dictionary mapping table names to their validation results
+        Dictionary mapping table names to their validation results with feedback merged
     """
+    from ..utils.feedback import load_feedback
+
     final_dir = os.path.join(output_dir, 'final')
     results = {}
 
     for table_name in table_names:
+        # First, load the base validation results
         json_path = os.path.join(final_dir, f'{table_name}_summary_validation.json')
 
+        validation_data = None
         if os.path.exists(json_path):
             try:
                 with open(json_path, 'r') as f:
                     validation_data = json.load(f)
-                    results[table_name] = validation_data
             except Exception as e:
                 print(f"⚠️  Warning: Could not load validation results for {table_name}: {e}")
+
+        # Check for user feedback file
+        feedback = load_feedback(output_dir, table_name)
+
+        if validation_data and feedback:
+            # Merge feedback into validation data
+            validation_data['original_status'] = validation_data.get('status', 'unknown')
+            validation_data['status'] = feedback.get('adjusted_status', validation_data.get('status', 'unknown'))
+            validation_data['has_feedback'] = True
+            validation_data['feedback'] = feedback
+
+            # Add feedback summary info
+            validation_data['feedback_summary'] = {
+                'total_errors': feedback.get('total_errors', 0),
+                'accepted': feedback.get('accepted_count', 0),
+                'rejected': feedback.get('rejected_count', 0),
+                'pending': feedback.get('pending_count', 0),
+                'status_changed': feedback.get('original_status') != feedback.get('adjusted_status'),
+                'user_decisions': feedback.get('user_decisions', {})
+            }
+
+            results[table_name] = validation_data
+        elif validation_data:
+            # No feedback file, use original validation
+            validation_data['has_feedback'] = False
+            results[table_name] = validation_data
         else:
             # Table not analyzed yet
             results[table_name] = None
@@ -116,7 +146,7 @@ TABLE_DISPLAY_NAMES = {
 }
 
 
-def _create_table_section(table_name: str, result: Dict[str, Any]) -> 'Table':
+def _create_table_section(table_name: str, result: Dict[str, Any], timezone: Optional[str] = None) -> 'Table':
     """
     Create a detailed section for a single table's results (matching legacy format).
 
@@ -126,6 +156,8 @@ def _create_table_section(table_name: str, result: Dict[str, Any]) -> 'Table':
         Name of the table
     result : dict
         Validation result dictionary for the table
+    timezone : str, optional
+        Configured timezone for filtering errors
 
     Returns:
     --------
@@ -135,6 +167,7 @@ def _create_table_section(table_name: str, result: Dict[str, Any]) -> 'Table':
     from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
     from reportlab.platypus import Table, TableStyle, Paragraph
     from reportlab.lib import colors
+    from ..utils.validation import classify_errors_by_status_impact
 
     # Get styles for text wrapping
     styles = getSampleStyleSheet()
@@ -153,6 +186,9 @@ def _create_table_section(table_name: str, result: Dict[str, Any]) -> 'Table':
 
     display_name = TABLE_DISPLAY_NAMES.get(table_name, table_name.replace('_', ' ').title())
     status = result.get('status', 'unknown')
+    original_status = result.get('original_status')
+    has_feedback = result.get('has_feedback', False)
+    feedback_summary = result.get('feedback_summary', {})
 
     # Use the exact same background colors as the Status Overview table
     status_colors_exact = {
@@ -166,8 +202,13 @@ def _create_table_section(table_name: str, result: Dict[str, Any]) -> 'Table':
 
     color = status_colors_exact.get(status, colors.HexColor('#F5F6FA'))
 
-    # Create table data
-    table_data = [[display_name, status.upper()]]
+    # Create table data - show status change if feedback was provided
+    if has_feedback and feedback_summary.get('status_changed'):
+        status_display = f"{original_status.upper()} → {status.upper()}"
+    else:
+        status_display = status.upper()
+
+    table_data = [[display_name, status_display]]
 
     if status in ['missing', 'error', 'not_analyzed']:
         error_msg = result.get('error', 'Table not analyzed or data not available')
@@ -188,61 +229,102 @@ def _create_table_section(table_name: str, result: Dict[str, Any]) -> 'Table':
             if data_info.get('unique_hospitalizations') is None and data_info.get('unique_patients') is None:
                 table_data.append(['Total Rows:', f"{data_info.get('row_count', 0):,}"])
 
-        # Add validation issues
-        validation_results = result.get('validation_results', {})
-        all_issues = []
-        all_issues.extend(validation_results.get('schema_errors', []))
-        all_issues.extend(validation_results.get('data_quality_issues', []))
-        all_issues.extend(validation_results.get('other_errors', []))
+        # Classify and add validation issues
+        errors = result.get('errors', {})
 
-        if all_issues:
-            # Count total issues (for display)
-            table_data.append(['Issues Found:', str(len(all_issues))])
+        # Get required columns if available (for proper classification)
+        required_columns = []
+        # TODO: Get required columns from schema if available
 
-            # Group issues by type for better display
-            issue_groups = {}
-            for issue in all_issues:
-                issue_type = issue.get('type', 'Issue')
-                if issue_type not in issue_groups:
-                    issue_groups[issue_type] = []
-                issue_groups[issue_type].append(issue.get('description', 'No description'))
+        # Classify errors into status-affecting and informational
+        classified_errors = classify_errors_by_status_impact(errors, required_columns, table_name, timezone)
+        status_affecting = classified_errors['status_affecting']
+        informational = classified_errors['informational']
 
-            # Display grouped issues with truncation to prevent overflow
-            counter = 1
-            MAX_ISSUES_TO_DISPLAY = 10  # Limit to prevent page overflow
+        # Count errors
+        status_affecting_count = sum([
+            len(status_affecting.get('schema_errors', [])),
+            len(status_affecting.get('data_quality_issues', [])),
+            len(status_affecting.get('other_errors', []))
+        ])
 
-            for issue_type, descriptions in issue_groups.items():
-                if len(descriptions) == 1:
-                    # Single issue - display normally
-                    issue_desc_paragraph = Paragraph(descriptions[0], normal_style)
-                    table_data.append([f"{counter}. {issue_type}:", issue_desc_paragraph])
-                    counter += 1
-                else:
-                    # Multiple issues of same type - use bullet points with truncation
-                    bullet_style = ParagraphStyle(
-                        'BulletStyle',
-                        parent=normal_style,
-                        fontSize=8,
-                        leftIndent=12,
-                        bulletIndent=6,
-                        spaceAfter=2
-                    )
+        informational_count = sum([
+            len(informational.get('schema_errors', [])),
+            len(informational.get('data_quality_issues', [])),
+            len(informational.get('other_errors', []))
+        ])
 
-                    # Truncate if too many issues
-                    display_descriptions = descriptions[:MAX_ISSUES_TO_DISPLAY]
-                    truncated_count = len(descriptions) - len(display_descriptions)
+        total_issues = status_affecting_count + informational_count
 
-                    bullet_points = [f"• {desc}" for desc in display_descriptions]
-                    if truncated_count > 0:
-                        bullet_points.append(f"• <i>...and {truncated_count} more (see CSV report for details)</i>")
+        if total_issues > 0:
+            # Show total issues found
+            table_data.append(['Issues Found:', f"{total_issues} ({status_affecting_count} status-affecting, {informational_count} informational)"])
 
-                    bullet_text = "<br/>".join(bullet_points)
-                    issue_desc_paragraph = Paragraph(bullet_text, bullet_style)
-                    table_data.append([f"{counter}. {issue_type}:", issue_desc_paragraph])
-                    counter += 1
+            # Display status-affecting errors first (these determine the validation status)
+            if status_affecting_count > 0:
+                # Combine all status-affecting errors for display
+                all_status_affecting = []
+                all_status_affecting.extend(status_affecting.get('schema_errors', []))
+                all_status_affecting.extend(status_affecting.get('data_quality_issues', []))
+                all_status_affecting.extend(status_affecting.get('other_errors', []))
+
+                # Group by type
+                issue_groups = {}
+                for issue in all_status_affecting:
+                    issue_type = issue.get('type', 'Issue')
+                    if issue_type not in issue_groups:
+                        issue_groups[issue_type] = []
+                    issue_groups[issue_type].append(issue.get('description', 'No description'))
+
+                # Display grouped issues
+                counter = 1
+                MAX_ISSUES_TO_DISPLAY = 10
+
+                for issue_type, descriptions in issue_groups.items():
+                    if len(descriptions) == 1:
+                        # Single issue - display normally
+                        issue_desc_paragraph = Paragraph(descriptions[0], normal_style)
+                        table_data.append([f"{counter}. {issue_type}:", issue_desc_paragraph])
+                        counter += 1
+                    else:
+                        # Multiple issues of same type - use bullet points
+                        bullet_style = ParagraphStyle(
+                            'BulletStyle',
+                            parent=normal_style,
+                            fontSize=8,
+                            leftIndent=12,
+                            bulletIndent=6,
+                            spaceAfter=2
+                        )
+
+                        # Truncate if too many issues
+                        display_descriptions = descriptions[:MAX_ISSUES_TO_DISPLAY]
+                        truncated_count = len(descriptions) - len(display_descriptions)
+
+                        bullet_points = [f"• {desc}" for desc in display_descriptions]
+                        if truncated_count > 0:
+                            bullet_points.append(f"• <i>...and {truncated_count} more</i>")
+
+                        bullet_text = "<br/>".join(bullet_points)
+                        issue_desc_paragraph = Paragraph(bullet_text, bullet_style)
+                        table_data.append([f"{counter}. {issue_type}:", issue_desc_paragraph])
+                        counter += 1
+
+            # If there are informational issues, add a note about them
+            if informational_count > 0:
+                info_text = f"<i>Plus {informational_count} informational issue(s) that do not affect status</i>"
+                table_data.append(['Note:', Paragraph(info_text, normal_style)])
 
         elif status == 'complete':
             table_data.append(['Status:', 'All validation checks passed!'])
+
+        # Add feedback information if available
+        if has_feedback and feedback_summary.get('status_changed'):
+            feedback_text = f"Status updated based on user feedback: {feedback_summary['rejected']} error(s) marked as not applicable"
+            table_data.append(['Note:', Paragraph(f"<i>{feedback_text}</i>", normal_style)])
+        elif has_feedback and feedback_summary.get('rejected', 0) > 0:
+            feedback_text = f"User feedback: {feedback_summary['rejected']} error(s) marked as not applicable"
+            table_data.append(['Note:', Paragraph(f"<i>{feedback_text}</i>", normal_style)])
 
     # Create table with professional styling
     from reportlab.lib.units import inch
@@ -437,7 +519,7 @@ def generate_combined_pdf(table_results: Dict[str, Any], output_path: str,
                 'error': 'Table not analyzed'
             }
 
-        story.append(_create_table_section(table_name, result))
+        story.append(_create_table_section(table_name, result, timezone))
         story.append(Spacer(1, 20))
 
     # Build PDF
@@ -445,11 +527,199 @@ def generate_combined_pdf(table_results: Dict[str, Any], output_path: str,
     return output_path
 
 
+def generate_consolidated_csv(table_results: Dict[str, Any], output_path: str,
+                               timezone: Optional[str] = 'UTC') -> str:
+    """
+    Generate a consolidated CSV report from multiple table validation results.
+
+    Parameters:
+    -----------
+    table_results : dict
+        Dictionary mapping table names to validation results
+    output_path : str
+        Path where CSV should be saved
+    timezone : str, optional
+        Configured timezone for filtering errors
+
+    Returns:
+    --------
+    str
+        Path to generated CSV file
+    """
+    from ..utils.validation import classify_errors_by_status_impact
+
+    rows = []
+
+    # Process each table
+    for table_name, result in table_results.items():
+        display_name = TABLE_DISPLAY_NAMES.get(table_name, table_name.replace('_', ' ').title())
+
+        if result is None:
+            # Table not analyzed
+            rows.append({
+                'table_name': display_name,
+                'status': 'missing',
+                'issue_type': 'Table Status',
+                'issue_category': 'Critical',
+                'column_name': '',
+                'issue_description': 'Data file not found or table not analyzed',
+                'user_feedback': '',
+                'unique_hospitalizations': '',
+                'unique_patients': '',
+                'total_rows': ''
+            })
+            continue
+
+        status = result.get('status', 'unknown')
+        original_status = result.get('original_status')
+        has_feedback = result.get('has_feedback', False)
+        feedback_summary = result.get('feedback_summary', {})
+        data_info = result.get('data_info', {})
+        unique_hosp = data_info.get('unique_hospitalizations', '')
+        unique_patients = data_info.get('unique_patients', '')
+        total_rows = data_info.get('row_count', '')
+
+        # Show status change if feedback was provided
+        status_display = status
+        table_description = 'Table loaded successfully'
+        if has_feedback and feedback_summary.get('status_changed'):
+            status_display = f"{original_status} → {status}"
+            table_description = f"Table loaded successfully (Status updated based on user feedback)"
+
+        # Add table summary row
+        rows.append({
+            'table_name': display_name,
+            'status': status_display,
+            'issue_type': 'Table Summary',
+            'issue_category': 'Info',
+            'column_name': '',
+            'issue_description': table_description,
+            'user_feedback': '',
+            'unique_hospitalizations': unique_hosp if unique_hosp else '',
+            'unique_patients': unique_patients if unique_patients else '',
+            'total_rows': total_rows
+        })
+
+        # Get and classify errors
+        errors = result.get('errors', {})
+
+        # Get required columns if available
+        required_columns = []  # TODO: Get from schema if available
+
+        # Classify errors
+        classified_errors = classify_errors_by_status_impact(errors, required_columns, table_name, timezone)
+
+        # Process all errors (both status-affecting and informational)
+        all_errors = []
+
+        # Add status-affecting errors with proper categorization
+        for error in classified_errors['status_affecting'].get('schema_errors', []):
+            all_errors.append({
+                'type': error.get('type', 'Schema Error'),
+                'category': 'Schema',
+                'description': error.get('description', ''),
+                'details': error.get('details', {})
+            })
+
+        for error in classified_errors['status_affecting'].get('data_quality_issues', []):
+            all_errors.append({
+                'type': error.get('type', 'Data Quality'),
+                'category': error.get('category', 'Data Quality'),
+                'description': error.get('description', ''),
+                'details': error.get('details', {})
+            })
+
+        for error in classified_errors['status_affecting'].get('other_errors', []):
+            all_errors.append({
+                'type': error.get('type', 'Other'),
+                'category': error.get('category', 'Other'),
+                'description': error.get('description', ''),
+                'details': error.get('details', {})
+            })
+
+        # Add informational errors
+        for error in classified_errors['informational'].get('schema_errors', []):
+            all_errors.append({
+                'type': error.get('type', 'Schema Information'),
+                'category': 'Schema',
+                'description': error.get('description', ''),
+                'details': error.get('details', {})
+            })
+
+        for error in classified_errors['informational'].get('data_quality_issues', []):
+            all_errors.append({
+                'type': error.get('type', 'Data Quality'),
+                'category': error.get('category', 'Data Quality'),
+                'description': error.get('description', ''),
+                'details': error.get('details', {})
+            })
+
+        for error in classified_errors['informational'].get('other_errors', []):
+            all_errors.append({
+                'type': error.get('type', 'Other'),
+                'category': error.get('category', 'Other'),
+                'description': error.get('description', ''),
+                'details': error.get('details', {})
+            })
+
+        # Add each error as a row
+        for error in all_errors:
+            # Extract column name from details if available
+            details = error.get('details', {})
+            column_name = details.get('column', '')
+
+            # Map raw_type to category if category is not already set
+            if error['category'] == 'Data Quality' and 'raw_type' in error:
+                raw_type = error.get('raw_type', '')
+                if 'categorical' in raw_type.lower():
+                    error['category'] = 'Categorical'
+
+            # Check if this error has user feedback
+            user_feedback_status = ''
+            if has_feedback and feedback_summary.get('user_decisions'):
+                # Try to find this error in user decisions
+                from ..utils.feedback import create_error_id
+                error_id = create_error_id(error)
+                if error_id in feedback_summary['user_decisions']:
+                    decision = feedback_summary['user_decisions'][error_id].get('decision', '')
+                    if decision == 'rejected':
+                        user_feedback_status = 'Not Applicable'
+                    elif decision == 'accepted':
+                        user_feedback_status = 'Confirmed'
+
+            rows.append({
+                'table_name': display_name,
+                'status': status_display,
+                'issue_type': error['type'],
+                'issue_category': error['category'],
+                'column_name': column_name,
+                'issue_description': error['description'],
+                'user_feedback': user_feedback_status,
+                'unique_hospitalizations': unique_hosp if unique_hosp else '',
+                'unique_patients': unique_patients if unique_patients else '',
+                'total_rows': total_rows
+            })
+
+    # Write CSV file
+    with open(output_path, 'w', newline='') as csvfile:
+        fieldnames = [
+            'table_name', 'status', 'issue_type', 'issue_category',
+            'column_name', 'issue_description', 'user_feedback',
+            'unique_hospitalizations', 'unique_patients', 'total_rows'
+        ]
+        writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
+
+        writer.writeheader()
+        writer.writerows(rows)
+
+    return output_path
+
+
 def generate_combined_report(output_dir: str, table_names: List[str],
                             site_name: Optional[str] = None,
                             timezone: Optional[str] = 'UTC') -> Optional[str]:
     """
-    High-level function to generate a combined validation report.
+    High-level function to generate a combined validation report (PDF and CSV).
 
     Parameters:
     -----------
@@ -483,6 +753,11 @@ def generate_combined_report(output_dir: str, table_names: List[str],
         pdf_path = os.path.join(final_dir, 'combined_validation_report.pdf')
 
         generate_combined_pdf(table_results, pdf_path, site_name, timezone)
+
+        # Generate consolidated CSV
+        csv_path = os.path.join(final_dir, 'consolidated_validation.csv')
+        generate_consolidated_csv(table_results, csv_path, timezone)
+        print(f"✅ Consolidated CSV saved: consolidated_validation.csv")
 
         return pdf_path
 

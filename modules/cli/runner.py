@@ -324,6 +324,7 @@ class CLIAnalysisRunner:
 
                 if pdf_path:
                     self.log(self.formatter.success(f"Combined validation report saved: combined_validation_report.pdf"), force=True)
+                    self.log(self.formatter.success(f"Consolidated CSV saved: consolidated_validation.csv"), force=True)
                 else:
                     self.log(self.formatter.warning("Could not generate combined validation report"), force=True)
 

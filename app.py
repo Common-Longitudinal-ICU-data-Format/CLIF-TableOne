@@ -51,17 +51,38 @@ from modules.utils import (
 import plotly.graph_objects as go
 import plotly.express as px
 
-# Page configuration
+# Page configuration with dark theme
 st.set_page_config(
     page_title="CLIF 2.1 Validation & Summarization",
     page_icon="🏥",
     layout="wide",
-    initial_sidebar_state="expanded"
+    initial_sidebar_state="expanded",
+    menu_items=None
 )
 
-# Custom CSS for styling
+# Custom CSS for styling with dark theme
 st.markdown("""
 <style>
+    /* Dark theme for main app and sidebar */
+    .stApp {
+        background-color: #0e1117;
+    }
+
+    /* Dark sidebar */
+    section[data-testid="stSidebar"] {
+        background-color: #262730 !important;
+    }
+
+    section[data-testid="stSidebar"] .css-1d391kg,
+    section[data-testid="stSidebar"] .css-1d391kg * {
+        background-color: #262730 !important;
+    }
+
+    /* Dark theme for the main content area */
+    .main > div {
+        background-color: #0e1117;
+    }
+
     .main-header {
         text-align: center;
         padding: 0.5rem;
@@ -258,6 +279,7 @@ def show_home_page(config: dict, available_tables: list):
     with col2:
         if st.button("📄 Generate Full Report", type="primary", use_container_width=True):
             st.session_state.generate_combined_report = True
+            st.session_state.current_page = "🏠 Home"  # Ensure we stay on Home page
             st.rerun()
 
     # Handle report generation
@@ -329,19 +351,38 @@ def show_home_page(config: dict, available_tables: list):
 
                 if pdf_path:
                     st.success("✅ Combined validation report generated!")
+                    st.success("✅ Consolidated CSV summary generated!")
 
-                    # Provide download button
-                    with open(pdf_path, 'rb') as f:
-                        pdf_data = f.read()
+                    # Provide download buttons for both PDF and CSV
+                    col1, col2 = st.columns(2)
 
-                    st.download_button(
-                        label="📥 Download Combined Report",
-                        data=pdf_data,
-                        file_name="combined_validation_report.pdf",
-                        mime="application/pdf",
-                        type="primary",
-                        use_container_width=True
-                    )
+                    with col1:
+                        # PDF download button
+                        with open(pdf_path, 'rb') as f:
+                            pdf_data = f.read()
+                        st.download_button(
+                            label="📥 Download PDF Report",
+                            data=pdf_data,
+                            file_name="combined_validation_report.pdf",
+                            mime="application/pdf",
+                            type="primary",
+                            use_container_width=True
+                        )
+
+                    with col2:
+                        # CSV download button
+                        csv_path = os.path.join(config.get('output_dir', 'output'), 'final', 'consolidated_validation.csv')
+                        if os.path.exists(csv_path):
+                            with open(csv_path, 'r') as f:
+                                csv_data = f.read()
+                            st.download_button(
+                                label="📥 Download CSV Summary",
+                                data=csv_data,
+                                file_name="consolidated_validation.csv",
+                                mime="text/csv",
+                                type="primary",
+                                use_container_width=True
+                            )
                 else:
                     st.error("❌ Failed to generate combined report")
 
@@ -506,16 +547,32 @@ def main():
 
     # Navigation
     st.divider()
+
+    # Initialize navigation state if not exists
+    if 'current_page' not in st.session_state:
+        st.session_state.current_page = "🏠 Home"
+
+    # When run_analysis is clicked, switch to Table Analysis page
+    if st.session_state.get('run_analysis', False):
+        st.session_state.current_page = "📊 Table Analysis"
+
     page = st.radio(
         "Navigation",
         ["🏠 Home", "📊 Table Analysis"],
         horizontal=True,
-        label_visibility="collapsed"
+        label_visibility="collapsed",
+        key="navigation_radio",
+        index=["🏠 Home", "📊 Table Analysis"].index(st.session_state.current_page)
     )
+
+    # Update session state when user manually changes navigation
+    if page != st.session_state.current_page:
+        st.session_state.current_page = page
+
     st.divider()
 
     # Show appropriate page
-    if page == "🏠 Home":
+    if st.session_state.current_page == "🏠 Home":
         show_home_page(config, available_tables)
         return
 
@@ -793,6 +850,14 @@ def analyze_table(table_name, config, run_validation, run_outlier_handling, forc
                         csv_filepath = os.path.join(final_dir, f"{table_name}_summary.csv")
                         adt_summary_df.to_csv(csv_filepath, index=False)
                         st.success(f"✅ ADT summary CSV saved")
+
+                # Save Hospital Diagnosis summary
+                if hasattr(analyzer, 'generate_hospital_diagnosis_summary'):
+                    hosp_diag_summary_df = analyzer.generate_hospital_diagnosis_summary()
+                    if not hosp_diag_summary_df.empty:
+                        csv_filepath = os.path.join(final_dir, f"{table_name}_summary.csv")
+                        hosp_diag_summary_df.to_csv(csv_filepath, index=False)
+                        st.success(f"✅ Hospital Diagnosis summary CSV saved")
 
                 # Save CRRT numeric distributions
                 if hasattr(analyzer, 'save_numeric_distributions'):
@@ -1245,7 +1310,8 @@ def display_validation_results(analyzer, validation_results, existing_feedback, 
                                         table_name,
                                         pdf_path,
                                         st.session_state.config.get('site_name'),
-                                        st.session_state.config.get('timezone', 'UTC')
+                                        st.session_state.config.get('timezone', 'UTC'),
+                                        feedback=existing_feedback  # Pass the feedback data
                                     )
                                 else:
                                     # Fall back to text report
@@ -1255,7 +1321,8 @@ def display_validation_results(analyzer, validation_results, existing_feedback, 
                                         table_name,
                                         txt_path,
                                         st.session_state.config.get('site_name'),
-                                        st.session_state.config.get('timezone', 'UTC')
+                                        st.session_state.config.get('timezone', 'UTC'),
+                                        feedback=existing_feedback  # Pass the feedback data
                                     )
                         except Exception as e:
                             st.warning(f"Could not regenerate PDF report: {e}")
@@ -1449,6 +1516,14 @@ def display_summary_statistics(analyzer, summary_stats, table_name):
                 st.metric("Unique Hospitalizations", f"{data_info.get('unique_hospitalizations', 0):,}")
             elif 'unique_patients' in data_info and data_info.get('unique_patients', 0) > 0:
                 st.metric("Unique Patients", f"{data_info.get('unique_patients', 0):,}")
+            elif 'unique_diagnosis_codes' in data_info:
+                st.metric("Unique Diagnosis Codes", f"{data_info.get('unique_diagnosis_codes', 0):,}")
+                # Show ICD format breakdown if available
+                if data_info.get('icd10cm_percentage', 0) > 0 or data_info.get('icd9cm_percentage', 0) > 0:
+                    icd10_pct = data_info.get('icd10cm_percentage', 0)
+                    icd9_pct = data_info.get('icd9cm_percentage', 0)
+                    help_text = f"ICD-10: {icd10_pct:.1f}%, ICD-9: {icd9_pct:.1f}%"
+                    st.caption(help_text)
             else:
                 # For tables without patient_id, show unique devices or modes
                 if 'unique_devices' in data_info:
@@ -1461,8 +1536,12 @@ def display_summary_statistics(analyzer, summary_stats, table_name):
             # Show death records for patient table only
             if 'has_death_records' in data_info:
                 st.metric("Death Records", f"{int(data_info.get('has_death_records', 0)):,}")
+            elif 'unique_diagnosis_codes' in data_info:
+                st.metric("Avg Diagnoses/Hosp", f"{data_info.get('avg_diagnoses_per_hosp', 0):.1f}")
             elif 'unique_patients' in data_info and data_info.get('unique_patients', 0) > 0:
                 st.metric("Unique Patients", f"{data_info.get('unique_patients', 0):,}")
+            elif 'unique_med_categories' in data_info:
+                st.metric("Unique Med Categories", f"{data_info.get('unique_med_categories', 0):,}")
             elif 'unique_crrt_modes' in data_info:
                 st.metric("Unique CRRT Modes", f"{data_info.get('unique_crrt_modes', 0):,}")
 
@@ -1517,6 +1596,42 @@ def display_summary_statistics(analyzer, summary_stats, table_name):
 
                 if analyzer and hasattr(analyzer, 'table') and hasattr(analyzer.table, 'df'):
                     _show_year_distribution(analyzer.table.df, 'recorded_dttm', 'CRRT Hospitalizations', count_by='hospitalization_id')
+                else:
+                    st.warning("Data not available for year distribution")
+
+    # Show dataset duration for Medication Admin Continuous table
+    if table_name == 'medication_admin_continuous' and 'first_admin_year' in data_info and data_info.get('first_admin_year'):
+        first_year = data_info.get('first_admin_year')
+        last_year = data_info.get('last_admin_year')
+        if first_year and last_year:
+            st.info(f"📅 **Dataset Duration (admin_dttm):** {first_year} - {last_year} ({last_year - first_year + 1} years)")
+
+            # Show year distribution histogram (lazy-load analyzer only when expander is opened)
+            with st.expander("📊 View Year Distribution"):
+                # Lazy load analyzer only when this feature is accessed
+                if analyzer is None:
+                    analyzer = _lazy_load_analyzer(table_name, st.session_state.config, analyzer)
+
+                if analyzer and hasattr(analyzer, 'table') and hasattr(analyzer.table, 'df'):
+                    _show_year_distribution(analyzer.table.df, 'admin_dttm', 'Medication Administrations', count_by='hospitalization_id')
+                else:
+                    st.warning("Data not available for year distribution")
+
+    # Show dataset duration for Medication Admin Intermittent table
+    if table_name == 'medication_admin_intermittent' and 'first_admin_year' in data_info and data_info.get('first_admin_year'):
+        first_year = data_info.get('first_admin_year')
+        last_year = data_info.get('last_admin_year')
+        if first_year and last_year:
+            st.info(f"📅 **Dataset Duration (admin_dttm):** {first_year} - {last_year} ({last_year - first_year + 1} years)")
+
+            # Show year distribution histogram (lazy-load analyzer only when expander is opened)
+            with st.expander("📊 View Year Distribution"):
+                # Lazy load analyzer only when this feature is accessed
+                if analyzer is None:
+                    analyzer = _lazy_load_analyzer(table_name, st.session_state.config, analyzer)
+
+                if analyzer and hasattr(analyzer, 'table') and hasattr(analyzer.table, 'df'):
+                    _show_year_distribution(analyzer.table.df, 'admin_dttm', 'Medication Administrations', count_by='hospitalization_id')
                 else:
                     st.warning("Data not available for year distribution")
 
@@ -1651,6 +1766,174 @@ def display_summary_statistics(analyzer, summary_stats, table_name):
                 # Skip mortality statistics display (death_dttm missingness is shown in missingness analysis)
 
                 st.divider()
+
+    # Hospital Diagnosis-specific CCI distribution
+    if table_name == 'hospital_diagnosis':
+        # Lazy load analyzer if needed
+        if analyzer is None:
+            analyzer = _lazy_load_analyzer(table_name, st.session_state.config, analyzer)
+
+        if analyzer and hasattr(analyzer, 'calculate_cci_distribution'):
+            st.markdown("#### 🏥 Charlson Comorbidity Index (CCI) Distribution")
+            st.caption("CCI scores are used to predict mortality risk based on comorbid conditions")
+
+            cci_stats = analyzer.calculate_cci_distribution()
+
+            if 'error' not in cci_stats:
+                # Display CCI statistics
+                col1, col2, col3, col4 = st.columns(4)
+                with col1:
+                    st.metric("Mean CCI", f"{cci_stats['mean']:.2f}")
+                with col2:
+                    st.metric("Median CCI", f"{cci_stats['median']:.0f}")
+                with col3:
+                    st.metric("Max CCI", f"{cci_stats['max']}")
+                with col4:
+                    st.metric("Patients", f"{cci_stats['count']:,}")
+
+                # Display risk categories
+                if 'risk_categories' in cci_stats:
+                    col1, col2 = st.columns(2)
+
+                    with col1:
+                        # Create pie chart for risk categories
+                        risk_df = pd.DataFrame({
+                            'Category': cci_stats['risk_categories']['labels'],
+                            'Count': cci_stats['risk_categories']['counts'],
+                            'Percentage': cci_stats['risk_categories']['percentages']
+                        })
+
+                        fig = px.pie(
+                            risk_df,
+                            values='Count',
+                            names='Category',
+                            title='CCI Risk Categories',
+                            color_discrete_sequence=['#2ecc71', '#f39c12', '#e67e22', '#e74c3c']
+                        )
+                        st.plotly_chart(fig, use_container_width=True)
+
+                    with col2:
+                        st.write("**Risk Category Distribution:**")
+                        st.dataframe(
+                            risk_df[['Category', 'Count', 'Percentage']],
+                            width='stretch',
+                            hide_index=True
+                        )
+
+                st.divider()
+            else:
+                st.warning(cci_stats.get('error', 'Could not calculate CCI distribution'))
+
+    # Hospital Diagnosis-specific Format Distribution
+    if table_name == 'hospital_diagnosis':
+        if analyzer is None:
+            analyzer = _lazy_load_analyzer(table_name, st.session_state.config, analyzer)
+
+        if analyzer and hasattr(analyzer, 'get_diagnosis_format_distribution'):
+            st.markdown("#### 📊 Diagnosis Code Format Distribution")
+            st.caption("Breakdown of diagnosis codes by ICD format (ICD-10CM vs ICD-9CM)")
+
+            format_dist = analyzer.get_diagnosis_format_distribution()
+
+            if 'error' not in format_dist and 'formats' in format_dist:
+                col1, col2 = st.columns(2)
+
+                with col1:
+                    # Create pie chart for format distribution
+                    format_df = pd.DataFrame(format_dist['formats'])
+                    if not format_df.empty:
+                        fig = px.pie(
+                            format_df,
+                            values='diagnosis_count',
+                            names='format',
+                            title='Diagnosis Codes by Format',
+                            color_discrete_map={
+                                'ICD10CM': '#3498db',
+                                'ICD9CM': '#e74c3c'
+                            }
+                        )
+                        fig.update_traces(
+                            textposition='inside',
+                            textinfo='percent+label',
+                            hovertemplate='<b>%{label}</b><br>Count: %{value:,}<br>Percentage: %{percent}<extra></extra>'
+                        )
+                        st.plotly_chart(fig, use_container_width=True)
+
+                with col2:
+                    st.write("**Format Distribution Details:**")
+
+                    # Create a summary table
+                    for fmt_info in format_dist['formats']:
+                        st.write(f"**{fmt_info['format']}:**")
+                        st.write(f"  • Diagnoses: {fmt_info['diagnosis_count']:,} ({fmt_info['diagnosis_percentage']:.1f}%)")
+                        st.write(f"  • Hospitalizations: {fmt_info['hospitalization_count']:,} ({fmt_info['hospitalization_percentage']:.1f}%)")
+
+                    # Add CCI compatibility note
+                    has_icd10 = any(fmt['format'] == 'ICD10CM' for fmt in format_dist['formats'])
+                    if has_icd10:
+                        st.success("✅ ICD-10CM codes available for CCI calculation")
+                    else:
+                        st.warning("⚠️ No ICD-10CM codes - CCI calculation not possible")
+
+                st.divider()
+
+    # Hospital Diagnosis-specific Top Diagnosis Codes
+    if table_name == 'hospital_diagnosis':
+        if analyzer is None:
+            analyzer = _lazy_load_analyzer(table_name, st.session_state.config, analyzer)
+
+        if analyzer and hasattr(analyzer, 'get_top_diagnosis_codes'):
+            st.markdown("#### 🔝 Top Diagnosis Codes")
+            st.caption("Most frequently occurring diagnosis codes across hospitalizations")
+
+            top_codes = analyzer.get_top_diagnosis_codes(n=20)
+
+            if 'error' not in top_codes:
+                col1, col2 = st.columns(2)
+
+                with col1:
+                    # Create bar chart for top 10 codes
+                    if len(top_codes['codes']) > 0:
+                        top10_df = pd.DataFrame({
+                            'Code': top_codes['codes'][:10],
+                            'Hospitalizations': top_codes['counts'][:10],
+                            'Percentage': top_codes['percentages'][:10]
+                        })
+
+                        fig = px.bar(
+                            top10_df,
+                            x='Hospitalizations',
+                            y='Code',
+                            orientation='h',
+                            title='Top 10 Diagnosis Codes',
+                            labels={'Hospitalizations': 'Number of Hospitalizations'},
+                            text='Hospitalizations',
+                            color='Hospitalizations',
+                            color_continuous_scale='blues'
+                        )
+                        fig.update_traces(texttemplate='%{text:,}', textposition='outside')
+                        fig.update_layout(height=400, showlegend=False)
+                        st.plotly_chart(fig, use_container_width=True)
+
+                with col2:
+                    # Display top 20 codes table
+                    if len(top_codes['codes']) > 0:
+                        st.write("**Top 20 Diagnosis Codes:**")
+                        codes_df = pd.DataFrame({
+                            'Code': top_codes['codes'][:20],
+                            'Hospitalizations': [f"{c:,}" for c in top_codes['counts'][:20]],
+                            'Percentage': [f"{p:.1f}%" for p in top_codes['percentages'][:20]]
+                        })
+                        st.dataframe(
+                            codes_df,
+                            width='stretch',
+                            hide_index=True,
+                            height=400
+                        )
+
+                st.divider()
+            else:
+                st.warning(top_codes.get('error', 'Could not retrieve top diagnosis codes'))
 
     # CRRT-specific numeric summary (before outlier handling)
     if table_name == 'crrt_therapy':
@@ -1788,6 +2071,332 @@ def display_summary_statistics(analyzer, summary_stats, table_name):
                     )
                 else:
                     st.warning("Data not available for visualization")
+
+        st.divider()
+
+    # Medication Admin Continuous - specific visualizations
+    if table_name == 'medication_admin_continuous':
+        # Lazy load analyzer if needed
+        if analyzer is None:
+            analyzer = _lazy_load_analyzer(table_name, st.session_state.config, analyzer)
+
+        if analyzer and hasattr(analyzer, 'analyze_medication_by_group'):
+            st.markdown("#### 💊 Medication Group Distribution")
+            st.caption("Hospitalizations receiving each medication group")
+
+            group_analysis = analyzer.analyze_medication_by_group()
+
+            if 'error' not in group_analysis and 'groups' in group_analysis:
+                # Display medication group metrics in columns
+                groups_data = group_analysis['groups']
+                total_hosps = group_analysis['total_hospitalizations']
+
+                # Show top medication groups
+                top_groups = sorted(groups_data.items(), key=lambda x: x[1]['hospitalization_count'], reverse=True)[:4]
+
+                cols = st.columns(len(top_groups))
+                for i, (group_name, group_data) in enumerate(top_groups):
+                    with cols[i]:
+                        # Custom display without arrow
+                        st.markdown(f"""
+                        <div style='padding: 10px 0;'>
+                            <div style='color: #808495; font-size: 14px; margin-bottom: 4px;'>{group_name.title()}</div>
+                            <div style='font-size: 32px; font-weight: bold; line-height: 1.1;'>{group_data['hospitalization_count']:,}</div>
+                            <div style='color: #0e8823; font-size: 14px; margin-top: 4px;'>{group_data['percentage_of_hospitalizations']:.1f}% of hospitalizations</div>
+                        </div>
+                        """, unsafe_allow_html=True)
+
+                st.divider()
+
+        # Display medication name to category mappings 
+        if analyzer:
+            st.markdown("#### 📋 Medication Name to Category Mappings")
+            st.caption("Mapping of medication names to standardized categories")
+
+            # Check if mapping file exists
+            intermediate_dir = os.path.join(st.session_state.config.get('output_dir', 'output'), 'intermediate')
+            mapping_file = os.path.join(intermediate_dir, 'medication_name_category_mappings.csv')
+
+            if os.path.exists(mapping_file):
+                try:
+                    mappings_df = pd.read_csv(mapping_file)
+
+                    # Show summary statistics
+                    col1, col2, col3 = st.columns(3)
+                    with col1:
+                        st.metric("Total Unique Names", f"{len(mappings_df):,}")
+                    with col2:
+                        st.metric("Total Occurrences", f"{mappings_df['frequency'].sum():,}")
+                    with col3:
+                        st.metric("Unique Categories", f"{mappings_df['med_category'].nunique():,}")
+
+                    # Show top mappings (no search)
+                    st.dataframe(
+                        mappings_df.head(100),
+                        column_config={
+                            "med_name": st.column_config.TextColumn("Medication Name", width="large"),
+                            "med_category": st.column_config.TextColumn("Category", width="medium"),
+                            "frequency": st.column_config.NumberColumn("Frequency", format="%d"),
+                            "unique_hospitalizations": st.column_config.NumberColumn("Unique Hospitalizations", format="%d")
+                        },
+                        hide_index=True,
+                        use_container_width=True,
+                        height=400
+                    )
+
+                    # Download option
+                    csv = mappings_df.to_csv(index=False)
+                    st.download_button(
+                        label="📥 Download Full Mapping CSV",
+                        data=csv,
+                        file_name="medication_name_category_mappings.csv",
+                        mime="text/csv"
+                    )
+                except Exception as e:
+                    st.warning(f"Could not load medication mappings: {e}")
+            else:
+                # Try to generate the mappings if analyzer is available
+                if hasattr(analyzer, 'save_name_category_mappings'):
+                    saved_path = analyzer.save_name_category_mappings()
+                    if saved_path:
+                        st.success(f"Generated and saved mappings")
+                        st.rerun()
+
+        # Medication dose statistics table
+        if analyzer and hasattr(analyzer, 'get_dose_statistics_table'):
+            st.markdown("#### 📊 Dose Distribution Statistics")
+            st.caption("Statistical summary for each medication and dosing unit")
+
+            # Get statistics table
+            stats_df = analyzer.get_dose_statistics_table()
+
+            if not stats_df.empty:
+                # Display statistics table
+                st.dataframe(
+                    stats_df,
+                    use_container_width=True,
+                    hide_index=True,
+                    height=400,
+                    column_config={
+                        "Medication": st.column_config.TextColumn("Medication", width="medium"),
+                        "Unit": st.column_config.TextColumn("Unit", width="small"),
+                        "Count": st.column_config.NumberColumn("Count", format="%d"),
+                        "Min": st.column_config.NumberColumn("Min", format="%.2f"),
+                        "Max": st.column_config.NumberColumn("Max", format="%.2f"),
+                        "Mean": st.column_config.NumberColumn("Mean", format="%.2f"),
+                        "Median": st.column_config.NumberColumn("Median", format="%.2f"),
+                        "Q1": st.column_config.NumberColumn("Q1", format="%.2f"),
+                        "Q3": st.column_config.NumberColumn("Q3", format="%.2f"),
+                        "StdDev": st.column_config.NumberColumn("Std Dev", format="%.2f")
+                    }
+                )
+
+                # Download option for statistics
+                csv = stats_df.to_csv(index=False)
+                st.download_button(
+                    label="📥 Download Statistics CSV",
+                    data=csv,
+                    file_name="medication_dose_statistics.csv",
+                    mime="text/csv"
+                )
+            else:
+                st.info("No dose statistics available")
+
+        # Grid of distribution plots
+        if analyzer and hasattr(analyzer, 'generate_distribution_plots'):
+            st.markdown("#### 📉 Dose Distribution Plots")
+            st.caption("Visual distribution of doses for top medications")
+
+            # Check if plot already exists
+            intermediate_dir = os.path.join(st.session_state.config.get('output_dir', 'output'), 'intermediate')
+            plot_file = os.path.join(intermediate_dir, 'medication_dose_distributions.png')
+
+            if os.path.exists(plot_file):
+                # Display existing plot
+                from PIL import Image
+                img = Image.open(plot_file)
+                st.image(img, caption="Dose distributions for top medications (outliers removed)", use_container_width=True)
+
+                # Regenerate button
+                if st.button("🔄 Regenerate Plots"):
+                    with st.spinner("Generating distribution plots..."):
+                        plot_path = analyzer.generate_distribution_plots(max_meds=20)
+                        if plot_path:
+                            st.success("✅ Plots regenerated")
+                            st.rerun()
+            else:
+                # Generate plots button
+                if st.button("📊 Generate Distribution Plots"):
+                    with st.spinner("Generating distribution plots..."):
+                        plot_path = analyzer.generate_distribution_plots(max_meds=20)
+                        if plot_path:
+                            st.success("✅ Plots generated")
+                            st.rerun()
+                        else:
+                            st.warning("Could not generate plots")
+
+        st.divider()
+
+    # Medication Admin Intermittent - specific visualizations
+    if table_name == 'medication_admin_intermittent':
+        # Lazy load analyzer if needed
+        if analyzer is None:
+            analyzer = _lazy_load_analyzer(table_name, st.session_state.config, analyzer)
+
+        if analyzer and hasattr(analyzer, 'analyze_medication_by_group'):
+            st.markdown("#### 💊 Medication Group Distribution")
+            st.caption("Hospitalizations receiving each medication group")
+
+            group_analysis = analyzer.analyze_medication_by_group()
+
+            if 'error' not in group_analysis and 'groups' in group_analysis:
+                # Display medication group metrics in columns
+                groups_data = group_analysis['groups']
+                total_hosps = group_analysis['total_hospitalizations']
+
+                # Show top medication groups
+                top_groups = sorted(groups_data.items(), key=lambda x: x[1]['hospitalization_count'], reverse=True)[:4]
+
+                cols = st.columns(len(top_groups))
+                for i, (group_name, group_data) in enumerate(top_groups):
+                    with cols[i]:
+                        # Custom display without arrow
+                        st.markdown(f"""
+                        <div style='padding: 10px 0;'>
+                            <div style='color: #808495; font-size: 14px; margin-bottom: 4px;'>{group_name.title()}</div>
+                            <div style='font-size: 32px; font-weight: bold; line-height: 1.1;'>{group_data['hospitalization_count']:,}</div>
+                            <div style='color: #0e8823; font-size: 14px; margin-top: 4px;'>{group_data['percentage_of_hospitalizations']:.1f}% of hospitalizations</div>
+                        </div>
+                        """, unsafe_allow_html=True)
+
+                st.divider()
+
+        # Display medication name to category mappings
+        if analyzer:
+            st.markdown("#### 📋 Medication Name to Category Mappings")
+            st.caption("Mapping of medication names to standardized categories")
+
+            # Check if mapping file exists
+            intermediate_dir = os.path.join(st.session_state.config.get('output_dir', 'output'), 'intermediate')
+            mapping_file = os.path.join(intermediate_dir, 'medication_intermittent_name_category_mappings.csv')
+
+            if os.path.exists(mapping_file):
+                try:
+                    mappings_df = pd.read_csv(mapping_file)
+
+                    # Show summary statistics
+                    col1, col2, col3 = st.columns(3)
+                    with col1:
+                        st.metric("Total Unique Names", f"{len(mappings_df):,}")
+                    with col2:
+                        st.metric("Total Occurrences", f"{mappings_df['frequency'].sum():,}")
+                    with col3:
+                        st.metric("Unique Categories", f"{mappings_df['med_category'].nunique():,}")
+
+                    # Show top mappings (no search)
+                    st.dataframe(
+                        mappings_df.head(100),
+                        column_config={
+                            "med_name": st.column_config.TextColumn("Medication Name", width="large"),
+                            "med_category": st.column_config.TextColumn("Category", width="medium"),
+                            "frequency": st.column_config.NumberColumn("Frequency", format="%d"),
+                            "unique_hospitalizations": st.column_config.NumberColumn("Unique Hospitalizations", format="%d")
+                        },
+                        hide_index=True,
+                        use_container_width=True,
+                        height=400
+                    )
+
+                    # Download option
+                    csv = mappings_df.to_csv(index=False)
+                    st.download_button(
+                        label="📥 Download Full Mapping CSV",
+                        data=csv,
+                        file_name="medication_intermittent_name_category_mappings.csv",
+                        mime="text/csv"
+                    )
+                except Exception as e:
+                    st.warning(f"Could not load medication mappings: {e}")
+            else:
+                # Try to generate the mappings if analyzer is available
+                if hasattr(analyzer, 'save_name_category_mappings'):
+                    saved_path = analyzer.save_name_category_mappings()
+                    if saved_path:
+                        st.success(f"Generated and saved mappings")
+                        st.rerun()
+
+        # Medication dose statistics table
+        if analyzer and hasattr(analyzer, 'get_dose_statistics_table'):
+            st.markdown("#### 📊 Dose Distribution Statistics")
+            st.caption("Statistical summary for each medication and dosing unit")
+
+            # Get statistics table
+            stats_df = analyzer.get_dose_statistics_table()
+
+            if not stats_df.empty:
+                # Display statistics table
+                st.dataframe(
+                    stats_df,
+                    use_container_width=True,
+                    hide_index=True,
+                    height=400,
+                    column_config={
+                        "Medication": st.column_config.TextColumn("Medication", width="medium"),
+                        "Unit": st.column_config.TextColumn("Unit", width="small"),
+                        "Count": st.column_config.NumberColumn("Count", format="%d"),
+                        "Min": st.column_config.NumberColumn("Min", format="%.2f"),
+                        "Max": st.column_config.NumberColumn("Max", format="%.2f"),
+                        "Mean": st.column_config.NumberColumn("Mean", format="%.2f"),
+                        "Median": st.column_config.NumberColumn("Median", format="%.2f"),
+                        "Q1": st.column_config.NumberColumn("Q1", format="%.2f"),
+                        "Q3": st.column_config.NumberColumn("Q3", format="%.2f"),
+                        "StdDev": st.column_config.NumberColumn("Std Dev", format="%.2f")
+                    }
+                )
+
+                # Download option for statistics
+                csv = stats_df.to_csv(index=False)
+                st.download_button(
+                    label="📥 Download Statistics CSV",
+                    data=csv,
+                    file_name="medication_intermittent_dose_statistics.csv",
+                    mime="text/csv"
+                )
+            else:
+                st.info("No dose statistics available")
+
+        # Grid of distribution plots
+        if analyzer and hasattr(analyzer, 'generate_distribution_plots'):
+            st.markdown("#### 📉 Dose Distribution Plots")
+            st.caption("Visual distribution of doses for top medications")
+
+            # Check if plot already exists
+            intermediate_dir = os.path.join(st.session_state.config.get('output_dir', 'output'), 'intermediate')
+            plot_file = os.path.join(intermediate_dir, 'medication_intermittent_dose_distributions.png')
+
+            if os.path.exists(plot_file):
+                # Display existing plot
+                from PIL import Image
+                img = Image.open(plot_file)
+                st.image(img, caption="Dose distributions for top medications (outliers removed)", use_container_width=True)
+
+                # Regenerate button
+                if st.button("🔄 Regenerate Plots", key="regen_intermittent_plots"):
+                    with st.spinner("Generating distribution plots..."):
+                        plot_path = analyzer.generate_distribution_plots(max_meds=20)
+                        if plot_path:
+                            st.success("✅ Plots regenerated")
+                            st.rerun()
+            else:
+                # Generate plots button
+                if st.button("📊 Generate Distribution Plots", key="gen_intermittent_plots"):
+                    with st.spinner("Generating distribution plots..."):
+                        plot_path = analyzer.generate_distribution_plots(max_meds=20)
+                        if plot_path:
+                            st.success("✅ Plots generated")
+                            st.rerun()
+                        else:
+                            st.warning("Could not generate plots")
 
         st.divider()
 
@@ -1999,6 +2608,25 @@ def display_summary_statistics(analyzer, summary_stats, table_name):
                     label="📥 Export CSV",
                     data=csv_data,
                     file_name=f"{table_name}_summary.csv",
+                    mime="text/csv",
+                    width='stretch'
+                )
+
+    # Hospital Diagnosis-specific summary table
+    if analyzer and hasattr(analyzer, 'generate_hospital_diagnosis_summary'):
+        st.markdown("### 📋 Hospital Diagnosis Summary")
+        summary_df = analyzer.generate_hospital_diagnosis_summary()
+        if not summary_df.empty:
+            col1, col2 = st.columns([4, 1])
+            with col1:
+                st.dataframe(summary_df, width='stretch', hide_index=True)
+            with col2:
+                # Export to CSV button
+                csv_data = summary_df.to_csv(index=False)
+                st.download_button(
+                    label="📥 Export CSV",
+                    data=csv_data,
+                    file_name=f"{table_name}_diagnosis_summary.csv",
                     mime="text/csv",
                     width='stretch'
                 )
