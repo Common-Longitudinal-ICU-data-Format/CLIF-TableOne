@@ -13,8 +13,10 @@ dependencies = [
     "plotly>=6.3.1",
     "pytz>=2025.2",
     "reportlab>=4.4.4",
+    "scipy>=1.16.2",
     "seaborn>=0.13.2",
     "streamlit>=1.50.0",
     "tableone>=0.9.5",
     "tqdm>=4.67.1",
+    "upsetplot>=0.9.0",
 ]
