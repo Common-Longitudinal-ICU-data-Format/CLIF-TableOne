@@ -1291,7 +1291,7 @@ class ClifReportCardGenerator:
 
         return table
 
-    def _create_outlier_summary_table(self, table_results: Dict[str, Any]) -> Optional[Table]:
+    def _create_outlier_summary_table(self, table_results: Dict[str, Any]) -> Optional['Table']:
         """
         Create a comprehensive outlier summary table for all tables.
 
@@ -1417,7 +1417,7 @@ class ClifReportCardGenerator:
 
         return summary_table
 
-    def _create_missingness_summary_table(self, table_results: Dict[str, Any]) -> Optional[Table]:
+    def _create_missingness_summary_table(self, table_results: Dict[str, Any]) -> Optional['Table']:
         """
         Create a comprehensive missingness summary table for all tables.
 
@@ -1647,7 +1647,7 @@ class ClifReportCardGenerator:
         # Generate text content
         content = []
         content.append("="*60)
-        content.append(f"🏥 {report_data["site_name"]} CLIF REPORT CARD")
+        content.append(f"🏥 {report_data['site_name']} CLIF REPORT CARD")
         content.append("="*60)
         content.append("")
         content.append(f"Generated: {report_data['timestamp']}")
