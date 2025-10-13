@@ -21,43 +21,64 @@ Currently implemented analyzers:
 
 ## Quick Start
 
-### Environment
+### Installation
 
+This project uses [UV](https://docs.astral.sh/uv/) for fast, reliable dependency management.
+
+**1. Install UV** (if not already installed):
 ```bash
-python -m venv .clif_table_one
-source .clif_table_one/bin/activate
-pip install --upgrade pip
-pip install -r requirements.txt
+# macOS/Linux
+curl -LsSf https://astral.sh/uv/install.sh | sh
+
+# Windows
+powershell -c "irm https://astral.sh/uv/install.ps1 | iex"
+
+# Or with pip
+pip install uv
 ```
 
-#windows
+**2. Set up the project**:
 ```bash
-python -m venv .clif_table_one
-.clif_table_one\Scripts\activate
-pip install --upgrade pip
-pip install -r requirements.txt
+cd CLIF-TableOne
+
+# Initialize UV and install dependencies
+uv sync
 ```
+
+That's it! UV automatically creates a virtual environment and installs all dependencies.
 
 ### Web Application
 
 ```bash
-# Run the app
-streamlit run app.py
+# Run the Streamlit app
+uv run streamlit run app.py
 ```
 
 The app will open at `http://localhost:8501`
+
+**Optional: Custom port**
+```bash
+uv run streamlit run app.py --server.port 8501
+```
 
 ### Command Line Interface
 
 ```bash
 # Validate and summarize patient table
-python run_analysis.py --patient --validate --summary
+uv run python run_analysis.py --patient --validate --summary
 
 # Process multiple tables
-python run_analysis.py --patient --hospitalization --adt --validate --summary
+uv run python run_analysis.py --patient --hospitalization --adt --validate --summary
 
 # Custom config file
-python run_analysis.py --config path/to/config.json --patient --validate
+uv run python run_analysis.py --config path/to/config.json --patient --validate
+```
+
+### Jupyter Notebooks
+
+```bash
+# Launch Jupyter Lab
+uv run jupyter lab
 ```
 
 ## Configuration
@@ -76,9 +97,10 @@ Create or update `config/config.json`:
 ## Web Application Guide
 
 ### 1. Initial Setup
-1. Configure `config/config.json` with your site information
-2. Ensure CLIF data files are in the specified `tables_path`
-3. Launch app with `streamlit run app.py`
+1. Install UV and run `uv sync` to set up dependencies
+2. Configure `config/config.json` with your site information
+3. Ensure CLIF data files are in the specified `tables_path`
+4. Launch app with `uv run streamlit run app.py`
 
 ### 2. Running Analysis
 1. Select table from sidebar
@@ -123,29 +145,29 @@ All results saved to `output/final/`:
 
 ```bash
 # Single table with validation and summary
-python run_analysis.py --patient --validate --summary
+uv run python run_analysis.py --patient --validate --summary
 
 # Multiple specific tables
-python run_analysis.py --patient --hospitalization --validate --summary
+uv run python run_analysis.py --patient --hospitalization --validate --summary
 
 # All implemented tables
-python run_analysis.py --all --validate --summary
+uv run python run_analysis.py --all --validate --summary
 ```
 
 ### Advanced Options
 
 ```bash
 # Custom configuration
-python run_analysis.py --config custom/config.json --patient --validate
+uv run python run_analysis.py --config custom/config.json --patient --validate
 
 # Verbose output
-python run_analysis.py --patient --validate --summary --verbose
+uv run python run_analysis.py --patient --validate --summary --verbose
 
 # Quiet mode (errors only)
-python run_analysis.py --all --validate --summary --quiet
+uv run python run_analysis.py --all --validate --summary --quiet
 
 # Override output directory
-python run_analysis.py --patient --validate --output-dir custom/output
+uv run python run_analysis.py --patient --validate --output-dir custom/output
 ```
 
 ### CLI Options Reference
@@ -180,13 +202,13 @@ python run_analysis.py --patient --validate --output-dir custom/output
 **Cron Job (Daily Validation):**
 ```bash
 # Run at 2 AM daily
-0 2 * * * cd /path/to/CLIF-TableOne && python run_analysis.py --all --validate --quiet >> logs/analysis.log 2>&1
+0 2 * * * cd /path/to/CLIF-TableOne && uv run python run_analysis.py --all --validate --quiet >> logs/analysis.log 2>&1
 ```
 
 **CI/CD Pipeline:**
 ```bash
 #!/bin/bash
-python run_analysis.py --all --validate --summary
+uv run python run_analysis.py --all --validate --summary
 if [ $? -ne 0 ]; then
     echo "Validation failed"
     exit 1
@@ -222,16 +244,60 @@ See [FEEDBACK_SYSTEM.md](FEEDBACK_SYSTEM.md) for detailed technical documentatio
 
 ## Requirements
 
-**Core:**
+**System:**
 - Python 3.8+
-- streamlit
-- pandas
-- numpy
-- clifpy
-- plotly
-- reportlab (for PDF generation)
-- duckdb (for efficient year distributions)
+- UV (package manager) - See installation section above
 
+**Dependencies** (automatically managed by UV):
+- streamlit - Web interface
+- pandas - Data manipulation
+- numpy - Numerical operations
+- clifpy - CLIF data validation
+- plotly - Interactive visualizations
+- reportlab - PDF generation
+- duckdb - SQL queries
+- pytz - Timezone handling
+
+**Development Dependencies:**
+- jupyter - Notebooks
+- matplotlib - Static plots
+- seaborn - Statistical visualizations
+- tableone - Table generation
+- tqdm - Progress bars
+
+All dependencies are automatically installed via `uv sync`. No manual installation needed!
+
+## Why UV?
+
+This project uses UV instead of traditional pip/virtualenv for several benefits:
+
+- ⚡ **10-100x faster** than pip at installing packages
+- 🔒 **Reproducible builds** with `uv.lock` lockfile
+- 🎯 **Automatic venv management** - no need to activate/deactivate
+- 📦 **Clean dependencies** - only direct deps in `pyproject.toml`
+- 🚀 **Better caching** - faster subsequent installs
+
+### Common UV Commands
+
+```bash
+# Install/sync dependencies
+uv sync
+
+# Add a new dependency
+uv add package-name
+
+# Add a dev dependency
+uv add --group dev package-name
+
+# Update dependencies
+uv lock --upgrade
+
+# Run any command with project dependencies
+uv run <command>
+
+# See installed packages
+uv pip list
+```
 
 ## Troubleshooting
 
