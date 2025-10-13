@@ -30,12 +30,12 @@ def collect_table_results(output_dir: str, table_names: List[str]) -> Dict[str, 
     """
     from ..utils.feedback import load_feedback
 
-    final_dir = os.path.join(output_dir, 'final')
+    results_dir = os.path.join(output_dir, 'final', 'results')
     results = {}
 
     for table_name in table_names:
-        # First, load the base validation results
-        json_path = os.path.join(final_dir, f'{table_name}_summary_validation.json')
+        # First, load the base validation results from results subdirectory
+        json_path = os.path.join(results_dir, f'{table_name}_summary_validation.json')
 
         validation_data = None
         if os.path.exists(json_path):
@@ -278,14 +278,51 @@ def _create_table_section(table_name: str, result: Dict[str, Any], timezone: Opt
 
                 # Display grouped issues
                 counter = 1
-                MAX_ISSUES_TO_DISPLAY = 10
+                MAX_ISSUES_TO_DISPLAY = 5  # Reduced to prevent overflow
+                MAX_DESC_LENGTH = 500  # Max characters per description
+                MAX_TOTAL_ISSUES = 8  # Total issues to display across all types
 
-                for issue_type, descriptions in issue_groups.items():
-                    if len(descriptions) == 1:
+                total_issues_displayed = 0
+                for issue_type, descriptions in list(issue_groups.items())[:MAX_TOTAL_ISSUES]:
+                    if total_issues_displayed >= MAX_TOTAL_ISSUES:
+                        # Add note about remaining issues
+                        remaining_types = len(issue_groups) - counter + 1
+                        if remaining_types > 0:
+                            table_data.append(['Note:', Paragraph(f"<i>Plus {remaining_types} more issue types...</i>", normal_style)])
+                        break
+
+                    # Truncate long descriptions (e.g., lists of missing categorical values)
+                    truncated_descriptions = []
+                    for desc in descriptions:
+                        if len(desc) > MAX_DESC_LENGTH:
+                            # For lists of missing values, show first few and count
+                            if 'Missing categorical values' in desc or 'Expected categorical' in desc:
+                                # Extract the list portion if present
+                                parts = desc.split(':', 1)
+                                if len(parts) == 2:
+                                    prefix = parts[0]
+                                    values = parts[1].strip()
+                                    # Count items
+                                    value_list = [v.strip() for v in values.split(',')]
+                                    if len(value_list) > 10:
+                                        shown = ', '.join(value_list[:10])
+                                        truncated_desc = f"{prefix}: {shown}, ... and {len(value_list)-10} more values"
+                                    else:
+                                        truncated_desc = desc[:MAX_DESC_LENGTH] + "..."
+                                else:
+                                    truncated_desc = desc[:MAX_DESC_LENGTH] + "..."
+                            else:
+                                truncated_desc = desc[:MAX_DESC_LENGTH] + "..."
+                            truncated_descriptions.append(truncated_desc)
+                        else:
+                            truncated_descriptions.append(desc)
+
+                    if len(truncated_descriptions) == 1:
                         # Single issue - display normally
-                        issue_desc_paragraph = Paragraph(descriptions[0], normal_style)
+                        issue_desc_paragraph = Paragraph(truncated_descriptions[0], normal_style)
                         table_data.append([f"{counter}. {issue_type}:", issue_desc_paragraph])
                         counter += 1
+                        total_issues_displayed += 1
                     else:
                         # Multiple issues of same type - use bullet points
                         bullet_style = ParagraphStyle(
@@ -297,18 +334,25 @@ def _create_table_section(table_name: str, result: Dict[str, Any], timezone: Opt
                             spaceAfter=2
                         )
 
-                        # Truncate if too many issues
-                        display_descriptions = descriptions[:MAX_ISSUES_TO_DISPLAY]
+                        # Limit number of bullets displayed
+                        display_descriptions = truncated_descriptions[:MAX_ISSUES_TO_DISPLAY]
                         truncated_count = len(descriptions) - len(display_descriptions)
 
-                        bullet_points = [f"• {desc}" for desc in display_descriptions]
+                        bullet_points = []
+                        for desc in display_descriptions:
+                            # Further truncate bullets if needed
+                            if len(desc) > 200:
+                                desc = desc[:200] + "..."
+                            bullet_points.append(f"• {desc}")
+
                         if truncated_count > 0:
-                            bullet_points.append(f"• <i>...and {truncated_count} more</i>")
+                            bullet_points.append(f"• <i>...and {truncated_count} more similar issues</i>")
 
                         bullet_text = "<br/>".join(bullet_points)
                         issue_desc_paragraph = Paragraph(bullet_text, bullet_style)
                         table_data.append([f"{counter}. {issue_type}:", issue_desc_paragraph])
                         counter += 1
+                        total_issues_displayed += len(display_descriptions)
 
             # If there are informational issues, add a note about them
             if informational_count > 0:
@@ -351,7 +395,8 @@ def _create_table_section(table_name: str, result: Dict[str, Any], timezone: Opt
 
 
 def generate_combined_pdf(table_results: Dict[str, Any], output_path: str,
-                          site_name: Optional[str] = None, timezone: Optional[str] = 'UTC') -> str:
+                          site_name: Optional[str] = None, timezone: Optional[str] = 'UTC',
+                          used_sampling: bool = False) -> str:
     """
     Generate a combined PDF report from multiple table validation results.
 
@@ -365,6 +410,8 @@ def generate_combined_pdf(table_results: Dict[str, Any], output_path: str,
         Name of the site/hospital
     timezone : str, optional
         Configured timezone (defaults to UTC)
+    used_sampling : bool, optional
+        Whether a 1k ICU sample was used (defaults to False)
 
     Returns:
     --------
@@ -452,6 +499,19 @@ def generate_combined_pdf(table_results: Dict[str, Any], output_path: str,
     story.append(Paragraph(title_text, title_style))
     story.append(Paragraph("Combined Validation Report", heading_style))
     story.append(Spacer(1, 0.2 * inch))
+
+    # Add sampling note if applicable
+    if used_sampling:
+        sample_note_style = ParagraphStyle(
+            'SampleNote',
+            parent=normal_style,
+            fontSize=10,
+            textColor=colors.HexColor('#007ACC'),  # Blue color for emphasis
+            alignment=TA_CENTER,
+            fontName='Helvetica-Bold'
+        )
+        story.append(Paragraph("📊 This report was generated using a 1k ICU sample (stratified by year) for eligible tables", sample_note_style))
+        story.append(Spacer(1, 0.15 * inch))
 
     # Status Report Overview
     story.append(Paragraph("Status Report Overview", heading_style))
@@ -717,7 +777,8 @@ def generate_consolidated_csv(table_results: Dict[str, Any], output_path: str,
 
 def generate_combined_report(output_dir: str, table_names: List[str],
                             site_name: Optional[str] = None,
-                            timezone: Optional[str] = 'UTC') -> Optional[str]:
+                            timezone: Optional[str] = 'UTC',
+                            used_sampling: bool = False) -> Optional[str]:
     """
     High-level function to generate a combined validation report (PDF and CSV).
 
@@ -731,6 +792,8 @@ def generate_combined_report(output_dir: str, table_names: List[str],
         Name of the site/hospital
     timezone : str, optional
         Configured timezone (defaults to UTC)
+    used_sampling : bool, optional
+        Whether a 1k ICU sample was used for validation (defaults to False)
 
     Returns:
     --------
@@ -748,14 +811,16 @@ def generate_combined_report(output_dir: str, table_names: List[str],
             return None
 
         # Generate PDF
-        final_dir = os.path.join(output_dir, 'final')
-        os.makedirs(final_dir, exist_ok=True)
-        pdf_path = os.path.join(final_dir, 'combined_validation_report.pdf')
+        reports_dir = os.path.join(output_dir, 'final', 'reports')
+        os.makedirs(reports_dir, exist_ok=True)
+        pdf_path = os.path.join(reports_dir, 'combined_validation_report.pdf')
 
-        generate_combined_pdf(table_results, pdf_path, site_name, timezone)
+        generate_combined_pdf(table_results, pdf_path, site_name, timezone, used_sampling)
 
         # Generate consolidated CSV
-        csv_path = os.path.join(final_dir, 'consolidated_validation.csv')
+        results_dir = os.path.join(output_dir, 'final', 'results')
+        os.makedirs(results_dir, exist_ok=True)
+        csv_path = os.path.join(results_dir, 'consolidated_validation.csv')
         generate_consolidated_csv(table_results, csv_path, timezone)
         print(f"✅ Consolidated CSV saved: consolidated_validation.csv")
 

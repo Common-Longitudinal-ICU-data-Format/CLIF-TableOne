@@ -2,6 +2,7 @@
 
 from clifpy.tables.microbiology_nonculture import MicrobiologyNonculture
 from .base_table_analyzer import BaseTableAnalyzer
+import os
 from typing import Dict, Any
 from pathlib import Path
 
@@ -30,6 +31,16 @@ class MicrobiologyNoncultureAnalyzer(BaseTableAnalyzer):
             self.table = None
             return
 
+        # Clifpy saves files directly to output_directory, so pass the final/clifpy subdirectory
+
+
+        clifpy_output_dir = os.path.join(self.output_dir, "final", "clifpy")
+
+
+        os.makedirs(clifpy_output_dir, exist_ok=True)
+
+
+
         try:
             # Use filters parameter ONLY when sample is provided
             if sample_filter is not None:
@@ -37,7 +48,7 @@ class MicrobiologyNoncultureAnalyzer(BaseTableAnalyzer):
                     data_directory=self.data_dir,
                     filetype=self.filetype,
                     timezone=self.timezone,
-                    output_directory=self.output_dir,
+                    output_directory=clifpy_output_dir,
                     filters={'hospitalization_id': list(sample_filter)}
                 )
             else:
@@ -46,7 +57,7 @@ class MicrobiologyNoncultureAnalyzer(BaseTableAnalyzer):
                     data_directory=self.data_dir,
                     filetype=self.filetype,
                     timezone=self.timezone,
-                    output_directory=self.output_dir
+                    output_directory=clifpy_output_dir
                 )
         except Exception as e:
             print(f"⚠️  Error loading microbiology_nonculture table: {e}")

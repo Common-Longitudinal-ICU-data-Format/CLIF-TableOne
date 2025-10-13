@@ -64,6 +64,16 @@ class MedicationAdminIntermittentAnalyzer(BaseTableAnalyzer):
             self.table = None
             return
 
+        # Clifpy saves files directly to output_directory, so pass the final/clifpy subdirectory
+
+
+        clifpy_output_dir = os.path.join(self.output_dir, "final", "clifpy")
+
+
+        os.makedirs(clifpy_output_dir, exist_ok=True)
+
+
+
         try:
             # Use filters parameter ONLY when sample is provided
             if sample_filter is not None:
@@ -71,7 +81,7 @@ class MedicationAdminIntermittentAnalyzer(BaseTableAnalyzer):
                     data_directory=self.data_dir,
                     filetype=self.filetype,
                     timezone=self.timezone,
-                    output_directory=self.output_dir,
+                    output_directory=clifpy_output_dir,
                     filters={'hospitalization_id': list(sample_filter)}
                 )
             else:
@@ -80,7 +90,7 @@ class MedicationAdminIntermittentAnalyzer(BaseTableAnalyzer):
                     data_directory=self.data_dir,
                     filetype=self.filetype,
                     timezone=self.timezone,
-                    output_directory=self.output_dir
+                    output_directory=clifpy_output_dir
                 )
         except FileNotFoundError:
             print(f"⚠️  medication_admin_intermittent table file not found in {self.data_dir}")

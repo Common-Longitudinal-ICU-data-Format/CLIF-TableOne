@@ -45,7 +45,7 @@ class PatientAnalyzer(BaseTableAnalyzer):
                 return
 
             # Clifpy saves files directly to output_directory, so pass the final subdirectory
-            clifpy_output_dir = os.path.join(self.output_dir, 'final')
+            clifpy_output_dir = os.path.join(self.output_dir, "final", "clifpy")
             os.makedirs(clifpy_output_dir, exist_ok=True)
 
             self.table = Patient.from_file(

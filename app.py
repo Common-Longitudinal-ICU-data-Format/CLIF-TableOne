@@ -11,7 +11,6 @@ import warnings
 warnings.filterwarnings('ignore', category=DeprecationWarning, module='plotly')
 warnings.filterwarnings('ignore', category=FutureWarning, module='streamlit')
 warnings.filterwarnings('ignore', message='.*keyword arguments have been deprecated.*')
-warnings.filterwarnings('ignore', message='.*use_container_width.*')
 
 import streamlit as st
 import pandas as pd
@@ -269,130 +268,68 @@ def show_home_page(config: dict, available_tables: list):
 
     st.divider()
 
-    # Combined report generation
-    st.markdown("### Combined Validation Report")
-    st.write("Generate a combined PDF report for all validated tables.")
+    # Analyze All Tables Section
+    st.markdown("### Analyze All Tables")
+    st.write("Run comprehensive analysis on all tables to generate validation reports, summary statistics, and aggregated outputs.")
 
     col1, col2 = st.columns([3, 1])
     with col1:
-        st.info("This will validate any pending tables and generate a combined PDF report.")
+        # Run Validation checkbox (always checked, disabled)
+        st.checkbox(
+            "✓ Run Validation",
+            value=True,
+            disabled=True,
+            key="run_validation_always",
+            help="Validation is always performed - validates data against CLIF 2.1 schema using clifpy"
+        )
+
+        # Generate Summary Aggregates checkbox (optional)
+        generate_aggregates = st.checkbox(
+            "📊 Generate Summary Aggregates",
+            value=False,
+            key="generate_aggregates_check",
+            help="Generate table-specific summary CSVs (demographics, hospitalizations, CRRT distributions, etc.)"
+        )
+
+        # Use 1k ICU Sample checkbox (RECOMMENDED - default checked)
+        use_sample_bulk = st.checkbox(
+            "⚡ Use 1k ICU Sample (RECOMMENDED)",
+            value=True,
+            help="Analyze using only 1k ICU hospitalizations (stratified by year). Much faster for large datasets. Sample will be created automatically from ADT table if needed.",
+            key="bulk_sample_check"
+        )
+
+        # Time estimates based on sample setting
+        if use_sample_bulk:
+            st.success("✅ **Estimated time: 5-10 minutes** (with 1k sample)")
+            st.caption("⚡ Sample mode: Only sample-eligible tables will use the 1k sample. Core tables (patient, hospitalization, ADT) will use full data.")
+        else:
+            st.warning("⚠️ **Estimated time: 30-60 minutes** (full dataset - may be longer for very large datasets)")
+            st.caption("🐌 Full data mode: Analyzing complete dataset for all tables. Consider using 1k sample for faster results.")
+
+        st.caption("📋 Always includes: Validation + Individual PDFs + Combined Report")
+        if generate_aggregates:
+            st.caption("📊 Will also generate: Summary Statistics (JSON) + Table-specific summary CSVs + CRRT distributions + Visualization data")
+        else:
+            st.caption("💡 Tip: Check 'Generate Summary Aggregates' to also create Summary Statistics JSONs and detailed CSV summaries")
+
     with col2:
-        if st.button("📄 Generate Full Report", type="primary", use_container_width=True):
-            st.session_state.generate_combined_report = True
-            st.session_state.current_page = "🏠 Home"  # Ensure we stay on Home page
+        if st.button("🚀 Analyze All Tables", type="primary", width='stretch'):
+            st.session_state.analyze_all_tables = True
+            st.session_state.bulk_sample = use_sample_bulk
+            st.session_state.generate_aggregates = generate_aggregates
             st.rerun()
 
-    # Handle report generation
-    if st.session_state.get('generate_combined_report', False):
-        with st.spinner("Generating combined validation report..."):
-            # Check which tables need validation
-            tables_needing_validation = []
-            for table_name in available_tables:
-                completion = get_completion_status(table_name)
-                if not completion['validation_complete']:
-                    tables_needing_validation.append(table_name)
+    # Handle bulk analysis
+    if st.session_state.get('analyze_all_tables', False):
+        analyze_all_tables(
+            config,
+            available_tables,
+            st.session_state.get('bulk_sample', False),
+            st.session_state.get('generate_aggregates', False)
+        )
+        st.session_state.analyze_all_tables = False
 
-            # Run validation for pending tables (NOT summary)
-            if tables_needing_validation:
-                st.info(f"Running validation for {len(tables_needing_validation)} table(s)...")
-
-                progress_bar = st.progress(0)
-                for idx, table_name in enumerate(tables_needing_validation):
-                    st.write(f"Validating {TABLE_DISPLAY_NAMES[table_name]}...")
-
-                    try:
-                        analyzer_class = TABLE_ANALYZERS.get(table_name)
-                        if analyzer_class:
-                            data_dir = config.get('tables_path', './data')
-                            filetype = config.get('filetype') or config.get('file_type', 'parquet')
-                            timezone = config.get('timezone', 'UTC')
-                            output_dir = config.get('output_dir', 'output')
-
-                            analyzer = analyzer_class(data_dir, filetype, timezone, output_dir)
-                            if analyzer.table is not None:
-                                # Run validation only
-                                validation_results = analyzer.validate()
-
-                                # Save validation results
-                                analyzer.save_summary_data(validation_results, '_validation')
-
-                                # Generate PDF
-                                final_dir = os.path.join(output_dir, 'final')
-                                os.makedirs(final_dir, exist_ok=True)
-
-                                pdf_generator = ValidationPDFGenerator()
-                                pdf_path = os.path.join(final_dir, f"{table_name}_validation_report.pdf")
-
-                                if pdf_generator.is_available():
-                                    pdf_generator.generate_validation_pdf(
-                                        validation_results,
-                                        table_name,
-                                        pdf_path,
-                                        config.get('site_name'),
-                                        config.get('timezone', 'UTC')
-                                    )
-                    except Exception as e:
-                        st.warning(f"Could not validate {table_name}: {e}")
-
-                    progress_bar.progress((idx + 1) / len(tables_needing_validation))
-
-                st.success("✅ Validation complete for all tables!")
-
-            # Generate combined report
-            try:
-                from modules.reports.combined_report_generator import generate_combined_report
-
-                pdf_path = generate_combined_report(
-                    config.get('output_dir', 'output'),
-                    available_tables,
-                    config.get('site_name'),
-                    config.get('timezone', 'UTC')
-                )
-
-                if pdf_path:
-                    st.success("✅ Combined validation report generated!")
-                    st.success("✅ Consolidated CSV summary generated!")
-
-                    # Provide download buttons for both PDF and CSV
-                    col1, col2 = st.columns(2)
-
-                    with col1:
-                        # PDF download button
-                        with open(pdf_path, 'rb') as f:
-                            pdf_data = f.read()
-                        st.download_button(
-                            label="📥 Download PDF Report",
-                            data=pdf_data,
-                            file_name="combined_validation_report.pdf",
-                            mime="application/pdf",
-                            type="primary",
-                            use_container_width=True
-                        )
-
-                    with col2:
-                        # CSV download button
-                        csv_path = os.path.join(config.get('output_dir', 'output'), 'final', 'consolidated_validation.csv')
-                        if os.path.exists(csv_path):
-                            with open(csv_path, 'r') as f:
-                                csv_data = f.read()
-                            st.download_button(
-                                label="📥 Download CSV Summary",
-                                data=csv_data,
-                                file_name="consolidated_validation.csv",
-                                mime="text/csv",
-                                type="primary",
-                                use_container_width=True
-                            )
-                else:
-                    st.error("❌ Failed to generate combined report")
-
-            except Exception as e:
-                st.error(f"❌ Error generating combined report: {e}")
-                import traceback
-                st.code(traceback.format_exc())
-
-        # Clear flag
-        st.session_state.generate_combined_report = False
 
 
 def main():
@@ -760,7 +697,9 @@ def analyze_table(table_name, config, run_validation, run_outlier_handling, forc
                     analyzer.load_table()
 
             # Delete old validation response file if it exists (fresh analysis = no old feedback)
-            response_file = os.path.join(output_dir, 'final', f'{table_name}_validation_response.json')
+            results_dir = os.path.join(output_dir, 'final', 'results')
+            os.makedirs(results_dir, exist_ok=True)
+            response_file = os.path.join(results_dir, f'{table_name}_validation_response.json')
             if os.path.exists(response_file):
                 try:
                     os.remove(response_file)
@@ -785,11 +724,11 @@ def analyze_table(table_name, config, run_validation, run_outlier_handling, forc
 
                 # Generate PDF report
                 try:
-                    final_dir = os.path.join(output_dir, 'final')
-                    os.makedirs(final_dir, exist_ok=True)
+                    reports_dir = os.path.join(output_dir, 'final', 'reports')
+                    os.makedirs(reports_dir, exist_ok=True)
 
                     pdf_generator = ValidationPDFGenerator()
-                    pdf_path = os.path.join(final_dir, f"{table_name}_validation_report.pdf")
+                    pdf_path = os.path.join(reports_dir, f"{table_name}_validation_report.pdf")
 
                     if pdf_generator.is_available():
                         pdf_generator.generate_validation_pdf(
@@ -802,7 +741,7 @@ def analyze_table(table_name, config, run_validation, run_outlier_handling, forc
                         st.success(f"✅ Validation PDF report saved: {table_name}_validation_report.pdf")
                     else:
                         # Fall back to text report
-                        txt_path = os.path.join(final_dir, f"{table_name}_validation_report.txt")
+                        txt_path = os.path.join(reports_dir, f"{table_name}_validation_report.txt")
                         pdf_generator.generate_text_report(
                             validation_results,
                             table_name,
@@ -824,14 +763,14 @@ def analyze_table(table_name, config, run_validation, run_outlier_handling, forc
 
             # Save summary tables as CSV files
             try:
-                final_dir = os.path.join(output_dir, 'final')
-                os.makedirs(final_dir, exist_ok=True)
+                results_dir = os.path.join(output_dir, 'final', 'results')
+                os.makedirs(results_dir, exist_ok=True)
 
                 # Save patient demographics summary
                 if hasattr(analyzer, 'generate_patient_summary'):
                     patient_summary_df = analyzer.generate_patient_summary()
                     if not patient_summary_df.empty:
-                        csv_filepath = os.path.join(final_dir, f"{table_name}_demographics_summary.csv")
+                        csv_filepath = os.path.join(results_dir, f"{table_name}_demographics_summary.csv")
                         patient_summary_df.to_csv(csv_filepath, index=False)
                         st.success(f"✅ Patient demographics summary CSV saved")
 
@@ -839,7 +778,7 @@ def analyze_table(table_name, config, run_validation, run_outlier_handling, forc
                 if hasattr(analyzer, 'generate_hospitalization_summary'):
                     hosp_summary_df = analyzer.generate_hospitalization_summary()
                     if not hosp_summary_df.empty:
-                        csv_filepath = os.path.join(final_dir, f"{table_name}_summary.csv")
+                        csv_filepath = os.path.join(results_dir, f"{table_name}_summary.csv")
                         hosp_summary_df.to_csv(csv_filepath, index=False)
                         st.success(f"✅ Hospitalization summary CSV saved")
 
@@ -847,7 +786,7 @@ def analyze_table(table_name, config, run_validation, run_outlier_handling, forc
                 if hasattr(analyzer, 'generate_adt_summary'):
                     adt_summary_df = analyzer.generate_adt_summary()
                     if not adt_summary_df.empty:
-                        csv_filepath = os.path.join(final_dir, f"{table_name}_summary.csv")
+                        csv_filepath = os.path.join(results_dir, f"{table_name}_summary.csv")
                         adt_summary_df.to_csv(csv_filepath, index=False)
                         st.success(f"✅ ADT summary CSV saved")
 
@@ -855,7 +794,7 @@ def analyze_table(table_name, config, run_validation, run_outlier_handling, forc
                 if hasattr(analyzer, 'generate_hospital_diagnosis_summary'):
                     hosp_diag_summary_df = analyzer.generate_hospital_diagnosis_summary()
                     if not hosp_diag_summary_df.empty:
-                        csv_filepath = os.path.join(final_dir, f"{table_name}_summary.csv")
+                        csv_filepath = os.path.join(results_dir, f"{table_name}_summary.csv")
                         hosp_diag_summary_df.to_csv(csv_filepath, index=False)
                         st.success(f"✅ Hospital Diagnosis summary CSV saved")
 
@@ -943,6 +882,434 @@ def analyze_table(table_name, config, run_validation, run_outlier_handling, forc
     # The sidebar status will update on next user interaction
     if st.session_state.get('analysis_just_completed', False):
         st.session_state.analysis_just_completed = False
+
+
+def analyze_all_tables(config, available_tables, use_sample=False, generate_aggregates=False):
+    """
+    Analyze all tables: validation, summary statistics, individual PDFs, and combined report.
+
+    Parameters:
+    -----------
+    config : dict
+        Configuration dictionary
+    available_tables : list
+        List of available table names
+    use_sample : bool
+        Whether to use 1k ICU sample for eligible tables
+    generate_aggregates : bool
+        Whether to generate table-specific summary CSV aggregates
+    """
+    # All available tables
+    all_tables = [
+        'patient', 'hospitalization', 'adt', 'code_status', 'crrt_therapy', 'ecmo_mcs',
+        'hospital_diagnosis', 'labs', 'medication_admin_continuous', 'medication_admin_intermittent',
+        'microbiology_culture', 'microbiology_nonculture', 'microbiology_susceptibility',
+        'patient_assessments', 'patient_procedures', 'position', 'respiratory_support', 'vitals'
+    ]
+
+    # Sample-eligible tables (tables that can use hospitalization_id filter)
+    SAMPLE_ELIGIBLE_TABLES = [
+        'labs', 'medication_admin_continuous', 'medication_admin_intermittent',
+        'microbiology_nonculture', 'microbiology_susceptibility', 'microbiology_culture',
+        'vitals', 'patient_assessments', 'respiratory_support', 'position',
+        'patient_procedures', 'adt', 'code_status', 'crrt_therapy', 'ecmo_mcs',
+        'hospital_diagnosis'
+    ]
+
+    # Progress tracking
+    st.markdown("### 🚀 Bulk Analysis Progress")
+    progress_bar = st.progress(0)
+    status_text = st.empty()
+    results_area = st.container()
+
+    # Load sample filter if needed
+    sample_filter = None
+    if use_sample:
+        from modules.utils.sampling import (
+            get_icu_hospitalizations_from_adt,
+            generate_stratified_sample,
+            save_sample_list,
+            load_sample_list,
+            sample_exists
+        )
+
+        output_dir = config.get('output_dir', 'output')
+
+        # Try to load existing sample
+        if sample_exists(output_dir):
+            sample_list = load_sample_list(output_dir)
+            if sample_list:
+                sample_filter = set(sample_list)
+                st.info(f"✓ Using existing 1k ICU sample: {len(sample_filter)} hospitalizations")
+
+        # If no sample exists, create it from ADT and hospitalization tables
+        if not sample_filter:
+            st.info("📊 Sample not found. Creating 1k ICU sample from ADT and hospitalization tables...")
+
+            # Need to load ADT and hospitalization tables to create sample
+            data_dir = config.get('tables_path', './data')
+            filetype = config.get('filetype', 'parquet')
+            timezone = config.get('timezone', 'UTC')
+
+            try:
+                # Load ADT table
+                from modules.tables.adt_analysis import ADTAnalyzer
+                adt_analyzer = ADTAnalyzer(data_dir, filetype, timezone, output_dir)
+
+                if adt_analyzer.table is not None and hasattr(adt_analyzer.table, 'df'):
+                    # Step 1: Get ICU hospitalizations from ADT
+                    with st.spinner("Step 1/3: Identifying ICU hospitalizations from ADT table..."):
+                        icu_hosp_ids = get_icu_hospitalizations_from_adt(adt_analyzer.table.df)
+                        st.info(f"   Found {len(icu_hosp_ids):,} ICU hospitalizations")
+
+                    # Step 2: Load hospitalization table
+                    from modules.tables.hospitalization_analysis import HospitalizationAnalyzer
+                    with st.spinner("Step 2/3: Loading hospitalization table..."):
+                        hosp_analyzer = HospitalizationAnalyzer(data_dir, filetype, timezone, output_dir)
+
+                    if hosp_analyzer.table is not None and hasattr(hosp_analyzer.table, 'df'):
+                        # Step 3: Generate stratified sample
+                        with st.spinner("Step 3/3: Generating stratified sample (proportional by admission year)..."):
+                            sample_ids = generate_stratified_sample(
+                                hosp_analyzer.table.df,
+                                icu_hosp_ids,
+                                sample_size=1000
+                            )
+
+                        # Step 4: Save for future use
+                        if sample_ids:
+                            save_sample_list(sample_ids, output_dir)
+                            sample_filter = set(sample_ids)
+                            st.success(f"✅ Generated 1k ICU sample (stratified by year) - {len(sample_ids):,} hospitalizations")
+                        else:
+                            st.warning("⚠️ Could not generate sample - no ICU hospitalizations found")
+                    else:
+                        st.warning("⚠️ Could not load hospitalization table for sampling. Proceeding without sample.")
+                else:
+                    st.warning("⚠️ Could not load ADT table for sampling. Proceeding without sample.")
+            except Exception as e:
+                st.error(f"❌ Error creating sample: {e}")
+                st.warning("Proceeding without sample - will use full dataset for all tables.")
+
+    # Results tracking
+    results = {
+        'success': [],
+        'failed': [],
+        'skipped': []
+    }
+
+    # Analyze each table
+    for idx, table_name in enumerate(all_tables):
+        status_text.markdown(f"**Analyzing {TABLE_DISPLAY_NAMES.get(table_name, table_name)}...** ({idx + 1}/{len(all_tables)})")
+
+        try:
+            # Check if table should use sample
+            use_sample_for_table = use_sample and table_name in SAMPLE_ELIGIBLE_TABLES
+
+            # Get analyzer class
+            analyzer_class = TABLE_ANALYZERS.get(table_name)
+            if not analyzer_class:
+                results['skipped'].append((table_name, 'No analyzer available'))
+                continue
+
+            # Initialize analyzer (table loads automatically in __init__)
+            data_dir = config.get('tables_path', './data')
+            filetype = config.get('filetype', 'parquet')
+            timezone = config.get('timezone', 'UTC')
+            output_dir = config.get('output_dir', 'output')
+
+            # Pass sample_filter to __init__ to load table only once
+            if use_sample_for_table and sample_filter:
+                analyzer = analyzer_class(
+                    data_dir=data_dir,
+                    filetype=filetype,
+                    timezone=timezone,
+                    output_dir=output_dir,
+                    sample_filter=sample_filter
+                )
+            else:
+                analyzer = analyzer_class(
+                    data_dir=data_dir,
+                    filetype=filetype,
+                    timezone=timezone,
+                    output_dir=output_dir
+                )
+
+            # Check if table loaded (already loaded in __init__)
+            if analyzer.table is None or not hasattr(analyzer.table, 'df') or analyzer.table.df is None:
+                results['skipped'].append((table_name, 'Table not found or failed to load'))
+                continue
+
+            # Always run validation
+            validation_results = analyzer.validate()
+
+            # Save validation results to disk for persistence
+            if validation_results:
+                try:
+                    analyzer.save_summary_data(validation_results, '_validation')
+                except Exception as e:
+                    # Log error but continue with other tables
+                    if config.get('verbose', False):
+                        st.warning(f"Could not save validation for {table_name}: {e}")
+
+            # Generate summary statistics only if requested (requires validation)
+            summary_stats = None
+            if generate_aggregates:
+                summary_stats = analyzer.get_summary_statistics()
+
+                # Save summary stats to disk for persistence
+                if summary_stats:
+                    try:
+                        analyzer.save_summary_data(summary_stats, '_summary')
+                    except Exception as e:
+                        # Log error but continue with other tables
+                        if config.get('verbose', False):
+                            st.warning(f"Could not save summary for {table_name}: {e}")
+
+            # Generate individual PDF report for this table
+            if validation_results:
+                try:
+                    from modules.cli import ValidationPDFGenerator
+
+                    reports_dir = os.path.join(config.get('output_dir', 'output'), 'final', 'reports')
+                    os.makedirs(reports_dir, exist_ok=True)
+
+                    pdf_generator = ValidationPDFGenerator()
+                    pdf_path = os.path.join(reports_dir, f"{table_name}_validation_report.pdf")
+
+                    if pdf_generator.is_available():
+                        pdf_generator.generate_validation_pdf(
+                            validation_results,
+                            table_name,
+                            pdf_path,
+                            config.get('site_name'),
+                            config.get('timezone', 'UTC')
+                        )
+                        if config.get('verbose', False):
+                            st.success(f"✅ Generated PDF report for {table_name}")
+                    else:
+                        # Fall back to text report
+                        txt_path = os.path.join(reports_dir, f"{table_name}_validation_report.txt")
+                        pdf_generator.generate_text_report(
+                            validation_results,
+                            table_name,
+                            txt_path,
+                            config.get('site_name'),
+                            config.get('timezone', 'UTC')
+                        )
+                        if config.get('verbose', False):
+                            st.info(f"ℹ️ Generated text report for {table_name} (PDF not available)")
+                except Exception as e:
+                    # Always show PDF generation errors so user knows why reports aren't created
+                    st.warning(f"⚠️ Could not generate report for {table_name}: {e}")
+
+            # Generate table-specific summary CSV aggregates if requested
+            if generate_aggregates:
+                try:
+                    results_dir = os.path.join(config.get('output_dir', 'output'), 'final', 'results')
+                    os.makedirs(results_dir, exist_ok=True)
+
+                    # Save patient demographics summary
+                    if hasattr(analyzer, 'generate_patient_summary'):
+                        patient_summary_df = analyzer.generate_patient_summary()
+                        if not patient_summary_df.empty:
+                            csv_filepath = os.path.join(results_dir, f"{table_name}_demographics_summary.csv")
+                            patient_summary_df.to_csv(csv_filepath, index=False)
+
+                    # Save hospitalization summary
+                    if hasattr(analyzer, 'generate_hospitalization_summary'):
+                        hosp_summary_df = analyzer.generate_hospitalization_summary()
+                        if not hosp_summary_df.empty:
+                            csv_filepath = os.path.join(results_dir, f"{table_name}_summary.csv")
+                            hosp_summary_df.to_csv(csv_filepath, index=False)
+
+                    # Save ADT summary
+                    if hasattr(analyzer, 'generate_adt_summary'):
+                        adt_summary_df = analyzer.generate_adt_summary()
+                        if not adt_summary_df.empty:
+                            csv_filepath = os.path.join(results_dir, f"{table_name}_summary.csv")
+                            adt_summary_df.to_csv(csv_filepath, index=False)
+
+                    # Save Hospital Diagnosis summary
+                    if hasattr(analyzer, 'generate_hospital_diagnosis_summary'):
+                        hosp_diag_summary_df = analyzer.generate_hospital_diagnosis_summary()
+                        if not hosp_diag_summary_df.empty:
+                            csv_filepath = os.path.join(results_dir, f"{table_name}_summary.csv")
+                            hosp_diag_summary_df.to_csv(csv_filepath, index=False)
+
+                    # Save Vitals summary
+                    if hasattr(analyzer, 'generate_vitals_summary'):
+                        vitals_summary_df = analyzer.generate_vitals_summary()
+                        if not vitals_summary_df.empty:
+                            csv_filepath = os.path.join(results_dir, f"{table_name}_summary.csv")
+                            vitals_summary_df.to_csv(csv_filepath, index=False)
+
+                    # Save Labs summary
+                    if hasattr(analyzer, 'generate_labs_summary'):
+                        labs_summary_df = analyzer.generate_labs_summary()
+                        if not labs_summary_df.empty:
+                            csv_filepath = os.path.join(results_dir, f"{table_name}_summary.csv")
+                            labs_summary_df.to_csv(csv_filepath, index=False)
+
+                    # Save Respiratory Support summary
+                    if hasattr(analyzer, 'generate_respiratory_summary'):
+                        resp_summary_df = analyzer.generate_respiratory_summary()
+                        if not resp_summary_df.empty:
+                            csv_filepath = os.path.join(results_dir, f"{table_name}_summary.csv")
+                            resp_summary_df.to_csv(csv_filepath, index=False)
+
+                    # Save Position summary
+                    if hasattr(analyzer, 'generate_position_summary'):
+                        position_summary_df = analyzer.generate_position_summary()
+                        if not position_summary_df.empty:
+                            csv_filepath = os.path.join(results_dir, f"{table_name}_summary.csv")
+                            position_summary_df.to_csv(csv_filepath, index=False)
+
+                    # Save CRRT numeric distributions
+                    if hasattr(analyzer, 'save_numeric_distributions'):
+                        analyzer.save_numeric_distributions()
+
+                    # Save CRRT visualization data
+                    if hasattr(analyzer, 'save_visualization_data'):
+                        analyzer.save_visualization_data()
+
+                except Exception as e:
+                    # Log error but continue with other tables
+                    if config.get('verbose', False):
+                        st.warning(f"Could not save summary CSVs for {table_name}: {e}")
+
+            # Cache results in session state
+            cache_analysis(table_name, analyzer, validation_results, summary_stats, None)
+
+            results['success'].append(table_name)
+
+        except Exception as e:
+            error_msg = str(e)
+            results['failed'].append((table_name, error_msg))
+            if config.get('verbose', False):
+                st.error(f"Error analyzing {table_name}: {error_msg}")
+
+        # Update progress
+        progress_bar.progress((idx + 1) / len(all_tables))
+
+    # Clear status and progress
+    status_text.empty()
+    progress_bar.empty()
+
+    # Display results summary
+    with results_area:
+        st.markdown("### 📊 Analysis Complete")
+
+        col1, col2, col3 = st.columns(3)
+
+        with col1:
+            st.metric(
+                "✅ Successful",
+                len(results['success']),
+                delta=f"{len(results['success'])}/{len(all_tables)} tables"
+            )
+
+        with col2:
+            st.metric(
+                "❌ Failed",
+                len(results['failed']),
+                delta=f"{len(results['failed'])}/{len(all_tables)} tables" if len(results['failed']) > 0 else None,
+                delta_color="inverse"
+            )
+
+        with col3:
+            st.metric(
+                "⏭️ Skipped",
+                len(results['skipped']),
+                delta=f"{len(results['skipped'])}/{len(all_tables)} tables" if len(results['skipped']) > 0 else None,
+                delta_color="off"
+            )
+
+        # Show successful tables
+        if results['success']:
+            with st.expander(f"✅ Successful Tables ({len(results['success'])})", expanded=True):
+                success_names = [TABLE_DISPLAY_NAMES.get(t, t) for t in results['success']]
+                st.write(", ".join(success_names))
+
+        # Show failed tables
+        if results['failed']:
+            with st.expander(f"❌ Failed Tables ({len(results['failed'])})", expanded=True):
+                for table_name, error in results['failed']:
+                    st.error(f"**{TABLE_DISPLAY_NAMES.get(table_name, table_name)}**: {error}")
+
+        # Show skipped tables
+        if results['skipped']:
+            with st.expander(f"⏭️ Skipped Tables ({len(results['skipped'])})", expanded=False):
+                for table_name, reason in results['skipped']:
+                    st.info(f"**{TABLE_DISPLAY_NAMES.get(table_name, table_name)}**: {reason}")
+
+        # Generate combined report if we have successful validations
+        if results['success']:
+            st.divider()
+            st.markdown("### 📄 Combined Validation Report")
+
+            with st.spinner("Generating combined validation report..."):
+                try:
+                    from modules.reports.combined_report_generator import generate_combined_report
+
+                    # Generate combined report
+                    pdf_path = generate_combined_report(
+                        config.get('output_dir', 'output'),
+                        available_tables,
+                        config.get('site_name'),
+                        config.get('timezone', 'UTC'),
+                        used_sampling=use_sample
+                    )
+
+                    if pdf_path:
+                        st.success("✅ Combined validation report generated!")
+                        st.success("✅ Consolidated CSV summary generated!")
+
+                        # Provide download buttons for both PDF and CSV
+                        col1, col2 = st.columns(2)
+
+                        with col1:
+                            # PDF download button
+                            with open(pdf_path, 'rb') as f:
+                                pdf_data = f.read()
+                            st.download_button(
+                                label="📥 Download PDF Report",
+                                data=pdf_data,
+                                file_name="combined_validation_report.pdf",
+                                mime="application/pdf",
+                                type="primary",
+                                use_container_width=True
+                            )
+
+                        with col2:
+                            # CSV download button
+                            csv_path = os.path.join(config.get('output_dir', 'output'), 'final', 'results', 'consolidated_validation.csv')
+                            if os.path.exists(csv_path):
+                                with open(csv_path, 'r') as f:
+                                    csv_data = f.read()
+                                st.download_button(
+                                    label="📥 Download CSV Summary",
+                                    data=csv_data,
+                                    file_name="consolidated_validation.csv",
+                                    mime="text/csv",
+                                    type="primary",
+                                    use_container_width=True
+                                )
+                    else:
+                        st.error("❌ Failed to generate combined report")
+
+                except Exception as e:
+                    st.error(f"❌ Error generating combined report: {e}")
+                    if config.get('verbose', False):
+                        import traceback
+                        st.code(traceback.format_exc())
+
+        # Next steps
+        st.divider()
+        st.markdown("### 🎯 Next Steps")
+        st.write("✓ Navigate to individual tables to view detailed results")
+        st.write("✓ Download the combined report above")
+        st.write("✓ Review and provide feedback on validation errors")
 
 
 def _get_quality_check_definition(check_name: str) -> str:
@@ -1287,13 +1654,16 @@ def display_validation_results(analyzer, validation_results, existing_feedback, 
 
                         # Regenerate PDF with updated feedback
                         try:
-                            final_dir = os.path.join(output_dir, 'final')
-                            os.makedirs(final_dir, exist_ok=True)
+                            reports_dir = os.path.join(output_dir, 'final', 'reports')
+                            os.makedirs(reports_dir, exist_ok=True)
 
                             pdf_generator = ValidationPDFGenerator()
 
                             # Load the validation results to include in the PDF
-                            validation_json_path = os.path.join(final_dir, f"{table_name}_summary_validation.json")
+                            results_dir = os.path.join(output_dir, 'final', 'results')
+                            os.makedirs(results_dir, exist_ok=True)
+
+                            validation_json_path = os.path.join(results_dir, f"{table_name}_summary_validation.json")
                             if os.path.exists(validation_json_path):
                                 with open(validation_json_path, 'r') as f:
                                     validation_data = json.load(f)
@@ -1302,7 +1672,7 @@ def display_validation_results(analyzer, validation_results, existing_feedback, 
                                 validation_data['status'] = existing_feedback['adjusted_status']
                                 validation_data['is_valid'] = (existing_feedback['adjusted_status'] == 'complete')
 
-                                pdf_path = os.path.join(final_dir, f"{table_name}_validation_report.pdf")
+                                pdf_path = os.path.join(reports_dir, f"{table_name}_validation_report.pdf")
 
                                 if pdf_generator.is_available():
                                     pdf_generator.generate_validation_pdf(
@@ -1315,7 +1685,7 @@ def display_validation_results(analyzer, validation_results, existing_feedback, 
                                     )
                                 else:
                                     # Fall back to text report
-                                    txt_path = os.path.join(final_dir, f"{table_name}_validation_report.txt")
+                                    txt_path = os.path.join(reports_dir, f"{table_name}_validation_report.txt")
                                     pdf_generator.generate_text_report(
                                         validation_data,
                                         table_name,
@@ -1986,7 +2356,9 @@ def display_summary_statistics(analyzer, summary_stats, table_name):
         # Try to load cached visualization data first
         import json
         output_dir = st.session_state.config.get('output_dir', 'output')
-        viz_data_path = os.path.join(output_dir, 'final', f'{table_name}_visualization_data.json')
+        results_dir = os.path.join(output_dir, 'final', 'results')
+        os.makedirs(results_dir, exist_ok=True)
+        viz_data_path = os.path.join(results_dir, f'{table_name}_visualization_data.json')
 
         use_cached_data = False
         viz_data = None
@@ -2140,7 +2512,7 @@ def display_summary_statistics(analyzer, summary_stats, table_name):
                             "unique_hospitalizations": st.column_config.NumberColumn("Unique Hospitalizations", format="%d")
                         },
                         hide_index=True,
-                        use_container_width=True,
+                        width='stretch',
                         height=400
                     )
 
@@ -2174,7 +2546,7 @@ def display_summary_statistics(analyzer, summary_stats, table_name):
                 # Display statistics table
                 st.dataframe(
                     stats_df,
-                    use_container_width=True,
+                    width='stretch',
                     hide_index=True,
                     height=400,
                     column_config={
@@ -2215,7 +2587,7 @@ def display_summary_statistics(analyzer, summary_stats, table_name):
                 # Display existing plot
                 from PIL import Image
                 img = Image.open(plot_file)
-                st.image(img, caption="Dose distributions for top medications (outliers removed)", use_container_width=True)
+                st.image(img, caption="Dose distributions for top medications (outliers removed)", width='stretch')
 
                 # Regenerate button
                 if st.button("🔄 Regenerate Plots"):
@@ -2303,7 +2675,7 @@ def display_summary_statistics(analyzer, summary_stats, table_name):
                             "unique_hospitalizations": st.column_config.NumberColumn("Unique Hospitalizations", format="%d")
                         },
                         hide_index=True,
-                        use_container_width=True,
+                        width='stretch',
                         height=400
                     )
 
@@ -2337,7 +2709,7 @@ def display_summary_statistics(analyzer, summary_stats, table_name):
                 # Display statistics table
                 st.dataframe(
                     stats_df,
-                    use_container_width=True,
+                    width='stretch',
                     hide_index=True,
                     height=400,
                     column_config={
@@ -2378,7 +2750,7 @@ def display_summary_statistics(analyzer, summary_stats, table_name):
                 # Display existing plot
                 from PIL import Image
                 img = Image.open(plot_file)
-                st.image(img, caption="Dose distributions for top medications (outliers removed)", use_container_width=True)
+                st.image(img, caption="Dose distributions for top medications (outliers removed)", width='stretch')
 
                 # Regenerate button
                 if st.button("🔄 Regenerate Plots", key="regen_intermittent_plots"):
@@ -2415,6 +2787,78 @@ def display_summary_statistics(analyzer, summary_stats, table_name):
 
                 if analyzer and hasattr(analyzer, 'table') and hasattr(analyzer.table, 'df'):
                     _show_year_distribution(analyzer.table.df, 'recorded_dttm', 'ECMO/MCS Hospitalizations', count_by='hospitalization_id')
+                else:
+                    st.warning("Data not available for year distribution")
+
+    # Show dataset duration for Vitals table
+    if table_name == 'vitals' and 'first_recording_year' in data_info and data_info.get('first_recording_year'):
+        first_year = data_info.get('first_recording_year')
+        last_year = data_info.get('last_recording_year')
+        if first_year and last_year:
+            st.info(f"📅 **Dataset Duration (recorded_dttm):** {first_year} - {last_year} ({last_year - first_year + 1} years)")
+
+            # Show year distribution histogram (lazy-load analyzer only when expander is opened)
+            with st.expander("📊 View Year Distribution"):
+                # Lazy load analyzer only when this feature is accessed
+                if analyzer is None:
+                    analyzer = _lazy_load_analyzer(table_name, st.session_state.config, analyzer)
+
+                if analyzer and hasattr(analyzer, 'table') and hasattr(analyzer.table, 'df'):
+                    _show_year_distribution(analyzer.table.df, 'recorded_dttm', 'Vital Sign Records', count_by='hospitalization_id')
+                else:
+                    st.warning("Data not available for year distribution")
+
+    # Show dataset duration for Respiratory Support table
+    if table_name == 'respiratory_support' and 'first_recording_year' in data_info and data_info.get('first_recording_year'):
+        first_year = data_info.get('first_recording_year')
+        last_year = data_info.get('last_recording_year')
+        if first_year and last_year:
+            st.info(f"📅 **Dataset Duration (recorded_dttm):** {first_year} - {last_year} ({last_year - first_year + 1} years)")
+
+            # Show year distribution histogram (lazy-load analyzer only when expander is opened)
+            with st.expander("📊 View Year Distribution"):
+                # Lazy load analyzer only when this feature is accessed
+                if analyzer is None:
+                    analyzer = _lazy_load_analyzer(table_name, st.session_state.config, analyzer)
+
+                if analyzer and hasattr(analyzer, 'table') and hasattr(analyzer.table, 'df'):
+                    _show_year_distribution(analyzer.table.df, 'recorded_dttm', 'Respiratory Support Events', count_by='hospitalization_id')
+                else:
+                    st.warning("Data not available for year distribution")
+
+    # Show dataset duration for Labs table
+    if table_name == 'labs' and 'first_lab_year' in data_info and data_info.get('first_lab_year'):
+        first_year = data_info.get('first_lab_year')
+        last_year = data_info.get('last_lab_year')
+        if first_year and last_year:
+            st.info(f"📅 **Dataset Duration (lab_order_dttm):** {first_year} - {last_year} ({last_year - first_year + 1} years)")
+
+            # Show year distribution histogram (lazy-load analyzer only when expander is opened)
+            with st.expander("📊 View Year Distribution"):
+                # Lazy load analyzer only when this feature is accessed
+                if analyzer is None:
+                    analyzer = _lazy_load_analyzer(table_name, st.session_state.config, analyzer)
+
+                if analyzer and hasattr(analyzer, 'table') and hasattr(analyzer.table, 'df'):
+                    _show_year_distribution(analyzer.table.df, 'lab_order_dttm', 'Lab Orders', count_by='hospitalization_id')
+                else:
+                    st.warning("Data not available for year distribution")
+
+    # Show dataset duration for Position table
+    if table_name == 'position' and 'first_recording_year' in data_info and data_info.get('first_recording_year'):
+        first_year = data_info.get('first_recording_year')
+        last_year = data_info.get('last_recording_year')
+        if first_year and last_year:
+            st.info(f"📅 **Dataset Duration (recorded_dttm):** {first_year} - {last_year} ({last_year - first_year + 1} years)")
+
+            # Show year distribution histogram (lazy-load analyzer only when expander is opened)
+            with st.expander("📊 View Year Distribution"):
+                # Lazy load analyzer only when this feature is accessed
+                if analyzer is None:
+                    analyzer = _lazy_load_analyzer(table_name, st.session_state.config, analyzer)
+
+                if analyzer and hasattr(analyzer, 'table') and hasattr(analyzer.table, 'df'):
+                    _show_year_distribution(analyzer.table.df, 'recorded_dttm', 'Position Records', count_by='hospitalization_id')
                 else:
                     st.warning("Data not available for year distribution")
 
@@ -2468,7 +2912,9 @@ def display_summary_statistics(analyzer, summary_stats, table_name):
         # Try to load cached visualization data first
         import json
         output_dir = st.session_state.config.get('output_dir', 'output')
-        viz_data_path = os.path.join(output_dir, 'final', f'{table_name}_visualization_data.json')
+        results_dir = os.path.join(output_dir, 'final', 'results')
+        os.makedirs(results_dir, exist_ok=True)
+        viz_data_path = os.path.join(results_dir, f'{table_name}_visualization_data.json')
 
         use_cached_data = False
         viz_data = None
@@ -2627,6 +3073,82 @@ def display_summary_statistics(analyzer, summary_stats, table_name):
                     label="📥 Export CSV",
                     data=csv_data,
                     file_name=f"{table_name}_diagnosis_summary.csv",
+                    mime="text/csv",
+                    width='stretch'
+                )
+
+    # Vitals-specific summary table
+    if analyzer and hasattr(analyzer, 'generate_vitals_summary'):
+        st.markdown("### 📋 Vitals Summary")
+        summary_df = analyzer.generate_vitals_summary()
+        if not summary_df.empty:
+            col1, col2 = st.columns([4, 1])
+            with col1:
+                st.dataframe(summary_df, width='stretch', hide_index=True)
+            with col2:
+                # Export to CSV button
+                csv_data = summary_df.to_csv(index=False)
+                st.download_button(
+                    label="📥 Export CSV",
+                    data=csv_data,
+                    file_name=f"{table_name}_vitals_summary.csv",
+                    mime="text/csv",
+                    width='stretch'
+                )
+
+    # Respiratory Support-specific summary table
+    if analyzer and hasattr(analyzer, 'generate_respiratory_summary'):
+        st.markdown("### 📋 Respiratory Support Summary")
+        summary_df = analyzer.generate_respiratory_summary()
+        if not summary_df.empty:
+            col1, col2 = st.columns([4, 1])
+            with col1:
+                st.dataframe(summary_df, width='stretch', hide_index=True)
+            with col2:
+                # Export to CSV button
+                csv_data = summary_df.to_csv(index=False)
+                st.download_button(
+                    label="📥 Export CSV",
+                    data=csv_data,
+                    file_name=f"{table_name}_respiratory_summary.csv",
+                    mime="text/csv",
+                    width='stretch'
+                )
+
+    # Labs-specific summary table
+    if analyzer and hasattr(analyzer, 'generate_labs_summary'):
+        st.markdown("### 📋 Labs Summary")
+        summary_df = analyzer.generate_labs_summary()
+        if not summary_df.empty:
+            col1, col2 = st.columns([4, 1])
+            with col1:
+                st.dataframe(summary_df, width='stretch', hide_index=True)
+            with col2:
+                # Export to CSV button
+                csv_data = summary_df.to_csv(index=False)
+                st.download_button(
+                    label="📥 Export CSV",
+                    data=csv_data,
+                    file_name=f"{table_name}_labs_summary.csv",
+                    mime="text/csv",
+                    width='stretch'
+                )
+
+    # Position-specific summary table
+    if analyzer and hasattr(analyzer, 'generate_position_summary'):
+        st.markdown("### 📋 Position Summary")
+        summary_df = analyzer.generate_position_summary()
+        if not summary_df.empty:
+            col1, col2 = st.columns([4, 1])
+            with col1:
+                st.dataframe(summary_df, width='stretch', hide_index=True)
+            with col2:
+                # Export to CSV button
+                csv_data = summary_df.to_csv(index=False)
+                st.download_button(
+                    label="📥 Export CSV",
+                    data=csv_data,
+                    file_name=f"{table_name}_position_summary.csv",
                     mime="text/csv",
                     width='stretch'
                 )

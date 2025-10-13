@@ -114,15 +114,37 @@ def get_cached_analysis(table_name: str) -> Optional[Dict[str, Any]]:
     initialize_cache()
 
     output_dir = _get_output_dir()
+    results_dir = os.path.join(output_dir, 'results')
 
-    # Check for validation response file (has feedback and adjusted status)
-    feedback = _load_json_file(table_name, '_validation_response.json')
+    # Check for validation response file (has feedback and adjusted status) in results subdirectory
+    feedback = None
+    feedback_path = os.path.join(results_dir, f"{table_name}_validation_response.json")
+    if os.path.exists(feedback_path):
+        try:
+            with open(feedback_path, 'r') as f:
+                feedback = json.load(f)
+        except Exception as e:
+            print(f"Error loading feedback: {e}")
 
-    # Check for raw validation file
-    validation = _load_json_file(table_name, '_summary_validation.json')
+    # Check for raw validation file in results subdirectory
+    validation = None
+    validation_path = os.path.join(results_dir, f"{table_name}_summary_validation.json")
+    if os.path.exists(validation_path):
+        try:
+            with open(validation_path, 'r') as f:
+                validation = json.load(f)
+        except Exception as e:
+            print(f"Error loading validation: {e}")
 
-    # Check for summary file
-    summary = _load_json_file(table_name, '_summary_summary.json')
+    # Check for summary file in results subdirectory
+    summary = None
+    summary_path = os.path.join(results_dir, f"{table_name}_summary_summary.json")
+    if os.path.exists(summary_path):
+        try:
+            with open(summary_path, 'r') as f:
+                summary = json.load(f)
+        except Exception as e:
+            print(f"Error loading summary: {e}")
 
     # Check for CSV validation artifacts
     validation_csv_exists = _file_exists(table_name, '.csv') or \
@@ -136,10 +158,10 @@ def get_cached_analysis(table_name: str) -> Optional[Dict[str, Any]]:
     if not has_validation and not has_summary and feedback is None:
         return None
 
-    # Get timestamp from most recent file
+    # Get timestamp from most recent file in results subdirectory
     timestamps = []
     for suffix in ['_validation_response.json', '_summary_validation.json', '_summary_summary.json']:
-        filepath = os.path.join(output_dir, f"{table_name}{suffix}")
+        filepath = os.path.join(results_dir, f"{table_name}{suffix}")
         ts = _get_file_timestamp(filepath)
         if ts:
             timestamps.append(ts)

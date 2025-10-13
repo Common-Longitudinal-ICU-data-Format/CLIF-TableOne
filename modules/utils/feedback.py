@@ -239,7 +239,7 @@ def save_feedback(feedback: Dict[str, Any], output_dir: str, table_name: str):
     )
 
     # Ensure output directory exists
-    final_dir = os.path.join(output_dir, 'final')
+    final_dir = os.path.join(output_dir, 'final', 'results')
     os.makedirs(final_dir, exist_ok=True)
 
     # Save to file
@@ -269,7 +269,7 @@ def load_feedback(output_dir: str, table_name: str) -> Optional[Dict[str, Any]]:
         Loaded feedback structure or None if file doesn't exist
     """
     filename = f"{table_name}_validation_response.json"
-    filepath = os.path.join(output_dir, 'final', filename)
+    filepath = os.path.join(output_dir, 'final', 'results', filename)
 
     if not os.path.exists(filepath):
         return None

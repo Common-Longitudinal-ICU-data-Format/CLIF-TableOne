@@ -38,9 +38,12 @@ class BaseTableAnalyzer(ABC):
         self.output_dir = output_dir or 'output'
         self.table = None
 
-        # Ensure output directories exist
+        # Ensure output directories exist with new structure
         os.makedirs(os.path.join(self.output_dir, 'intermediate'), exist_ok=True)
         os.makedirs(os.path.join(self.output_dir, 'final'), exist_ok=True)
+        os.makedirs(os.path.join(self.output_dir, 'final', 'reports'), exist_ok=True)
+        os.makedirs(os.path.join(self.output_dir, 'final', 'results'), exist_ok=True)
+        os.makedirs(os.path.join(self.output_dir, 'final', 'clifpy'), exist_ok=True)
 
         # Load the table
         self.load_table(sample_filter)
@@ -266,7 +269,7 @@ class BaseTableAnalyzer(ABC):
 
         table_name = self.get_table_name()
         filename = f"{table_name}_summary{suffix}.json"
-        filepath = os.path.join(self.output_dir, 'final', filename)
+        filepath = os.path.join(self.output_dir, 'final', 'results', filename)
 
         with open(filepath, 'w') as f:
             json.dump(summary, f, indent=2, default=str)
