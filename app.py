@@ -50,36 +50,21 @@ from modules.utils import (
 import plotly.graph_objects as go
 import plotly.express as px
 
-# Page configuration with dark theme
+# Page configuration
 st.set_page_config(
     page_title="CLIF 2.1 Validation & Summarization",
-    page_icon="🏥",
+    page_icon="images/clif_logo_red_no_text.png",
     layout="wide",
     initial_sidebar_state="expanded",
     menu_items=None
 )
 
-# Custom CSS for styling with dark theme
+# Custom CSS for styling (theme colors from config.toml)
 st.markdown("""
 <style>
-    /* Dark theme for main app and sidebar */
-    .stApp {
-        background-color: #0e1117;
-    }
-
-    /* Dark sidebar */
-    section[data-testid="stSidebar"] {
-        background-color: #262730 !important;
-    }
-
-    section[data-testid="stSidebar"] .css-1d391kg,
-    section[data-testid="stSidebar"] .css-1d391kg * {
-        background-color: #262730 !important;
-    }
-
-    /* Dark theme for the main content area */
-    .main > div {
-        background-color: #0e1117;
+    /* Global font size increase */
+    html {
+        font-size: 18px;
     }
 
     .main-header {
@@ -90,66 +75,109 @@ st.markdown("""
     .main-header h3 {
         margin: 0.5rem 0 0 0;
         padding: 0;
-        color: #999;
         font-weight: 400;
         font-size: 1.1rem;
     }
     .stTabs [data-baseweb="tab-list"] button [data-testid="stMarkdownContainer"] p {
-        font-size: 1.2rem;
+        font-size: 1.5rem;
+        font-weight: 600;
+    }
+    .stTabs [data-baseweb="tab-list"] button {
+        padding: 1.2rem 2.5rem;
+        border-radius: 8px;
+    }
+    .stTabs [data-baseweb="tab-list"] {
+        gap: 0.8rem;
+    }
+
+    /* Navigation radio buttons as proper buttons */
+    div[data-testid="stHorizontalBlock"] > div[data-testid="column"] {
+        padding: 0.25rem;
+    }
+
+    div[role="radiogroup"][aria-label="Navigation"] {
+        gap: 1rem;
+        padding: 1rem 0;
+    }
+
+    div[role="radiogroup"][aria-label="Navigation"] label {
+        border: 2px solid rgba(250, 250, 250, 0.2);
+        border-radius: 10px;
+        padding: 0.8rem 2rem;
+        background-color: rgba(250, 250, 250, 0.05);
+        cursor: pointer;
+        transition: all 0.3s ease;
+        font-size: 1.3rem;
+        font-weight: 500;
+    }
+
+    div[role="radiogroup"][aria-label="Navigation"] label:hover {
+        background-color: rgba(250, 250, 250, 0.1);
+        border-color: rgba(250, 250, 250, 0.4);
+        transform: translateY(-2px);
+    }
+
+    div[role="radiogroup"][aria-label="Navigation"] label[data-baseweb="radio"] > div:first-child {
+        display: none !important;
+    }
+
+    div[role="radiogroup"][aria-label="Navigation"] label[aria-checked="true"] {
+        background-color: #FF4B4B;
+        border-color: #FF4B4B;
+        font-weight: 600;
     }
     .metric-card {
-        background: #f0f2f6;
         padding: 1rem;
         border-radius: 10px;
         margin: 0.5rem 0;
     }
     .status-block-complete {
-        background: #d4edda;
-        border: 2px solid #a8d5ba;
         padding: 1.5rem;
         border-radius: 10px;
         margin: 0.5rem 0;
+        border: 2px solid #28a745;
+        background-color: rgba(40, 167, 69, 0.1);
     }
     .status-block-partial {
-        background: #fff3cd;
-        border: 2px solid #f4d799;
         padding: 1.5rem;
         border-radius: 10px;
         margin: 0.5rem 0;
+        border: 2px solid #ffc107;
+        background-color: rgba(255, 193, 7, 0.1);
     }
     .status-block-incomplete {
-        background: #f8d7da;
-        border: 2px solid #f1b8bc;
         padding: 1.5rem;
         border-radius: 10px;
         margin: 0.5rem 0;
+        border: 2px solid #dc3545;
+        background-color: rgba(220, 53, 69, 0.1);
     }
     .status-block-complete h4 {
-        color: #155724;
         margin: 0;
         font-weight: bold;
+        color: #28a745;
     }
     .status-block-partial h4 {
-        color: #856404;
         margin: 0;
         font-weight: bold;
+        color: #ffc107;
     }
     .status-block-incomplete h4 {
-        color: #721c24;
         margin: 0;
         font-weight: bold;
+        color: #dc3545;
     }
     .status-complete {
-        color: #155724;
         font-weight: bold;
+        color: #28a745;
     }
     .status-partial {
-        color: #856404;
         font-weight: bold;
+        color: #ffc107;
     }
     .status-incomplete {
-        color: #721c24;
         font-weight: bold;
+        color: #dc3545;
     }
 </style>
 """, unsafe_allow_html=True)
@@ -474,13 +502,6 @@ def main():
 
         if logo_path.exists():
             st.image(str(logo_path), width=450)
-
-        st.markdown(
-            f'<div class="main-header">'
-            f'<h3>CLIF 2.1 Validation & Summarization</h3>'
-            f'</div>',
-            unsafe_allow_html=True
-        )
 
     # Navigation
     st.divider()
@@ -2473,9 +2494,9 @@ def display_summary_statistics(analyzer, summary_stats, table_name):
                         # Custom display without arrow
                         st.markdown(f"""
                         <div style='padding: 10px 0;'>
-                            <div style='color: #808495; font-size: 14px; margin-bottom: 4px;'>{group_name.title()}</div>
+                            <div style='font-size: 14px; margin-bottom: 4px; opacity: 0.7;'>{group_name.title()}</div>
                             <div style='font-size: 32px; font-weight: bold; line-height: 1.1;'>{group_data['hospitalization_count']:,}</div>
-                            <div style='color: #0e8823; font-size: 14px; margin-top: 4px;'>{group_data['percentage_of_hospitalizations']:.1f}% of hospitalizations</div>
+                            <div style='font-size: 14px; margin-top: 4px; opacity: 0.8;'>{group_data['percentage_of_hospitalizations']:.1f}% of hospitalizations</div>
                         </div>
                         """, unsafe_allow_html=True)
 
@@ -2636,9 +2657,9 @@ def display_summary_statistics(analyzer, summary_stats, table_name):
                         # Custom display without arrow
                         st.markdown(f"""
                         <div style='padding: 10px 0;'>
-                            <div style='color: #808495; font-size: 14px; margin-bottom: 4px;'>{group_name.title()}</div>
+                            <div style='font-size: 14px; margin-bottom: 4px; opacity: 0.7;'>{group_name.title()}</div>
                             <div style='font-size: 32px; font-weight: bold; line-height: 1.1;'>{group_data['hospitalization_count']:,}</div>
-                            <div style='color: #0e8823; font-size: 14px; margin-top: 4px;'>{group_data['percentage_of_hospitalizations']:.1f}% of hospitalizations</div>
+                            <div style='font-size: 14px; margin-top: 4px; opacity: 0.8;'>{group_data['percentage_of_hospitalizations']:.1f}% of hospitalizations</div>
                         </div>
                         """, unsafe_allow_html=True)
 
