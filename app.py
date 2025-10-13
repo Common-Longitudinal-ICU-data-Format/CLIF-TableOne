@@ -908,11 +908,12 @@ def analyze_all_tables(config, available_tables, use_sample=False, generate_aggr
     ]
 
     # Sample-eligible tables (tables that can use hospitalization_id filter)
+    # Note: code_status uses patient_id (not hospitalization_id), so it's excluded and uses full dataset
     SAMPLE_ELIGIBLE_TABLES = [
         'labs', 'medication_admin_continuous', 'medication_admin_intermittent',
         'microbiology_nonculture', 'microbiology_susceptibility', 'microbiology_culture',
         'vitals', 'patient_assessments', 'respiratory_support', 'position',
-        'patient_procedures', 'adt', 'code_status', 'crrt_therapy', 'ecmo_mcs',
+        'patient_procedures', 'adt', 'crrt_therapy', 'ecmo_mcs',
         'hospital_diagnosis'
     ]
 
