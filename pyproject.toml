@@ -4,13 +4,14 @@ version = "0.1.0"
 description = "Validation and TableOne Cohort for CLIF-2.1"
 requires-python = ">=3.11"
 dependencies = [
-    "clifpy>=0.2.1",
+    "clifpy>=0.2.4",
     "duckdb>=1.4.1",
     "jupyter>=1.1.1",
     "matplotlib>=3.10.7",
     "numpy>=2.3.3",
     "pandas>=2.3.3",
     "plotly>=6.3.1",
+    "polars>=1.34.0",
     "pytz>=2025.2",
     "reportlab>=4.4.4",
     "scipy>=1.16.2",
@@ -19,4 +20,5 @@ dependencies = [
     "tableone>=0.9.5",
     "tqdm>=4.67.1",
     "upsetplot>=0.9.0",
+    "venny4py>=1.0.3",
 ]

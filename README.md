@@ -14,10 +14,22 @@ A comprehensive tool for validating and analyzing CLIF 2.1 data tables using cli
 
 ## Supported Tables
 
-Currently implemented analyzers:
+All 18 CLIF 2.1 tables are implemented:
 - **Patient** - Demographics, mortality, language categories
 - **Hospitalization** - Admission patterns, discharge data, age distributions
 - **ADT** - Location tracking, ICU identification, transfer analysis
+- **Code Status** - Code status tracking
+- **CRRT Therapy** - Continuous renal replacement therapy
+- **ECMO/MCS** - Extracorporeal membrane oxygenation and mechanical circulatory support
+- **Hospital Diagnosis** - Diagnosis data
+- **Labs** - Laboratory results
+- **Medication Admin** - Continuous and intermittent medication administration
+- **Microbiology** - Culture, non-culture, and susceptibility data
+- **Patient Assessments** - Patient assessment data
+- **Patient Procedures** - Procedure data
+- **Position** - Patient position tracking
+- **Respiratory Support** - Respiratory support data
+- **Vitals** - Vital signs data
 
 ## Quick Start
 
@@ -157,6 +169,12 @@ uv run python run_analysis.py --all --validate --summary
 ### Advanced Options
 
 ```bash
+# Use 1k ICU sample for faster analysis (recommended for large datasets)
+uv run python run_analysis.py --all --validate --sample
+
+# Single table with sample
+uv run python run_analysis.py --labs --validate --summary --sample
+
 # Custom configuration
 uv run python run_analysis.py --config custom/config.json --patient --validate
 
@@ -176,7 +194,9 @@ uv run python run_analysis.py --patient --validate --output-dir custom/output
 - `--patient` - Analyze patient table
 - `--hospitalization` - Analyze hospitalization table
 - `--adt` - Analyze ADT table
-- `--all` - Analyze all implemented tables
+- `--labs` - Analyze labs table
+- `--vitals` - Analyze vitals table
+- `--all` - Analyze all implemented tables (18 total)
 
 **Operations:**
 - `--validate` - Run clifpy validation
@@ -185,6 +205,13 @@ uv run python run_analysis.py --patient --validate --output-dir custom/output
 **Configuration:**
 - `--config PATH` - Config file path (default: `config/config.json`)
 - `--output-dir PATH` - Override output directory
+
+**Performance:**
+- `--sample` - Use 1k ICU sample for faster analysis (stratified by admission year)
+  - Automatically uses existing sample or creates from ADT table
+  - Applies to large event tables (labs, vitals, medications, etc.)
+  - Core tables (patient, hospitalization, ADT) always use full data
+  - **Recommended for `--all` to reduce runtime from 30-60 min to 5-10 min**
 
 **Output Control:**
 - `--verbose` / `-v` - Detailed progress output
@@ -201,18 +228,11 @@ uv run python run_analysis.py --patient --validate --output-dir custom/output
 
 **Cron Job (Daily Validation):**
 ```bash
-# Run at 2 AM daily
-0 2 * * * cd /path/to/CLIF-TableOne && uv run python run_analysis.py --all --validate --quiet >> logs/analysis.log 2>&1
-```
+# Run at 2 AM daily with 1k sample (fast)
+0 2 * * * cd /path/to/CLIF-TableOne && uv run python run_analysis.py --all --validate --sample --quiet >> logs/analysis.log 2>&1
 
-**CI/CD Pipeline:**
-```bash
-#!/bin/bash
-uv run python run_analysis.py --all --validate --summary
-if [ $? -ne 0 ]; then
-    echo "Validation failed"
-    exit 1
-fi
+# Or with full dataset (slow)
+0 2 * * * cd /path/to/CLIF-TableOne && uv run python run_analysis.py --all --validate --quiet >> logs/analysis.log 2>&1
 ```
 
 ## Feedback System

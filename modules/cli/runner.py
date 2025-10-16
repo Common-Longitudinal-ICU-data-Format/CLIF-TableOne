@@ -158,10 +158,10 @@ class CLIAnalysisRunner:
                 # Generate PDF report
                 if self.generate_pdf:
                     try:
-                        final_dir = os.path.join(self.output_dir, 'final')
-                        os.makedirs(final_dir, exist_ok=True)
+                        reports_dir = os.path.join(self.output_dir, 'final', 'reports')
+                        os.makedirs(reports_dir, exist_ok=True)
 
-                        pdf_path = os.path.join(final_dir, f"{table_name}_validation_report.pdf")
+                        pdf_path = os.path.join(reports_dir, f"{table_name}_validation_report.pdf")
 
                         if self.pdf_generator.is_available():
                             self.log(self.formatter.progress(f"Generating PDF report for {table_name}"))
@@ -174,7 +174,7 @@ class CLIAnalysisRunner:
                             self.log(self.formatter.success(f"Validation PDF report saved: {table_name}_validation_report.pdf"))
                         else:
                             # Fall back to text report
-                            txt_path = os.path.join(final_dir, f"{table_name}_validation_report.txt")
+                            txt_path = os.path.join(reports_dir, f"{table_name}_validation_report.txt")
                             self.log(self.formatter.info(f"reportlab not available, generating text report instead"))
                             self.pdf_generator.generate_text_report(
                                 validation_results,
@@ -208,14 +208,14 @@ class CLIAnalysisRunner:
 
                 # Save summary CSVs
                 try:
-                    final_dir = os.path.join(self.output_dir, 'final')
-                    os.makedirs(final_dir, exist_ok=True)
+                    results_dir = os.path.join(self.output_dir, 'final', 'results')
+                    os.makedirs(results_dir, exist_ok=True)
 
                     # Save patient demographics summary
                     if hasattr(analyzer, 'generate_patient_summary'):
                         patient_summary_df = analyzer.generate_patient_summary()
                         if not patient_summary_df.empty:
-                            csv_filepath = os.path.join(final_dir, f"{table_name}_demographics_summary.csv")
+                            csv_filepath = os.path.join(results_dir, f"{table_name}_demographics_summary.csv")
                             patient_summary_df.to_csv(csv_filepath, index=False)
                             self.log(self.formatter.success(f"Patient demographics summary CSV saved"))
 
@@ -223,7 +223,7 @@ class CLIAnalysisRunner:
                     if hasattr(analyzer, 'generate_hospitalization_summary'):
                         hosp_summary_df = analyzer.generate_hospitalization_summary()
                         if not hosp_summary_df.empty:
-                            csv_filepath = os.path.join(final_dir, f"{table_name}_summary.csv")
+                            csv_filepath = os.path.join(results_dir, f"{table_name}_summary.csv")
                             hosp_summary_df.to_csv(csv_filepath, index=False)
                             self.log(self.formatter.success(f"Hospitalization summary CSV saved"))
                 except Exception as e:
@@ -266,7 +266,7 @@ class CLIAnalysisRunner:
         # Header
         self.log(self.formatter.header("🏥 CLIF TABLE ONE ANALYSIS"), force=True)
         self.log(f"{self.formatter.FOLDER} Data Directory: {self.data_dir}", force=True)
-        self.log(f"{self.formatter.FILE} Output Directory: {os.path.join(self.output_dir, 'final')}", force=True)
+        self.log(f"{self.formatter.FILE} Output Directory: {os.path.join(self.output_dir, 'final', 'reports')} (reports), {os.path.join(self.output_dir, 'final', 'results')} (results)", force=True)
         self.log(f"📋 Tables: {', '.join(tables)}", force=True)
         self.log(f"🔍 Validation: {'✓' if run_validation else '✗'}", force=True)
         self.log(f"📊 Summary: {'✓' if run_summary else '✗'}", force=True)
@@ -304,7 +304,9 @@ class CLIAnalysisRunner:
                 error = results['details'][table].get('error', 'Unknown error')
                 self.log(f"  - {table}: {error}", force=True)
 
-        self.log(f"\n{self.formatter.FOLDER} Results saved to: {os.path.join(self.output_dir, 'final')}", force=True)
+        self.log(f"\n{self.formatter.FOLDER} Results saved to:", force=True)
+        self.log(f"  📄 Reports: {os.path.join(self.output_dir, 'final', 'reports')}", force=True)
+        self.log(f"  📊 Results: {os.path.join(self.output_dir, 'final', 'results')}", force=True)
 
         # Generate combined report if multiple tables were analyzed and validation was run
         if len(results['tables_analyzed']) > 1 and run_validation and self.generate_pdf:
