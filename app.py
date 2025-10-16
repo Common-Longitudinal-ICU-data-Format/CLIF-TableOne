@@ -90,46 +90,45 @@ st.markdown("""
         gap: 0.8rem;
     }
 
-    /* Navigation radio buttons as proper buttons */
-    div[data-testid="stHorizontalBlock"] > div[data-testid="column"] {
-        padding: 0.25rem;
-    }
-
-    div[role="radiogroup"][aria-label="Navigation"] {
-        gap: 1rem;
-        padding: 1rem 0;
-    }
-
-    div[role="radiogroup"][aria-label="Navigation"] label {
-        border: 2px solid rgba(250, 250, 250, 0.2);
-        border-radius: 10px;
-        padding: 0.8rem 2rem;
-        background-color: rgba(250, 250, 250, 0.05);
-        cursor: pointer;
-        transition: all 0.3s ease;
-        font-size: 1.3rem;
-        font-weight: 500;
-    }
-
-    div[role="radiogroup"][aria-label="Navigation"] label:hover {
-        background-color: rgba(250, 250, 250, 0.1);
-        border-color: rgba(250, 250, 250, 0.4);
-        transform: translateY(-2px);
-    }
-
-    div[role="radiogroup"][aria-label="Navigation"] label[data-baseweb="radio"] > div:first-child {
-        display: none !important;
-    }
-
-    div[role="radiogroup"][aria-label="Navigation"] label[aria-checked="true"] {
-        background-color: #FF4B4B;
-        border-color: #FF4B4B;
-        font-weight: 600;
-    }
     .metric-card {
         padding: 1rem;
         border-radius: 10px;
         margin: 0.5rem 0;
+    }
+
+    /* Left-align text in secondary buttons (status grid) */
+    .stButton > button[kind="secondary"] {
+        text-align: left !important;
+        justify-content: flex-start !important;
+    }
+
+    .stButton > button[kind="secondary"] > div {
+        justify-content: flex-start !important;
+        text-align: left !important;
+        width: 100%;
+    }
+
+    .stButton > button[kind="secondary"] > div > div {
+        justify-content: flex-start !important;
+        text-align: left !important;
+        width: 100%;
+    }
+
+    .stButton > button[kind="secondary"] p {
+        text-align: left !important;
+        justify-content: flex-start !important;
+        margin: 0 !important;
+    }
+
+    .stButton > button[kind="secondary"] div[data-testid="stMarkdownContainer"] {
+        text-align: left !important;
+        justify-content: flex-start !important;
+        width: 100%;
+    }
+
+    /* Target all nested divs within secondary buttons */
+    button[kind="secondary"] * {
+        text-align: left !important;
     }
     .status-block-complete {
         padding: 1.5rem;
@@ -273,6 +272,7 @@ def show_home_page(config: dict, available_tables: list):
         cols = st.columns(cols_per_row)
         for idx, table_name in enumerate(row):
             with cols[idx]:
+                # Determine icon and caption based on cache status
                 if is_table_cached(table_name):
                     completion = get_completion_status(table_name)
                     if completion['validation_complete']:
@@ -285,16 +285,132 @@ def show_home_page(config: dict, available_tables: list):
                         icon = status_icons.get(status, '📊')
                         cached = get_cached_analysis(table_name)
                         timestamp = format_cache_timestamp(cached['timestamp'])
-                        st.markdown(f"{icon} **{TABLE_DISPLAY_NAMES[table_name]}**")
-                        st.caption(f"{status.upper()} • {timestamp}")
+                        caption_text = f"{status.upper()} • {timestamp}"
                     else:
-                        st.markdown(f"📋 **{TABLE_DISPLAY_NAMES[table_name]}**")
-                        st.caption("Analyzed (no validation)")
+                        icon = '📋'
+                        caption_text = "Analyzed (no validation)"
                 else:
-                    st.markdown(f"⭕ **{TABLE_DISPLAY_NAMES[table_name]}**")
-                    st.caption("Not analyzed")
+                    icon = '⭕'
+                    caption_text = "Not analyzed"
+
+                # Clickable button for each table
+                button_label = f"{icon} {TABLE_DISPLAY_NAMES[table_name]}"
+                if st.button(
+                    button_label,
+                    key=f"home_table_{table_name}",
+                    use_container_width=True,
+                    type="secondary"
+                ):
+                    st.session_state.current_page = "📊 Table Analysis"
+                    st.session_state.last_selected_table = table_name
+                    st.rerun()
+
+                st.caption(caption_text)
 
     st.divider()
+
+    # Regenerate Reports Section (only show if combined report exists)
+    output_dir = config.get('output_dir', 'output')
+    combined_report_path = os.path.join(output_dir, 'final', 'reports', 'combined_validation_report.pdf')
+
+    if os.path.exists(combined_report_path):
+        st.markdown("### 🔄 Regenerate Reports")
+        st.write("Regenerate all validation reports from existing validation results (accounts for any user feedback).")
+
+        if st.button("📄 Regenerate All Reports", type="secondary", use_container_width=True):
+            st.session_state.regenerate_reports = True
+            st.rerun()
+
+        st.divider()
+
+    # Handle report regeneration
+    if st.session_state.get('regenerate_reports', False):
+        with st.spinner("Regenerating validation reports..."):
+            try:
+                from modules.cli import ValidationPDFGenerator
+                from modules.reports.combined_report_generator import generate_combined_report
+
+                reports_dir = os.path.join(output_dir, 'final', 'reports')
+                results_dir = os.path.join(output_dir, 'final', 'results')
+                os.makedirs(reports_dir, exist_ok=True)
+
+                pdf_generator = ValidationPDFGenerator()
+                regenerated_count = 0
+                failed_tables = []
+
+                # Regenerate individual table reports from validation JSON files
+                for table_name in available_tables:
+                    validation_json_path = os.path.join(results_dir, f'{table_name}_summary_validation.json')
+
+                    if os.path.exists(validation_json_path):
+                        try:
+                            # Load validation results
+                            with open(validation_json_path, 'r') as f:
+                                validation_results = json.load(f)
+
+                            # Check for user feedback
+                            feedback = None
+                            response_file = os.path.join(results_dir, f'{table_name}_validation_response.json')
+                            if os.path.exists(response_file):
+                                with open(response_file, 'r') as f:
+                                    feedback = json.load(f)
+
+                            # Generate PDF report
+                            pdf_path = os.path.join(reports_dir, f"{table_name}_validation_report.pdf")
+
+                            if pdf_generator.is_available():
+                                pdf_generator.generate_validation_pdf(
+                                    validation_results,
+                                    table_name,
+                                    pdf_path,
+                                    config.get('site_name'),
+                                    config.get('timezone', 'UTC'),
+                                    feedback
+                                )
+                            else:
+                                # Fall back to text report
+                                txt_path = os.path.join(reports_dir, f"{table_name}_validation_report.txt")
+                                pdf_generator.generate_text_report(
+                                    validation_results,
+                                    table_name,
+                                    txt_path,
+                                    config.get('site_name'),
+                                    config.get('timezone', 'UTC'),
+                                    feedback
+                                )
+
+                            regenerated_count += 1
+                        except Exception as e:
+                            failed_tables.append((table_name, str(e)))
+
+                # Regenerate combined report
+                try:
+                    pdf_path = generate_combined_report(
+                        output_dir,
+                        available_tables,
+                        config.get('site_name'),
+                        config.get('timezone', 'UTC')
+                    )
+
+                    if pdf_path:
+                        st.success(f"✅ Successfully regenerated {regenerated_count} individual reports")
+                        st.success("✅ Successfully regenerated combined validation report")
+                        st.success("✅ Successfully regenerated consolidated CSV")
+                    else:
+                        st.error("❌ Failed to regenerate combined report")
+                except Exception as e:
+                    st.error(f"❌ Error regenerating combined report: {e}")
+
+                # Show any failures
+                if failed_tables:
+                    with st.expander(f"⚠️ Failed to regenerate {len(failed_tables)} table(s)", expanded=False):
+                        for table_name, error in failed_tables:
+                            st.error(f"**{TABLE_DISPLAY_NAMES.get(table_name, table_name)}**: {error}")
+
+            except Exception as e:
+                st.error(f"❌ Error during report regeneration: {e}")
+
+        st.session_state.regenerate_reports = False
 
     # Analyze All Tables Section
     st.markdown("### Analyze All Tables")
@@ -399,60 +515,109 @@ def main():
 
         st.divider()
 
+        # Navigation - Home button
+        if st.button("🏠 Home", use_container_width=True):
+            st.session_state.current_page = "🏠 Home"
+            st.rerun()
+
         # All CLIF 2.1 tables are now implemented
         available_tables = ['patient', 'hospitalization', 'adt', 'code_status', 'crrt_therapy', 'ecmo_mcs',
                            'hospital_diagnosis', 'labs', 'medication_admin_continuous', 'medication_admin_intermittent',
                            'microbiology_culture', 'microbiology_nonculture', 'microbiology_susceptibility',
                            'patient_assessments', 'patient_procedures', 'position', 'respiratory_support', 'vitals']
 
-        # Table selection dropdown
-        selected_table = st.selectbox(
-            "Select Table to Analyze",
-            options=available_tables,
-            format_func=lambda x: TABLE_DISPLAY_NAMES[x]
-        )
+        # Initialize navigation state if not exists (needed for sidebar logic)
+        if 'current_page' not in st.session_state:
+            st.session_state.current_page = "🏠 Home"
 
-        # Show re-analyze option if table is cached
-        force_reanalyze = False
-        if is_table_cached(selected_table):
-            force_reanalyze = st.checkbox("🔄 Re-analyze table", value=False)
+        st.divider()
 
-        # Sample option for eligible tables
-        SAMPLE_ELIGIBLE_TABLES = [
-            'labs', 'medication_admin_continuous', 'medication_admin_intermittent',
-            'microbiology_nonculture', 'microbiology_susceptibility',
-            'patient_assessments', 'patient_procedures', 'position',
-            'respiratory_support', 'vitals'
-        ]
-
-        # Show sample option ONLY for eligible tables
-        if selected_table in SAMPLE_ELIGIBLE_TABLES:
-            from modules.utils.sampling import sample_exists
-
-            # Check if sample file exists
-            if sample_exists(config.get('output_dir', 'output')):
-                use_sample = st.checkbox(
-                    "📊 Use 1k ICU Sample",
-                    value=False,
-                    help="Loads table with only 1k ICU hospitalizations (stratified proportional by year). Significantly faster for large tables."
-                )
-                st.session_state.use_sample = use_sample
+        # Table selection dropdown - always visible
+        # On Home page: show placeholder, on Table Analysis: show selected table
+        if st.session_state.current_page == "🏠 Home":
+            # Show dropdown with placeholder on Home page
+            if 'last_selected_table' in st.session_state:
+                # Get index of last selected table
+                default_index = available_tables.index(st.session_state.last_selected_table)
             else:
-                st.info("ℹ️ Sample not yet generated. Analyze ADT table first to create sample.")
-                st.session_state.use_sample = False
-        else:
-            st.session_state.use_sample = False
+                default_index = 0
 
-        # Run analysis button
-        if st.button("🚀 Run Analysis", type="primary", width='stretch'):
-            st.session_state.run_analysis = True
-            st.session_state.selected_table = selected_table
-            st.session_state.run_validation = True
-            st.session_state.run_outlier_handling = config.get('analysis_settings', {}).get('outlier_detection', False)
-            st.session_state.calculate_sofa = False
-            # Always force reanalyze when Run Analysis is clicked
-            st.session_state.force_reanalyze = True
-            st.rerun()
+            selected_table = st.selectbox(
+                "Select Table to Analyze",
+                options=available_tables,
+                format_func=lambda x: TABLE_DISPLAY_NAMES[x],
+                index=default_index,
+                placeholder="Select a table...",
+                label_visibility="visible"
+            )
+
+            # When user selects a table from dropdown on Home page, navigate to Table Analysis
+            if 'last_selected_table' not in st.session_state:
+                st.session_state.last_selected_table = selected_table
+
+            if selected_table != st.session_state.last_selected_table:
+                st.session_state.last_selected_table = selected_table
+                st.session_state.current_page = "📊 Table Analysis"
+                st.rerun()
+
+        else:
+            # On Table Analysis page: show selected table
+            selected_table = st.selectbox(
+                "Select Table to Analyze",
+                options=available_tables,
+                format_func=lambda x: TABLE_DISPLAY_NAMES[x],
+                index=available_tables.index(st.session_state.get('last_selected_table', available_tables[0]))
+            )
+
+            # When user selects a different table, update and stay on Table Analysis page
+            if 'last_selected_table' not in st.session_state:
+                st.session_state.last_selected_table = selected_table
+
+            if selected_table != st.session_state.last_selected_table:
+                st.session_state.last_selected_table = selected_table
+                st.rerun()
+
+            # Show re-analyze option if table is cached
+            force_reanalyze = False
+            if is_table_cached(selected_table):
+                force_reanalyze = st.checkbox("🔄 Re-analyze table", value=False)
+
+            # Sample option for eligible tables
+            SAMPLE_ELIGIBLE_TABLES = [
+                'labs', 'medication_admin_continuous', 'medication_admin_intermittent',
+                'microbiology_nonculture', 'microbiology_susceptibility',
+                'patient_assessments', 'patient_procedures', 'position',
+                'respiratory_support', 'vitals'
+            ]
+
+            # Show sample option ONLY for eligible tables
+            if selected_table in SAMPLE_ELIGIBLE_TABLES:
+                from modules.utils.sampling import sample_exists
+
+                # Check if sample file exists
+                if sample_exists(config.get('output_dir', 'output')):
+                    use_sample = st.checkbox(
+                        "📊 Use 1k ICU Sample",
+                        value=False,
+                        help="Loads table with only 1k ICU hospitalizations (stratified proportional by year). Significantly faster for large tables."
+                    )
+                    st.session_state.use_sample = use_sample
+                else:
+                    st.info("ℹ️ Sample not yet generated. Analyze ADT table first to create sample.")
+                    st.session_state.use_sample = False
+            else:
+                st.session_state.use_sample = False
+
+            # Run analysis button - only on Table Analysis page
+            if st.button("🚀 Run Analysis", type="primary", width='stretch'):
+                st.session_state.run_analysis = True
+                st.session_state.selected_table = selected_table
+                st.session_state.run_validation = True
+                st.session_state.run_outlier_handling = config.get('analysis_settings', {}).get('outlier_detection', False)
+                st.session_state.calculate_sofa = False
+                # Always force reanalyze when Run Analysis is clicked
+                st.session_state.force_reanalyze = True
+                st.rerun()
 
         st.divider()
 
@@ -503,29 +668,9 @@ def main():
         if logo_path.exists():
             st.image(str(logo_path), width=450)
 
-    # Navigation
-    st.divider()
-
-    # Initialize navigation state if not exists
-    if 'current_page' not in st.session_state:
-        st.session_state.current_page = "🏠 Home"
-
     # When run_analysis is clicked, switch to Table Analysis page
     if st.session_state.get('run_analysis', False):
         st.session_state.current_page = "📊 Table Analysis"
-
-    page = st.radio(
-        "Navigation",
-        ["🏠 Home", "📊 Table Analysis"],
-        horizontal=True,
-        label_visibility="collapsed",
-        key="navigation_radio",
-        index=["🏠 Home", "📊 Table Analysis"].index(st.session_state.current_page)
-    )
-
-    # Update session state when user manually changes navigation
-    if page != st.session_state.current_page:
-        st.session_state.current_page = page
 
     st.divider()
 

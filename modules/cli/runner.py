@@ -233,6 +233,47 @@ class CLIAnalysisRunner:
                 if self.verbose:
                     self.log(self.formatter.format_summary_info(summary_stats, table_name))
 
+            # Generate ICU sample after ADT analysis if --sample was requested and sample doesn't exist
+            if table_name == 'adt' and self.use_sample and analyzer.table is not None:
+                from modules.utils.sampling import (
+                    get_icu_hospitalizations_from_adt,
+                    generate_stratified_sample,
+                    save_sample_list,
+                    sample_exists
+                )
+
+                # Only generate if sample doesn't already exist
+                if not sample_exists(self.output_dir):
+                    try:
+                        self.log(self.formatter.progress("Generating 1k ICU sample for future analyses"))
+
+                        # Step 1: Get ICU hospitalizations from ADT
+                        icu_hosp_ids = get_icu_hospitalizations_from_adt(analyzer.table.df)
+
+                        if len(icu_hosp_ids) > 0:
+                            # Step 2: Load hospitalization table to get years
+                            hosp_analyzer = HospitalizationAnalyzer(self.data_dir, self.filetype, self.timezone, self.output_dir)
+                            if hosp_analyzer.table is not None:
+                                # Step 3: Generate stratified sample
+                                sample_ids = generate_stratified_sample(
+                                    hosp_analyzer.table.df,
+                                    icu_hosp_ids,
+                                    sample_size=1000
+                                )
+
+                                # Step 4: Save for future use
+                                save_sample_list(sample_ids, self.output_dir)
+                                self.log(self.formatter.success(f"Generated 1k ICU sample (stratified by year) - {len(sample_ids):,} hospitalizations"))
+                            else:
+                                self.log(self.formatter.warning("Could not load hospitalization table for sampling"))
+                        else:
+                            self.log(self.formatter.warning("No ICU hospitalizations found in ADT table"))
+                    except Exception as e:
+                        self.log(self.formatter.warning(f"Could not generate sample: {e}"))
+                        if self.verbose:
+                            import traceback
+                            traceback.print_exc()
+
             result['success'] = True
             self.log(self.formatter.success(f"Completed analysis for {table_name}"))
 
@@ -263,6 +304,25 @@ class CLIAnalysisRunner:
         dict
             Overall results with per-table details
         """
+        # If using sample mode, ensure ADT is processed early (after patient/hospitalization)
+        # so the sample can be generated before other tables need it
+        if self.use_sample and 'adt' in tables:
+            # Reorder to ensure: patient, hospitalization, adt come first (in that order if present)
+            priority_tables = ['patient', 'hospitalization', 'adt']
+            ordered_tables = []
+
+            # Add priority tables first (in order)
+            for table in priority_tables:
+                if table in tables:
+                    ordered_tables.append(table)
+
+            # Add remaining tables
+            for table in tables:
+                if table not in priority_tables:
+                    ordered_tables.append(table)
+
+            tables = ordered_tables
+
         # Header
         self.log(self.formatter.header("🏥 CLIF TABLE ONE ANALYSIS"), force=True)
         self.log(f"{self.formatter.FOLDER} Data Directory: {self.data_dir}", force=True)
