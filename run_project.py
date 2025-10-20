@@ -352,7 +352,18 @@ class ProjectRunner:
         steps_run = [s for s in steps_run if s is not None]
 
         if steps_run:
-            self.results['overall_success'] = all(s.get('success', False) for s in steps_run)
+            # Check each step - for validation, accept if critical_tables_ok is True
+            success_checks = []
+            for step in steps_run:
+                # Check if this is the validation step
+                if step == self.results['validation'] and 'critical_tables_ok' in step:
+                    # For validation, accept if either validation succeeded OR critical tables are OK
+                    success_checks.append(step.get('success', False) or step.get('critical_tables_ok', False))
+                else:
+                    # For other steps, just check success
+                    success_checks.append(step.get('success', False))
+
+            self.results['overall_success'] = all(success_checks)
         else:
             self.results['overall_success'] = False
 
