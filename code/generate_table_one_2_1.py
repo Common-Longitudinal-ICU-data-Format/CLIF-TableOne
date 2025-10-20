@@ -3730,7 +3730,18 @@ def main(memory_monitor=None) -> bool:
     ax1.set_ylabel('PERCENT OF ALL ENCOUNTERS', fontsize=14, fontweight='bold', labelpad=10)
     ax1.set_xticks(x_pos)
     ax1.set_xticklabels(x_labels, fontsize=12, fontweight='bold')
-    ax1.set_ylim(hospice_pct.min() - 0.5, mortality_pct.max() + 1)
+
+    # Calculate ylim with defensive checks for NaN/Inf values
+    hosp_min = np.nanmin(hospice_pct) if len(hospice_pct) > 0 and not np.all(np.isnan(hospice_pct)) else 0
+    mort_max = np.nanmax(mortality_pct) if len(mortality_pct) > 0 and not np.all(np.isnan(mortality_pct)) else 10
+
+    # Provide defaults if still invalid
+    if np.isnan(hosp_min) or np.isinf(hosp_min):
+        hosp_min = 0
+    if np.isnan(mort_max) or np.isinf(mort_max):
+        mort_max = 10
+
+    ax1.set_ylim(hosp_min - 0.5, mort_max + 1)
     ax1.spines['top'].set_visible(False)
     ax1.spines['right'].set_visible(False)
     ax1.spines['left'].set_linewidth(2)
@@ -3773,7 +3784,13 @@ def main(memory_monitor=None) -> bool:
     ax2.set_ylabel('PERCENT', fontsize=14, fontweight='bold', labelpad=10)
     ax2.set_xticks(x_pos)
     ax2.set_xticklabels(x_labels, fontsize=12, fontweight='bold')
-    ax2.set_ylim(0, max(ci_upper) + 5)
+
+    # Calculate ylim with defensive checks for NaN/Inf values
+    ci_upper_max = np.nanmax(ci_upper) if len(ci_upper) > 0 and not np.all(np.isnan(ci_upper)) else 100
+    if np.isnan(ci_upper_max) or np.isinf(ci_upper_max):
+        ci_upper_max = 100  # Default to 100% for percentage plot
+
+    ax2.set_ylim(0, ci_upper_max + 5)
     ax2.spines['top'].set_visible(False)
     ax2.spines['right'].set_visible(False)
     ax2.spines['left'].set_linewidth(2)
@@ -3915,24 +3932,39 @@ def main(memory_monitor=None) -> bool:
 
     for i, (category, ax) in enumerate(zip(categories, axes)):
         data = cci_summary[cci_summary['cci_category'] == category].sort_values('year')
-    
+
+        # Check if data is empty or insufficient
+        if data.empty or len(data) == 0:
+            ax.text(0.5, 0.5, f'No data available\nfor CCI: {category}',
+                    ha='center', va='center', fontsize=12,
+                    fontweight='bold', color='#666666',
+                    transform=ax.transAxes)
+            ax.set_title(f'CCI: {category}', fontsize=14, fontweight='bold', pad=10)
+            ax.set_xticks([])
+            ax.set_yticks([])
+            ax.spines['top'].set_visible(False)
+            ax.spines['right'].set_visible(False)
+            ax.spines['left'].set_visible(False)
+            ax.spines['bottom'].set_visible(False)
+            continue
+
         x_labels = data['year'].astype(str).tolist()
         x_pos = np.arange(len(x_labels))
-    
+
         mortality_pct = data['mortality_pct'].values
         hospice_pct = data['hospice_pct'].values
-    
+
         # Plot MORTALITY line
-        ax.plot(x_pos, mortality_pct, 
-                marker='o', markersize=12, 
-                color=colors_mortality, 
+        ax.plot(x_pos, mortality_pct,
+                marker='o', markersize=12,
+                color=colors_mortality,
                 linewidth=3,
                 markerfacecolor=colors_mortality,
                 markeredgecolor='black',
                 markeredgewidth=1,
                 label='MORTALITY',
                 zorder=3)
-    
+
         # Plot HOSPICE line
         ax.plot(x_pos, hospice_pct,
                 marker='s', markersize=10,
@@ -3943,54 +3975,62 @@ def main(memory_monitor=None) -> bool:
                 markeredgewidth=1,
                 label='HOSPICE',
                 zorder=3)
-    
+
         # Add percentage labels
         for j, (mort, hosp) in enumerate(zip(mortality_pct, hospice_pct)):
-            ax.text(j, mort + 0.5, f'{mort:.1f}%', 
-                    ha='center', va='bottom', 
+            ax.text(j, mort + 0.5, f'{mort:.1f}%',
+                    ha='center', va='bottom',
                     fontsize=9, fontweight='bold',
                     color='#333333')
-        
+
             ax.text(j, hosp - 0.5, f'{hosp:.1f}%',
                     ha='center', va='top',
                     fontsize=9, fontweight='bold',
                     color='#000000')
-    
+
         # Add text labels in plot area
         mid_y_mortality = np.mean(mortality_pct)
         mid_y_hospice = np.mean(hospice_pct)
-    
+
         if mid_y_mortality - mid_y_hospice > 3:
-            ax.text(len(x_pos)/2, mid_y_mortality + 1, 'MORTALITY', 
+            ax.text(len(x_pos)/2, mid_y_mortality + 1, 'MORTALITY',
                     fontsize=13, fontweight='normal',
                     color='#666666', ha='center',
                     style='italic', alpha=0.7)
-        
+
             ax.text(len(x_pos)/2, mid_y_hospice - 1, 'HOSPICE',
                     fontsize=13, fontweight='normal',
                     color='#000000', ha='center',
                     style='italic', alpha=0.7)
-    
+
         # Customize axes
         ax.set_ylabel('PERCENT OF ALL ENCOUNTERS', fontsize=11, fontweight='bold')
         ax.set_xlabel('YEAR', fontsize=11, fontweight='bold')
         ax.set_title(f'CCI: {category}', fontsize=14, fontweight='bold', pad=10)
         ax.set_xticks(x_pos)
         ax.set_xticklabels(x_labels, fontsize=10, fontweight='bold')
-    
-        y_max = max(mortality_pct.max(), hospice_pct.max())
+
+        # Calculate y_max with defensive checks for NaN/Inf values
+        mort_max = np.nanmax(mortality_pct) if len(mortality_pct) > 0 and not np.all(np.isnan(mortality_pct)) else 0
+        hosp_max = np.nanmax(hospice_pct) if len(hospice_pct) > 0 and not np.all(np.isnan(hospice_pct)) else 0
+        y_max = max(mort_max, hosp_max)
+
+        # Provide default if still invalid
+        if np.isnan(y_max) or np.isinf(y_max) or y_max == 0:
+            y_max = 10  # Default axis range
+
         ax.set_ylim(0, y_max + 3)
-    
+
         ax.spines['top'].set_visible(False)
         ax.spines['right'].set_visible(False)
         ax.spines['left'].set_linewidth(2)
         ax.spines['bottom'].set_linewidth(2)
-    
+
         ax.yaxis.grid(True, linestyle=':', alpha=0.3, linewidth=1, color='gray')
         ax.set_axisbelow(True)
-    
+
         if i == 0:
-            ax.legend(loc='upper left', fontsize=10, frameon=True, 
+            ax.legend(loc='upper left', fontsize=10, frameon=True,
                      fancybox=True, shadow=True)
 
     plt.suptitle('Mortality vs Hospice Trends by Comorbidity Burden',
