@@ -49,42 +49,53 @@ Create or update `config/config.json`:
 }
 ```
 
-## Complete Workflow Runner (Recommended)
+## Quick Start - Run Complete Workflow
 
-The automated workflow runner orchestrates the complete analysis pipeline:
-
-### Basic Usage
+**Recommended command to run the complete analysis pipeline:**
 
 ```bash
-# Complete workflow with 1k sample (recommended for testing)
-uv run python run_project.py --sample
+uv run python run_project.py --sample --get-ecdf
+```
 
-# Full dataset analysis
-uv run python run_project.py
+This single command runs:
+1. ✅ **Validation** - Validates all 18 CLIF tables (with 1k ICU sample)
+2. 📊 **Table One** - Generates cohort analysis with CONSORT diagrams
+3. 📈 **ECDF Bins** - Computes distributions for labs/vitals/respiratory data
+4. 🚀 **App Launch** - Automatically opens the Streamlit web interface
 
-# Validation only
+**Time:** ~15-20 minutes
+**Output:** All validation reports, Table One CSVs/visualizations, and ECDF data for EDA apps
+
+---
+
+## Advanced Usage
+
+### Other Workflow Options
+
+```bash
+# Full dataset (no sampling, takes 45-90 min)
+uv run python run_project.py --get-ecdf
+
+# Skip automatic app launch
+uv run python run_project.py --sample --get-ecdf --no-launch-app
+
+# Validation only (quick data quality check)
 uv run python run_project.py --validate-only --sample
 
 # Table One only (skip validation)
 uv run python run_project.py --tableone-only
 
-# Specific tables
-uv run python run_project.py --tables patient adt hospitalization
-
-# Skip automatic app launch
-uv run python run_project.py --sample --no-launch-app
-
-# Get ECDF ECDF bins (for EDA app)
+# ECDF only (for EDA app setup)
 uv run python run_project.py --get-ecdf-only
 uv run python run_project.py --get-ecdf-only --visualize
 
-# Full workflow + get-ecdf
-uv run python run_project.py --get-ecdf
+# Specific tables
+uv run python run_project.py --tables patient adt hospitalization
 ```
 
-### Get ECDF Data (Optional)
+### What is ECDF?
 
-The get-ecdf feature generates ECDF (Empirical Cumulative Distribution Function) and quantile bins for labs/vitals/respiratory data during ICU stays. This get-ecdfd data is used by exploratory data analysis (EDA) applications.
+The get-ecdf feature generates ECDF (Empirical Cumulative Distribution Function) and quantile bins for labs/vitals/respiratory data during ICU stays. This data is used by exploratory data analysis (EDA) applications for visualization and statistical analysis.
 
 **When to use:**
 - Setting up an EDA app that needs pre-computed distributions
