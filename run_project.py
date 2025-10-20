@@ -78,10 +78,8 @@ class ProjectRunner:
             'Labs',
             'Vitals',
             'Medication Admin Continuous',
-            'Position',
             'Patient Assessments',
             'Hospital Diagnosis',
-            'CRRT Therapy',
             'Respiratory Support'
         ]
 
