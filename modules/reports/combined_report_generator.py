@@ -761,7 +761,7 @@ def generate_consolidated_csv(table_results: Dict[str, Any], output_path: str,
             })
 
     # Write CSV file
-    with open(output_path, 'w', newline='') as csvfile:
+    with open(output_path, 'w', newline='', encoding='utf-8') as csvfile:
         fieldnames = [
             'table_name', 'status', 'issue_type', 'issue_category',
             'column_name', 'issue_description', 'user_feedback',
