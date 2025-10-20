@@ -414,9 +414,10 @@ def process_category(
     )
 
     # Filter to values during ICU stay only (temporal filtering)
+    # Convert datetime to UTC for comparison (handles timezone/precision mismatches)
     data_filtered = data_icu.filter(
-        (pl.col(datetime_col) >= pl.col('in_dttm')) &
-        (pl.col(datetime_col) <= pl.col('out_dttm'))
+        (pl.col(datetime_col).dt.convert_time_zone("UTC") >= pl.col('in_dttm')) &
+        (pl.col(datetime_col).dt.convert_time_zone("UTC") <= pl.col('out_dttm'))
     ).select([value_col])
 
     # Collect with streaming
@@ -592,9 +593,10 @@ def process_respiratory_column(
     )
 
     # Filter to values during ICU stay only (temporal filtering)
+    # Convert datetime to UTC for comparison (handles timezone/precision mismatches)
     data_filtered = data_icu.filter(
-        (pl.col('recorded_dttm') >= pl.col('in_dttm')) &
-        (pl.col('recorded_dttm') <= pl.col('out_dttm'))
+        (pl.col('recorded_dttm').dt.convert_time_zone("UTC") >= pl.col('in_dttm')) &
+        (pl.col('recorded_dttm').dt.convert_time_zone("UTC") <= pl.col('out_dttm'))
     ).select([column_name])
 
     # Collect with streaming
@@ -896,7 +898,7 @@ def main():
     # ========================================================================
 
     if log_entries:
-        with open(log_file, 'w') as f:
+        with open(log_file, 'w', encoding='utf-8') as f:
             f.write("Unit Mismatches and Processing Log\n")
             f.write("="*80 + "\n\n")
             for entry in log_entries:
