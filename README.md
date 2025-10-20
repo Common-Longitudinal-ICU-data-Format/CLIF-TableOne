@@ -73,7 +73,46 @@ uv run python run_project.py --tables patient adt hospitalization
 
 # Skip automatic app launch
 uv run python run_project.py --sample --no-launch-app
+
+# Get ECDF ECDF bins (for EDA app)
+uv run python run_project.py --get-ecdf-only
+uv run python run_project.py --get-ecdf-only --visualize
+
+# Full workflow + get-ecdf
+uv run python run_project.py --get-ecdf
 ```
+
+### Get ECDF Data (Optional)
+
+The get-ecdf feature generates ECDF (Empirical Cumulative Distribution Function) and quantile bins for labs/vitals/respiratory data during ICU stays. This get-ecdfd data is used by exploratory data analysis (EDA) applications.
+
+**When to use:**
+- Setting up an EDA app that needs pre-computed distributions
+- Generating statistical baselines for data quality monitoring
+- Creating reference distributions for visualization tools
+
+**Requirements:**
+- `config/config.json` - Main CLIF configuration
+- `get-ecdfd_data/ecdf_config/outlier_config.yaml` - Outlier filtering configuration
+- `get-ecdfd_data/ecdf_config/lab_vital_config.yaml` - Binning configuration for labs/vitals
+- `get-ecdfd_data/utils.py` - Binning utility functions
+
+**Output:**
+```
+output/final/
+├── configs/                # Configuration files
+├── ecdf/                   # ECDF parquet files
+│   ├── labs/              # One file per (category, unit)
+│   ├── vitals/            # One file per category
+│   └── respiratory_support/
+├── bins/                   # Bin parquet files
+│   ├── labs/
+│   ├── vitals/
+│   └── respiratory_support/
+├── plots/                  # HTML visualizations (with --visualize)
+└── unit_mismatches.log     # Processing log
+```
+
 ## Web Application
 
 If you just want to launch the app:
@@ -87,19 +126,24 @@ The app will open at `http://localhost:8501`
 
 ### Workflow Steps
 
-1. **CLIF Validation**
+1. **CLIF Validation** (Optional)
    - Validates all 18 CLIF tables using clifpy
    - Generates PDF validation reports
    - Creates summary statistics
    - Optional: Uses 1k ICU sample for faster processing
 
-2. **Table One Generation**
+2. **Table One Generation** (Optional)
    - Generates comprehensive cohort analysis
    - Creates CONSORT diagrams and visualizations
    - Memory-optimized for large datasets
    - Produces final CSV tables and reports
 
-3. **Automatic App Launch**
+3. **Get ECDF ECDF Bins** (Optional)
+   - Computes distributions for labs/vitals/respiratory data during ICU stays
+   - Generates quantile bins for EDA visualization
+   - Optional: Creates HTML plots with --visualize flag
+
+4. **Automatic App Launch**
    - Launches Streamlit app after successful completion
    - 3-second countdown with skip option
 
@@ -114,21 +158,34 @@ output/final/
 ├── results/              # Validation CSVs
 │   ├── patient_summary.csv
 │   └── ...
-└── tableone/            # Table One outputs
-    ├── table_one_overall.csv
-    ├── table_one_by_year.csv
-    ├── consort_flow_diagram.png
-    ├── execution_report.txt
-    └── ...
+├── tableone/            # Table One outputs
+│   ├── table_one_overall.csv
+│   ├── table_one_by_year.csv
+│   ├── consort_flow_diagram.png
+│   ├── execution_report.txt
+│   └── ...
+├── ecdf/                # ECDF distributions (if --get-ecdf)
+│   ├── labs/
+│   ├── vitals/
+│   └── respiratory_support/
+├── bins/                # Quantile bins (if --get-ecdf)
+│   ├── labs/
+│   ├── vitals/
+│   └── respiratory_support/
+├── plots/               # HTML visualizations (if --visualize)
+├── configs/             # Get ECDF configs (if --get-ecdf)
+└── unit_mismatches.log  # Get ECDF log (if --get-ecdf)
 ```
 
-### Performance Guide
-#### All Options
+### All Command Options
 
 ```bash
 Workflow Control:
   --validate-only          Only run validation step
   --tableone-only          Only run table one generation step
+  --get-ecdf-only        Only run get-ecdf ECDF bins step
+  --get-ecdf             Include get-ecdf in workflow
+  --visualize              Generate HTML visualizations (for get-ecdf)
   --continue-on-error      Continue even if previous step fails
   --no-launch-app          Skip automatic Streamlit app launch
 
