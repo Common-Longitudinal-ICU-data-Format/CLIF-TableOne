@@ -47,6 +47,7 @@ from modules.utils import (
     get_status_display,
     show_categorical_numeric_distribution
 )
+from modules.tableone_viewer import check_tableone_results_available, show_tableone_results
 import plotly.graph_objects as go
 import plotly.express as px
 
@@ -245,6 +246,52 @@ def load_config(config_path: str) -> dict:
     except json.JSONDecodeError as e:
         st.error(f"❌ Invalid JSON in configuration file: {e}")
         return None
+
+
+def show_instructions():
+    """Display the Instructions page with workflow guide."""
+    st.header("📖 How to Use This App")
+
+    st.markdown("""
+    ### What's This About?
+
+    This app validates your CLIF 2.1 data against the official spec. It'll flag issues, but here's the thing—some "errors" might be totally fine for your site. Maybe you have IRB-approved custom categories, or your data just works differently. That's normal.
+
+    ### Your Workflow:
+
+    **1. Review Each Table**
+    - Click through the tables in the grid on the Home page
+    - Check out the validation results and summary stats
+    - See what's flagged
+
+    **2. Mark Site-Specific Stuff**
+    - In the Validation tab, enable "📋 Review Status-Affecting Errors"
+    - For each error, decide:
+      - **Accept** → Legit issue, needs fixing
+      - **Reject** → Not a problem for your site (add a reason why)
+      - **Pending** → You'll deal with it later
+    - Hit "💾 Save Feedback" when done
+
+    **3. Regenerate the Combined Report**
+    - Once you've reviewed all tables, head back to the Home page
+    - Click "📄 Regenerate All Reports"
+    - This creates a fresh combined report with your feedback applied
+
+    **4. Need to Update Just One Table?**
+    - Select that table from the dropdown
+    - Check "🔄 Re-analyze table"
+    - Click "🚀 Run Analysis"
+    - Done. Just that table gets refreshed.
+
+    **5. Check Out Table One**
+    - Once generated, click "📊 Table One Results" in the sidebar
+    - Explore cohorts, demographics, meds, ventilation, outcomes
+    - All the good stuff in one place
+
+    ---
+
+    **Questions?** Check the README or hit up your CLIF contact. You got this. 🚀
+    """)
 
 
 def show_home_page(config: dict, available_tables: list):
@@ -520,6 +567,18 @@ def main():
             st.session_state.current_page = "🏠 Home"
             st.rerun()
 
+        # Instructions button
+        if st.button("📖 Instructions", use_container_width=True):
+            st.session_state.current_page = "📖 Instructions"
+            st.rerun()
+
+        # Table One button (only show if results are available)
+        output_dir = config.get('output_dir', 'output')
+        if check_tableone_results_available(output_dir):
+            if st.button("📊 Table One Results", use_container_width=True):
+                st.session_state.current_page = "📊 Table One Results"
+                st.rerun()
+
         # All CLIF 2.1 tables are now implemented
         available_tables = ['patient', 'hospitalization', 'adt', 'code_status', 'crrt_therapy', 'ecmo_mcs',
                            'hospital_diagnosis', 'labs', 'medication_admin_continuous', 'medication_admin_intermittent',
@@ -532,7 +591,7 @@ def main():
 
         st.divider()
 
-        # Table selection dropdown - always visible
+        # Table selection dropdown - always visible (except on Table One Results page)
         # On Home page: show placeholder, on Table Analysis: show selected table
         if st.session_state.current_page == "🏠 Home":
             # Show dropdown with placeholder on Home page
@@ -560,7 +619,7 @@ def main():
                 st.session_state.current_page = "📊 Table Analysis"
                 st.rerun()
 
-        else:
+        elif st.session_state.current_page == "📊 Table Analysis":
             # On Table Analysis page: show selected table
             selected_table = st.selectbox(
                 "Select Table to Analyze",
@@ -618,6 +677,9 @@ def main():
                 # Always force reanalyze when Run Analysis is clicked
                 st.session_state.force_reanalyze = True
                 st.rerun()
+        else:
+            # On Table One Results page: set default selected_table for page logic
+            selected_table = st.session_state.get('last_selected_table', available_tables[0])
 
         st.divider()
 
@@ -677,6 +739,12 @@ def main():
     # Show appropriate page
     if st.session_state.current_page == "🏠 Home":
         show_home_page(config, available_tables)
+        return
+    elif st.session_state.current_page == "📖 Instructions":
+        show_instructions()
+        return
+    elif st.session_state.current_page == "📊 Table One Results":
+        show_tableone_results(config.get('output_dir', 'output'))
         return
 
     # Main content area (Table Analysis page)

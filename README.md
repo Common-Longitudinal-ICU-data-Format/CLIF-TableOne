@@ -2,6 +2,8 @@
 
 A comprehensive tool for validating and analyzing CLIF 2.1 data tables using clifpy. Available as both an interactive web application and command-line interface.
 
+**🚀 New User?** Check out the [Quick Start Guide](QUICKSTART.md) to get running in 3 steps!
+
 ## Features
 
 - ✅ **CLIF 2.1 Validation** - Full schema and data quality validation using clifpy
@@ -11,86 +13,29 @@ A comprehensive tool for validating and analyzing CLIF 2.1 data tables using cli
 - 📈 **Interactive Visualizations** - Year distributions, missingness charts, and quality metrics
 - 📄 **PDF Reports** - Automated generation of validation and summary reports
 - 🎯 **Multiple Interfaces** - Web app for exploration, CLI for automation
+- 📊 **Table One Viewer** - Interactive display of cohort analysis with CONSORT diagrams, demographics, medications, ventilation, and outcomes
 
 ## Supported Tables
 
-All 18 CLIF 2.1 tables are implemented:
-- **Patient** - Demographics, mortality, language categories
-- **Hospitalization** - Admission patterns, discharge data, age distributions
-- **ADT** - Location tracking, ICU identification, transfer analysis
-- **Code Status** - Code status tracking
-- **CRRT Therapy** - Continuous renal replacement therapy
-- **ECMO/MCS** - Extracorporeal membrane oxygenation and mechanical circulatory support
-- **Hospital Diagnosis** - Diagnosis data
-- **Labs** - Laboratory results
-- **Medication Admin** - Continuous and intermittent medication administration
-- **Microbiology** - Culture, non-culture, and susceptibility data
-- **Patient Assessments** - Patient assessment data
-- **Patient Procedures** - Procedure data
-- **Position** - Patient position tracking
-- **Respiratory Support** - Respiratory support data
-- **Vitals** - Vital signs data
+All 18 CLIF 2.1 tables are supported:
+- **Core**: Patient, Hospitalization, ADT
+- **Clinical**: Code Status, Labs, Vitals, Patient Assessments, Patient Procedures, Hospital Diagnosis
+- **Respiratory**: Respiratory Support, Position
+- **Medications**: Medication Admin (Continuous & Intermittent)
+- **Microbiology**: Culture, Non-culture, Susceptibility
+- **Devices**: CRRT Therapy, ECMO/MCS
 
-## Quick Start
+## Installation
 
-### Installation
+**Prerequisites:**
+- Python 3.8+
+- UV package manager ([install instructions](https://docs.astral.sh/uv/))
+- CLIF 2.1 data in parquet or CSV format
 
-This project uses [UV](https://docs.astral.sh/uv/) for fast, reliable dependency management.
-
-**1. Install UV** (if not already installed):
-```bash
-# macOS/Linux
-curl -LsSf https://astral.sh/uv/install.sh | sh
-
-# Windows
-powershell -c "irm https://astral.sh/uv/install.ps1 | iex"
-
-# Or with pip
-pip install uv
-```
-
-**2. Set up the project**:
+**Setup:**
 ```bash
 cd CLIF-TableOne
-
-# Initialize UV and install dependencies
 uv sync
-```
-
-That's it! UV automatically creates a virtual environment and installs all dependencies.
-
-### Web Application
-
-```bash
-# Run the Streamlit app
-uv run streamlit run app.py
-```
-
-The app will open at `http://localhost:8501`
-
-**Optional: Custom port**
-```bash
-uv run streamlit run app.py --server.port 8501
-```
-
-### Command Line Interface
-
-```bash
-# Validate and summarize patient table
-uv run python run_analysis.py --patient --validate --summary
-
-# Process multiple tables
-uv run python run_analysis.py --patient --hospitalization --adt --validate --summary
-
-# Custom config file
-uv run python run_analysis.py --config path/to/config.json --patient --validate
-```
-
-### Jupyter Notebooks
-
-```bash
-# Launch Jupyter Lab
-uv run jupyter lab
 ```
 
 ## Configuration
@@ -102,101 +47,176 @@ Create or update `config/config.json`:
     "site_name": "Your Hospital Name",
     "tables_path": "/path/to/clif/data",
     "filetype": "parquet",
-    "timezone": "America/Chicago",
+    "timezone": "America/Chicago"
 }
 ```
 
-## Web Application Guide
+## Complete Workflow Runner (Recommended)
 
-### 1. Initial Setup
-1. Install UV and run `uv sync` to set up dependencies
-2. Configure `config/config.json` with your site information
-3. Ensure CLIF data files are in the specified `tables_path`
-4. Launch app with `uv run streamlit run app.py`
+The automated workflow runner orchestrates the complete analysis pipeline:
 
-### 2. Running Analysis
-1. Select table from sidebar
-2. Choose analysis options (validation, summary)
-3. Click "🚀 Run Analysis"
-4. View results in Validation and Summary tabs
-
-### 3. Reviewing Validation Errors
-The feedback system allows you to classify errors based on site-specific context:
-
-**In the Validation tab:**
-1. Enable "📋 Review Status-Affecting Errors"
-2. For each error, select:
-   - **Pending** - Not yet reviewed (default)
-   - **Accepted** - Valid issue that needs attention
-   - **Rejected** - Site-specific, not an issue (provide reason)
-3. Click "💾 Save Feedback"
-4. Status automatically adjusts:
-   - All errors rejected → Status becomes "complete"
-   - Any errors accepted/pending → Status remains original
-
-**Status-Affecting vs Informational Errors:**
-- Status-affecting errors require your review and affect validation status
-- Informational errors are for awareness only (e.g., extra columns, minor warnings)
-
-### 4. Cached Results
-- Analysis results persist in session until re-run
-- Sidebar shows status and timestamp for each table
-- Click "Re-analyze table" checkbox to force fresh analysis
-- "Clear All Cache" button resets all tables
-
-### 5. Output Files
-All results saved to `output/final/`:
-- `{table}_validation_report.pdf` - PDF validation report
-- `{table}_validation_response.json` - User feedback decisions
-- `{table}_summary_validation.json` - Raw validation results
-- `{table}_summary.csv` - Summary statistics table
-
-## Command Line Interface Guide
-
-### Basic Commands
+### Basic Usage
 
 ```bash
-# Single table with validation and summary
-uv run python run_analysis.py --patient --validate --summary
+# Complete workflow with 1k sample (recommended for testing)
+python run_project.py --sample
 
-# Multiple specific tables
-uv run python run_analysis.py --patient --hospitalization --validate --summary
+# Full dataset analysis
+python run_project.py
 
-# All implemented tables
-uv run python run_analysis.py --all --validate --summary
+# Validation only
+python run_project.py --validate-only --sample
+
+# Table One only (skip validation)
+python run_project.py --tableone-only
+
+# Specific tables
+python run_project.py --tables patient adt hospitalization
+
+# Continue despite validation warnings
+python run_project.py --sample --continue-on-error
+
+# Skip automatic app launch
+python run_project.py --sample --no-launch-app
 ```
 
-### Advanced Options
+### Workflow Steps
+
+1. **CLIF Validation**
+   - Validates all 18 CLIF tables using clifpy
+   - Generates PDF validation reports
+   - Creates summary statistics
+   - Optional: Uses 1k ICU sample for faster processing
+
+2. **Table One Generation**
+   - Generates comprehensive cohort analysis
+   - Creates CONSORT diagrams and visualizations
+   - Memory-optimized for large datasets
+   - Produces final CSV tables and reports
+
+3. **Automatic App Launch**
+   - Launches Streamlit app after successful completion
+   - 3-second countdown with skip option
+
+### Output Structure
+
+```
+output/final/
+├── reports/              # Validation PDFs
+│   ├── patient_validation_report.pdf
+│   ├── combined_validation_report.pdf
+│   └── ...
+├── results/              # Validation CSVs
+│   ├── patient_summary.csv
+│   └── ...
+└── tableone/            # Table One outputs
+    ├── table_one_overall.csv
+    ├── table_one_by_year.csv
+    ├── consort_flow_diagram.png
+    ├── execution_report.txt
+    └── ...
+```
+
+### Performance Guide
+
+| Command | Dataset | Time | Use Case |
+|---------|---------|------|----------|
+| `--validate-only --sample` | Sample | ~5 min | Quick check |
+| `--sample` | Sample | ~10-15 min | Development |
+| `--validate-only` | Full | ~20-30 min | Pre-flight check |
+| (no flags) | Full | ~45-90 min | Production |
+
+### All Options
 
 ```bash
-# Use 1k ICU sample for faster analysis (recommended for large datasets)
-uv run python run_analysis.py --all --validate --sample
+Workflow Control:
+  --validate-only          Only run validation step
+  --tableone-only          Only run table one generation step
+  --continue-on-error      Continue even if previous step fails
+  --no-launch-app          Skip automatic Streamlit app launch
 
-# Single table with sample
-uv run python run_analysis.py --labs --validate --summary --sample
+Validation Options:
+  --tables TABLE [TABLE ...]
+                          Specific tables to validate
+  --sample                Use 1k ICU sample for faster analysis
+  --verbose, -v           Enable verbose output
+
+Configuration:
+  --config CONFIG         Path to configuration file
+```
+
+## Web Application
+
+### Launch
+
+```bash
+uv run streamlit run app.py
+```
+
+The app will open at `http://localhost:8501`
+
+### Workflow
+
+1. **Initial Setup**
+   - Configure `config/config.json` with site information
+   - Ensure CLIF data files are in the specified `tables_path`
+
+2. **Running Analysis**
+   - Select table from sidebar
+   - Choose analysis options (validation, summary)
+   - Click "🚀 Run Analysis"
+
+3. **Reviewing Validation Errors**
+   - Enable "📋 Review Status-Affecting Errors" in Validation tab
+   - For each error:
+     - **Accepted** - Valid issue requiring attention
+     - **Rejected** - Site-specific variation (provide justification)
+     - **Pending** - Not yet reviewed
+   - Click "💾 Save Feedback"
+   - Status automatically adjusts based on feedback
+
+4. **Cached Results**
+   - Results persist in session until re-run
+   - Sidebar shows status and timestamp for each table
+   - "Clear All Cache" button resets all tables
+
+5. **Table One Results Viewer**
+   - Click "📊 Table One Results" in sidebar (appears after generation)
+   - Explore tabs: Cohort, Demographics, Medications, IMV, SOFA & CCI, Hospice & Outcomes
+   - See [TABLEONE_VIEWER_GUIDE.md](TABLEONE_VIEWER_GUIDE.md) for details
+
+6. **Output Files**
+   - `{table}_validation_report.pdf` - PDF validation report
+   - `{table}_validation_response.json` - User feedback decisions
+   - `{table}_summary_validation.json` - Raw validation results
+   - `{table}_summary.csv` - Summary statistics table
+
+## Command Line Interface
+
+### Basic Usage
+
+```bash
+# Single table
+uv run python run_analysis.py --patient --validate --summary
+
+# Multiple tables
+uv run python run_analysis.py --patient --hospitalization --validate --summary
+
+# All tables
+uv run python run_analysis.py --all --validate --summary
+
+# With sample (recommended for large datasets)
+uv run python run_analysis.py --all --validate --sample
 
 # Custom configuration
 uv run python run_analysis.py --config custom/config.json --patient --validate
-
-# Verbose output
-uv run python run_analysis.py --patient --validate --summary --verbose
-
-# Quiet mode (errors only)
-uv run python run_analysis.py --all --validate --summary --quiet
-
-# Override output directory
-uv run python run_analysis.py --patient --validate --output-dir custom/output
 ```
 
-### CLI Options Reference
+### Options
 
 **Table Selection:**
-- `--patient` - Analyze patient table
-- `--hospitalization` - Analyze hospitalization table
-- `--adt` - Analyze ADT table
-- `--labs` - Analyze labs table
-- `--vitals` - Analyze vitals table
-- `--all` - Analyze all implemented tables (18 total)
+- `--patient`, `--hospitalization`, `--adt`, `--labs`, `--vitals`, etc.
+- `--all` - Analyze all 18 tables
 
 **Operations:**
 - `--validate` - Run clifpy validation
@@ -207,11 +227,10 @@ uv run python run_analysis.py --patient --validate --output-dir custom/output
 - `--output-dir PATH` - Override output directory
 
 **Performance:**
-- `--sample` - Use 1k ICU sample for faster analysis (stratified by admission year)
+- `--sample` - Use 1k ICU sample (recommended for `--all`)
+  - Reduces runtime from 30-60 min to 5-10 min
   - Automatically uses existing sample or creates from ADT table
-  - Applies to large event tables (labs, vitals, medications, etc.)
   - Core tables (patient, hospitalization, ADT) always use full data
-  - **Recommended for `--all` to reduce runtime from 30-60 min to 5-10 min**
 
 **Output Control:**
 - `--verbose` / `-v` - Detailed progress output
@@ -219,20 +238,18 @@ uv run python run_analysis.py --patient --validate --output-dir custom/output
 - `--no-pdf` - Skip PDF generation (JSON only)
 
 ### Exit Codes
+
 - `0` - Success
 - `1` - All tables failed
 - `2` - Partial success
 - `130` - Interrupted (Ctrl+C)
 
-### Automation Examples
+### Automation
 
 **Cron Job (Daily Validation):**
 ```bash
-# Run at 2 AM daily with 1k sample (fast)
+# Run at 2 AM daily with 1k sample
 0 2 * * * cd /path/to/CLIF-TableOne && uv run python run_analysis.py --all --validate --sample --quiet >> logs/analysis.log 2>&1
-
-# Or with full dataset (slow)
-0 2 * * * cd /path/to/CLIF-TableOne && uv run python run_analysis.py --all --validate --quiet >> logs/analysis.log 2>&1
 ```
 
 ## Feedback System
@@ -255,23 +272,22 @@ The user feedback system allows sites to classify validation errors based on the
 
 ### Use Cases
 
-- **Site-Specific Categories**: Reject errors for IRB-approved custom categories
-- **Known Data Patterns**: Document legitimate site-specific data characteristics
-- **Progressive Review**: Mark errors as pending until clinical review
-- **Audit Trail**: Track all validation decisions with timestamps and reasons
+- Site-specific categories (IRB-approved custom categories)
+- Known data patterns (documented site-specific characteristics)
+- Progressive review (mark errors as pending until clinical review)
+- Audit trail (track all validation decisions with timestamps)
 
-See [FEEDBACK_SYSTEM.md](FEEDBACK_SYSTEM.md) for detailed technical documentation.
+See [FEEDBACK_SYSTEM.md](FEEDBACK_SYSTEM.md) for technical documentation.
 
 ## Requirements
 
 **System:**
 - Python 3.8+
-- UV (package manager) - See installation section above
+- UV (package manager)
 
 **Dependencies** (automatically managed by UV):
 - streamlit - Web interface
 - pandas - Data manipulation
-- numpy - Numerical operations
 - clifpy - CLIF data validation
 - plotly - Interactive visualizations
 - reportlab - PDF generation
@@ -282,53 +298,42 @@ See [FEEDBACK_SYSTEM.md](FEEDBACK_SYSTEM.md) for detailed technical documentatio
 - jupyter - Notebooks
 - matplotlib - Static plots
 - seaborn - Statistical visualizations
-- tableone - Table generation
-- tqdm - Progress bars
 
-All dependencies are automatically installed via `uv sync`. No manual installation needed!
-
-## Why UV?
-
-This project uses UV instead of traditional pip/virtualenv for several benefits:
-
-- ⚡ **10-100x faster** than pip at installing packages
-- 🔒 **Reproducible builds** with `uv.lock` lockfile
-- 🎯 **Automatic venv management** - no need to activate/deactivate
-- 📦 **Clean dependencies** - only direct deps in `pyproject.toml`
-- 🚀 **Better caching** - faster subsequent installs
-
-### Common UV Commands
-
-```bash
-# Install/sync dependencies
-uv sync
-
-# Add a new dependency
-uv add package-name
-
-# Add a dev dependency
-uv add --group dev package-name
-
-# Update dependencies
-uv lock --upgrade
-
-# Run any command with project dependencies
-uv run <command>
-
-# See installed packages
-uv pip list
-```
+All dependencies are automatically installed via `uv sync`.
 
 ## Troubleshooting
 
-### Data Not Found
-- Verify `tables_path` in config.json points to correct directory
-- Ensure files match configured `filetype` (parquet/csv)
-- Check file naming: `patient.parquet` or `clif_patient.parquet` (both work)
+### Configuration Issues
+
+**"Configuration file not found"**
+- Ensure `config/config.json` exists
+- Check path is relative to project root
+
+**"Data directory not found"**
+- Verify `tables_path` in config.json points to correct location
+- Check that CLIF parquet/csv files exist in that directory
+
+**"Table not found"**
+- Ensure file names match expected format:
+  - `patient.parquet` or `clif_patient.parquet`
+  - `hospitalization.parquet` or `clif_hospitalization.parquet`
+
+### Performance Issues
+
+**"Memory Error"**
+- Use `--sample` flag for faster analysis with smaller dataset
+- Close other applications to free up RAM
+- Use `--validate-only` to skip memory-intensive table one generation
+
+## Documentation
+
+- **Quick Start**: [QUICKSTART.md](QUICKSTART.md)
+- **Table One Generation**: [code/README_TABLE_ONE.md](code/README_TABLE_ONE.md)
+- **Table One Viewer**: [TABLEONE_VIEWER_GUIDE.md](TABLEONE_VIEWER_GUIDE.md)
+- **Feedback System**: [FEEDBACK_SYSTEM.md](FEEDBACK_SYSTEM.md)
+- **Command Help**: `python run_project.py --help`
+- **Issues**: [GitHub Issues](https://github.com/Common-Longitudinal-ICU-data-Format/CLIF-TableOne/issues)
 
 ## License
 
 See CLIF consortium documentation for licensing information.
-
----
-

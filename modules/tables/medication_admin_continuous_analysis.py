@@ -468,10 +468,10 @@ class MedicationAdminContinuousAnalyzer(BaseTableAnalyzer):
         plt.tight_layout()
 
         # Save the plot
-        intermediate_dir = os.path.join(self.output_dir, 'intermediate')
-        os.makedirs(intermediate_dir, exist_ok=True)
+        final_dir = os.path.join(self.output_dir, 'final', 'results')
+        os.makedirs(final_dir, exist_ok=True)
 
-        plot_path = os.path.join(intermediate_dir, 'medication_dose_distributions.png')
+        plot_path = os.path.join(final_dir, 'medication_dose_distributions.png')
         plt.savefig(plot_path, dpi=100, bbox_inches='tight')
         plt.close()
 
@@ -513,10 +513,10 @@ class MedicationAdminContinuousAnalyzer(BaseTableAnalyzer):
             return None
 
         # Save to CSV
-        intermediate_dir = os.path.join(self.output_dir, 'intermediate')
-        os.makedirs(intermediate_dir, exist_ok=True)
+        final_dir = os.path.join(self.output_dir, 'final', 'results')
+        os.makedirs(final_dir, exist_ok=True)
 
-        output_path = os.path.join(intermediate_dir, 'medication_name_category_mappings.csv')
+        output_path = os.path.join(final_dir, 'medication_name_category_mappings.csv')
         mappings.to_csv(output_path, index=False)
         print(f"Saved name-category mappings to {output_path}")
 
@@ -586,10 +586,10 @@ class MedicationAdminContinuousAnalyzer(BaseTableAnalyzer):
         }
 
         # Save to CSV
-        intermediate_dir = os.path.join(self.output_dir, 'intermediate')
-        os.makedirs(intermediate_dir, exist_ok=True)
+        final_dir = os.path.join(self.output_dir, 'final', 'results')
+        os.makedirs(final_dir, exist_ok=True)
 
-        output_path = os.path.join(intermediate_dir, 'medication_group_hospitalizations.csv')
+        output_path = os.path.join(final_dir, 'medication_group_hospitalizations.csv')
         hosp_metrics.to_csv(output_path, index=False)
         print(f"Saved hospitalization metrics to {output_path}")
 
