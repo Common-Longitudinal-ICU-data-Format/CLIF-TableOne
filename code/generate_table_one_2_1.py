@@ -856,7 +856,7 @@ def main(memory_monitor=None) -> bool:
         ]
     ].copy()
 
-    if config['timezone'].lower() == "mimic":
+    if config['site_name'].lower() == "mimic":
         # MIMIC: only age >= 18, no admit year restriction
         adult_encounters = adult_encounters[
             (adult_encounters['age_at_admission'] >= 18) & (adult_encounters['age_at_admission'].notna())
