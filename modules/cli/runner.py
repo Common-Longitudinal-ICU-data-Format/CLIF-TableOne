@@ -238,8 +238,7 @@ class CLIAnalysisRunner:
                 from modules.utils.sampling import (
                     get_icu_hospitalizations_from_adt,
                     generate_stratified_sample,
-                    save_sample_list,
-                    sample_exists
+                    save_sample_list
                 )
 
                 # Only generate if sample doesn't already exist
