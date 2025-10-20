@@ -48,7 +48,7 @@ from datetime import datetime
 
 # Import binning functions from get_ecdf/utils.py
 import sys
-sys.path.insert(0, str(Path(__file__).parent.parent / 'get_ecdf'))
+sys.path.insert(0, str(Path(__file__).parent))
 from utils import create_all_bins
 
 
@@ -101,7 +101,7 @@ def copy_configs_to_output(
     config_dir = os.path.join(output_dir, 'configs')
     os.makedirs(config_dir, exist_ok=True)
 
-    shutil.copy(clif_config_path, os.path.join(config_dir, 'clif_config.json'))
+    shutil.copy(clif_config_path, os.path.join(config_dir, 'config.json'))
     shutil.copy(outlier_config_path, os.path.join(config_dir, 'outlier_config.yaml'))
     shutil.copy(lab_vital_config_path, os.path.join(config_dir, 'lab_vital_config.yaml'))
 
@@ -113,8 +113,8 @@ def copy_configs_to_output(
 # ============================================================================
 
 def discover_lab_category_units(
-    data_directory: str,
-    filetype: str
+    tables_path: str,
+    file_type: str
 ) -> pl.DataFrame:
     """
     Discover all unique (lab_category, reference_unit) combinations
@@ -125,7 +125,7 @@ def discover_lab_category_units(
         - lab_category: str
         - reference_unit: str
     """
-    labs_path = os.path.join(data_directory, f'clif_labs.{filetype}')
+    labs_path = os.path.join(tables_path, f'clif_labs.{file_type}')
 
     if not os.path.exists(labs_path):
         raise FileNotFoundError(f"Labs file not found: {labs_path}")
@@ -186,8 +186,8 @@ def sanitize_unit_for_filename(unit: str) -> str:
 # ============================================================================
 
 def extract_icu_time_windows(
-    data_directory: str,
-    filetype: str
+    tables_path: str,
+    file_type: str
 ) -> pl.DataFrame:
     """
     Extract ICU time windows from ADT table.
@@ -198,7 +198,7 @@ def extract_icu_time_windows(
         - in_dttm: datetime
         - out_dttm: datetime
     """
-    adt_path = os.path.join(data_directory, f'clif_adt.{filetype}')
+    adt_path = os.path.join(tables_path, f'clif_adt.{file_type}')
 
     if not os.path.exists(adt_path):
         raise FileNotFoundError(f"ADT file not found: {adt_path}")
@@ -273,7 +273,7 @@ def compute_ecdf_compact(values: np.ndarray) -> pl.DataFrame:
 # Binning Functions
 # ============================================================================
 
-def create_flat_bins(data: pd.Series, num_bins: int = 15) -> List[Dict[str, Any]]:
+def create_flat_bins(data: pd.Series, num_bins: int = 10) -> List[Dict[str, Any]]:
     """
     Create flat quantile bins (no segmentation).
 
@@ -281,7 +281,7 @@ def create_flat_bins(data: pd.Series, num_bins: int = 15) -> List[Dict[str, Any]
 
     Args:
         data: Pandas Series with values
-        num_bins: Number of bins to create (default: 15)
+        num_bins: Number of bins to create (default: 10)
 
     Returns:
         List of bin dictionaries with:
@@ -339,11 +339,12 @@ def process_category(
     category: str,
     unit: str,
     icu_windows: pl.DataFrame,
-    data_directory: str,
-    filetype: str,
+    tables_path: str,
+    file_type: str,
     outlier_range: Dict[str, float],
     cat_config: Dict[str, Any],
-    output_dir: str
+    output_dir: str,
+    extreme_bins_count: int = 5
 ) -> Dict[str, Any]:
     """
     Process a single lab/vital category:
@@ -355,18 +356,19 @@ def process_category(
 
     Args:
         unit: Reference unit (for labs only, pass None for vitals)
+        extreme_bins_count: Number of bins to split extreme bins into (default: 5)
 
     Returns:
         Dictionary with processing statistics
     """
     # Determine file path and column names
     if table_type == 'labs':
-        file_path = os.path.join(data_directory, f'clif_labs.{filetype}')
+        file_path = os.path.join(tables_path, f'clif_labs.{file_type}')
         category_col = 'lab_category'
         value_col = 'lab_value_numeric'
         datetime_col = 'lab_result_dttm'
     else:  # vitals
-        file_path = os.path.join(data_directory, f'clif_vitals.{filetype}')
+        file_path = os.path.join(tables_path, f'clif_vitals.{file_type}')
         category_col = 'vital_category'
         value_col = 'vital_value'
         datetime_col = 'recorded_dttm'
@@ -482,11 +484,11 @@ def process_category(
     bins_normal = cat_config['bins']['normal']
     bins_above = cat_config['bins']['above_normal']
 
-    # AUTO-SPLIT EXTREMES: Fixed 5 bins if segment has >1 bin
-    extra_bins_below = 5 if bins_below > 1 else 0
-    extra_bins_above = 5 if bins_above > 1 else 0
+    # AUTO-SPLIT EXTREMES: Use extreme_bins_count parameter if segment has >1 bin
+    extra_bins_below = extreme_bins_count if bins_below > 1 else 0
+    extra_bins_above = extreme_bins_count if bins_above > 1 else 0
 
-    # Create bins (using function from EDA_app/utils.py)
+    # Create bins (using function from get_ecdf/utils.py)
     bins = create_all_bins(
         data=pd.Series(values_array),
         normal_lower=cat_config['normal_range']['lower'],
@@ -539,33 +541,33 @@ def process_category(
 def process_respiratory_column(
     column_name: str,
     icu_windows: pl.DataFrame,
-    data_directory: str,
-    filetype: str,
+    tables_path: str,
+    file_type: str,
     outlier_range: Dict[str, float],
     output_dir: str,
-    num_bins: int = 15
+    num_bins: int = 10
 ) -> Dict[str, Any]:
     """
     Process a single respiratory support column:
     1. Load respiratory_support data filtered to ICU time windows
     2. Remove outliers
     3. Compute ECDF
-    4. Compute flat 15 bins (no segmentation)
+    4. Compute flat 10 bins (no segmentation)
     5. Save results
 
     Args:
         column_name: Column name (e.g., 'fio2_set', 'peep_obs')
         icu_windows: ICU time windows
-        data_directory: Path to data
-        filetype: File type
+        tables_path: Path to data
+        file_type: File type
         outlier_range: Dict with 'min' and 'max'
         output_dir: Output directory
-        num_bins: Number of bins (default: 15)
+        num_bins: Number of bins (default: 10)
 
     Returns:
         Dictionary with processing statistics
     """
-    file_path = os.path.join(data_directory, f'clif_respiratory_support.{filetype}')
+    file_path = os.path.join(tables_path, f'clif_respiratory_support.{file_type}')
 
     if not os.path.exists(file_path):
         raise FileNotFoundError(f"Respiratory support file not found: {file_path}")
@@ -773,11 +775,12 @@ def main():
                 category=category,
                 unit=unit,
                 icu_windows=icu_windows,
-                data_directory=clif_config['tables_path'],
-                filetype=clif_config['file_type'],
+                tables_path=clif_config['tables_path'],
+                file_type=clif_config['file_type'],
                 outlier_range=labs_outlier[category],
                 cat_config=labs_config[category],
-                output_dir=output_dir
+                output_dir=output_dir,
+                extreme_bins_count=5  # Labs use 5 extreme bins
             )
             labs_stats.append(stats)
 
@@ -810,17 +813,21 @@ def main():
             log_entries.append(f"[SKIP] {category}: Category not in outlier_config.yaml")
             continue
 
+        # Determine extreme bins count: 5 for height/weight, 10 for others
+        extreme_bins = 5 if category in ['height_cm', 'weight_kg'] else 10
+
         try:
             stats = process_category(
                 table_type='vitals',
                 category=category,
                 unit=None,  # Vitals don't use unit differentiation
                 icu_windows=icu_windows,
-                data_directory=clif_config['tables_path'],
-                filetype=clif_config['file_type'],
+                tables_path=clif_config['tables_path'],
+                file_type=clif_config['file_type'],
                 outlier_range=vitals_outlier[category],
                 cat_config=vitals_config[category],
-                output_dir=output_dir
+                output_dir=output_dir,
+                extreme_bins_count=extreme_bins  # 10 for most vitals, 5 for height/weight
             )
             vitals_stats.append(stats)
 
@@ -866,11 +873,11 @@ def main():
             stats = process_respiratory_column(
                 column_name=column,
                 icu_windows=icu_windows,
-                data_directory=clif_config['tables_path'],
-                filetype=clif_config['file_type'],
+                tables_path=clif_config['tables_path'],
+                file_type=clif_config['file_type'],
                 outlier_range=resp_outlier[column],
                 output_dir=output_dir,
-                num_bins=15
+                num_bins=10
             )
             resp_stats.append(stats)
 

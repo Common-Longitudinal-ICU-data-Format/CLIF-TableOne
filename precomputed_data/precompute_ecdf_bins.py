@@ -939,14 +939,27 @@ def main():
                   f"{stat['num_bins']:>2} bins")
 
     print()
+    print(f"Respiratory Support: {len(resp_stats)} columns processed")
+    for stat in resp_stats:
+        if stat['clean_count'] > 0:
+            compression_ratio = stat['clean_count'] / stat['ecdf_distinct_pairs'] if stat['ecdf_distinct_pairs'] > 0 else 0
+            print(f"  - {stat['column']:30s}: "
+                  f"{stat['clean_count']:>10,} values → "
+                  f"{stat['ecdf_distinct_pairs']:>8,} ECDF pairs "
+                  f"({compression_ratio:.1f}x compression), "
+                  f"{stat['num_bins']:>2} bins")
+
+    print()
     print(f"Total processing time: {duration:.1f} seconds")
     print()
     print(f"Output saved to: {output_dir}/")
     print("  - configs/")
     print("  - ecdf/labs/*.parquet (with unit in filename)")
     print("  - ecdf/vitals/*.parquet")
+    print("  - ecdf/respiratory_support/*.parquet")
     print("  - bins/labs/*.parquet (with unit in filename)")
     print("  - bins/vitals/*.parquet")
+    print("  - bins/respiratory_support/*.parquet")
     if log_entries:
         print(f"  - unit_mismatches.log ({len(log_entries)} entries)")
     print()
