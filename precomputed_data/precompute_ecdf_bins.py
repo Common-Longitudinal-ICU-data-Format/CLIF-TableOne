@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """
-Pre-compute ECDF and Bins for ICU Lab/Vital Data
+Pre-compute ECDF and Bins for ICU Lab/Vital/Respiratory Data
 
 This script:
 1. Extracts ICU time windows from ADT table
-2. Filters labs/vitals to values during ICU stays only (temporal filtering)
+2. Filters labs/vitals/respiratory_support to values during ICU stays only (temporal filtering)
 3. For LABS: Discovers all (category, unit) combinations and matches against config
 4. Computes ECDF (distinct value/probability pairs) for each category
 5. Computes quantile bins with auto-extreme-splitting for each category
@@ -12,14 +12,15 @@ This script:
 7. Logs unit mismatches to file
 
 Auto-extreme-splitting:
-- If bins_below > 1: Split FIRST bin (most extreme low) into 5 sub-bins
-- If bins_above > 1: Split LAST bin (most extreme high) into 5 sub-bins
+- Labs: Split extreme bins into 5 sub-bins if segment has >1 bin
+- Vitals: Split extreme bins into 10 sub-bins (5 for height_cm/weight_kg) if segment has >1 bin
+- Respiratory Support: 10 flat quantile bins (no segmentation)
 
 Usage:
-    python get_ecdf/precompute_ecdf_bins.py
+    python precomputed_data/precompute_ecdf_bins.py
 
 Output structure:
-    output/final/
+    precomputed_data/
     ├── configs/
     │   ├── clif_config.json
     │   ├── lab_vital_config.yaml
@@ -46,9 +47,9 @@ import pandas as pd
 import numpy as np
 from datetime import datetime
 
-# Import binning functions from get_ecdf/utils.py
+# Import binning functions from EDA_app/utils.py
 import sys
-sys.path.insert(0, str(Path(__file__).parent))
+sys.path.insert(0, str(Path(__file__).parent.parent / 'EDA_app'))
 from utils import create_all_bins
 
 
@@ -58,8 +59,8 @@ from utils import create_all_bins
 
 def load_configs(
     clif_config_path: str = 'config/config.json',
-    outlier_config_path: str = 'get_ecdf/ecdf_config/outlier_config.yaml',
-    lab_vital_config_path: str = 'get_ecdf/ecdf_config/lab_vital_config.yaml'
+    outlier_config_path: str = 'precomputed_data/configs/outlier_config.yaml',
+    lab_vital_config_path: str = 'precomputed_data/configs/lab_vital_config.yaml'
 ) -> Tuple[Dict, Dict, Dict]:
     """
     Load all required configuration files.
@@ -67,9 +68,9 @@ def load_configs(
     Returns:
         Tuple of (clif_config, outlier_config, lab_vital_config)
     """
-    # Load clif_config.json
+    # Load config.json
     if not os.path.exists(clif_config_path):
-        raise FileNotFoundError(f"CLIF config not found: {clif_config_path}")
+        raise FileNotFoundError(f"Config file not found: {clif_config_path}")
 
     with open(clif_config_path, 'r') as f:
         clif_config = json.load(f)
@@ -94,8 +95,8 @@ def load_configs(
 def copy_configs_to_output(
     output_dir: str,
     clif_config_path: str = 'config/config.json',
-    outlier_config_path: str = 'get_ecdf/ecdf_config/outlier_config.yaml',
-    lab_vital_config_path: str = 'get_ecdf/ecdf_config/lab_vital_config.yaml'
+    outlier_config_path: str = 'precomputed_data/configs/outlier_config.yaml',
+    lab_vital_config_path: str = 'precomputed_data/configs/lab_vital_config.yaml'
 ):
     """Copy configuration files to output directory."""
     config_dir = os.path.join(output_dir, 'configs')
@@ -488,7 +489,7 @@ def process_category(
     extra_bins_below = extreme_bins_count if bins_below > 1 else 0
     extra_bins_above = extreme_bins_count if bins_above > 1 else 0
 
-    # Create bins (using function from get_ecdf/utils.py)
+    # Create bins (using function from EDA_app/utils.py)
     bins = create_all_bins(
         data=pd.Series(values_array),
         normal_lower=cat_config['normal_range']['lower'],
@@ -695,13 +696,12 @@ def main():
     # Setup Output Directory
     # ========================================================================
 
-    output_dir = 'output/final'
+    output_dir = 'precomputed_data'
     os.makedirs(output_dir, exist_ok=True)
     print(f"Output directory: {output_dir}\n")
 
-    # Copy configs
-    copy_configs_to_output(output_dir)
-    print()
+    # Configs are already in precomputed_data/configs/ - no need to copy
+    # copy_configs_to_output(output_dir)
 
     # Setup log file
     log_file = os.path.join(output_dir, 'unit_mismatches.log')
@@ -877,7 +877,7 @@ def main():
                 file_type=clif_config['file_type'],
                 outlier_range=resp_outlier[column],
                 output_dir=output_dir,
-                num_bins=10
+                num_bins=10  # Respiratory support uses 10 flat bins
             )
             resp_stats.append(stats)
 
@@ -939,14 +939,27 @@ def main():
                   f"{stat['num_bins']:>2} bins")
 
     print()
+    print(f"Respiratory Support: {len(resp_stats)} columns processed")
+    for stat in resp_stats:
+        if stat['clean_count'] > 0:
+            compression_ratio = stat['clean_count'] / stat['ecdf_distinct_pairs'] if stat['ecdf_distinct_pairs'] > 0 else 0
+            print(f"  - {stat['column']:30s}: "
+                  f"{stat['clean_count']:>10,} values → "
+                  f"{stat['ecdf_distinct_pairs']:>8,} ECDF pairs "
+                  f"({compression_ratio:.1f}x compression), "
+                  f"{stat['num_bins']:>2} bins")
+
+    print()
     print(f"Total processing time: {duration:.1f} seconds")
     print()
     print(f"Output saved to: {output_dir}/")
     print("  - configs/")
     print("  - ecdf/labs/*.parquet (with unit in filename)")
     print("  - ecdf/vitals/*.parquet")
+    print("  - ecdf/respiratory_support/*.parquet")
     print("  - bins/labs/*.parquet (with unit in filename)")
     print("  - bins/vitals/*.parquet")
+    print("  - bins/respiratory_support/*.parquet")
     if log_entries:
         print(f"  - unit_mismatches.log ({len(log_entries)} entries)")
     print()

@@ -22,10 +22,10 @@ def load_clif_config(config_path: str) -> Dict[str, Any]:
     Load CLIF configuration file.
 
     Args:
-        config_path: Path to clif_config.json
+        config_path: Path to config.json
 
     Returns:
-        Dictionary with data_directory, filetype, etc.
+        Dictionary with tables_path, file_type, etc.
     """
     if not os.path.exists(config_path):
         raise FileNotFoundError(f"Config not found: {config_path}")
@@ -33,7 +33,7 @@ def load_clif_config(config_path: str) -> Dict[str, Any]:
     with open(config_path, 'r') as f:
         config = json.load(f)
 
-    required_keys = ['data_directory', 'filetype']
+    required_keys = ['tables_path', 'file_type']
     missing = [k for k in required_keys if k not in config]
     if missing:
         raise ValueError(f"Missing required keys: {missing}")
@@ -41,7 +41,7 @@ def load_clif_config(config_path: str) -> Dict[str, Any]:
     return config
 
 
-def load_outlier_config(config_path: str = 'EDA/outlier_config.yaml') -> Dict[str, Any]:
+def load_outlier_config(config_path: str = 'get_ecdf/ecdf_config/outlier_config.yaml') -> Dict[str, Any]:
     """
     Load outlier configuration for labs and vitals.
 
@@ -57,7 +57,7 @@ def load_outlier_config(config_path: str = 'EDA/outlier_config.yaml') -> Dict[st
     return config
 
 
-def load_lab_vital_config(config_path: str = 'EDA/lab_vital_config.yaml') -> Dict[str, Any]:
+def load_lab_vital_config(config_path: str = 'get_ecdf/ecdf_config/lab_vital_config.yaml') -> Dict[str, Any]:
     """
     Load lab and vital binning configuration.
 
@@ -77,19 +77,19 @@ def load_lab_vital_config(config_path: str = 'EDA/lab_vital_config.yaml') -> Dic
 # ADT Processing - Get ICU Hospitalization IDs
 # ============================================================================
 
-def get_icu_hospitalization_ids(data_directory: str, filetype: str) -> List[str]:
+def get_icu_hospitalization_ids(tables_path: str, file_type: str) -> List[str]:
     """
     Load ADT table and extract hospitalization IDs for ICU stays.
     Uses Polars streaming for memory efficiency.
 
     Args:
-        data_directory: Path to CLIF data directory
-        filetype: File type (e.g., 'parquet')
+        tables_path: Path to CLIF data directory
+        file_type: File type (e.g., 'parquet')
 
     Returns:
         List of unique hospitalization_ids with ICU stays
     """
-    adt_path = os.path.join(data_directory, f'clif_adt.{filetype}')
+    adt_path = os.path.join(tables_path, f'clif_adt.{file_type}')
 
     if not os.path.exists(adt_path):
         raise FileNotFoundError(f"ADT file not found: {adt_path}")
@@ -119,8 +119,8 @@ def load_lab_vital_data(
     table_type: str,
     category: str,
     icu_hosp_ids: List[str],
-    data_directory: str,
-    filetype: str
+    tables_path: str,
+    file_type: str
 ) -> pd.DataFrame:
     """
     Load lab or vital data for a specific category, filtered to ICU stays.
@@ -129,20 +129,20 @@ def load_lab_vital_data(
         table_type: 'labs' or 'vitals'
         category: Specific lab or vital category
         icu_hosp_ids: List of ICU hospitalization IDs
-        data_directory: Path to CLIF data directory
-        filetype: File type (e.g., 'parquet')
+        tables_path: Path to CLIF data directory
+        file_type: File type (e.g., 'parquet')
 
     Returns:
         Pandas DataFrame with filtered data
     """
     # Determine file path and column names
     if table_type == 'labs':
-        file_path = os.path.join(data_directory, f'clif_labs.{filetype}')
+        file_path = os.path.join(tables_path, f'clif_labs.{file_type}')
         category_col = 'lab_category'
         value_col = 'lab_value_numeric'
         datetime_col = 'lab_result_dttm'
     else:  # vitals
-        file_path = os.path.join(data_directory, f'clif_vitals.{filetype}')
+        file_path = os.path.join(tables_path, f'clif_vitals.{file_type}')
         category_col = 'vital_category'
         value_col = 'vital_value'
         datetime_col = 'recorded_dttm'
