@@ -1,0 +1,706 @@
+# Lab and Vital Configuration for Binning Analysis
+# Defines normal ranges, outlier ranges, and number of bins per segment
+
+labs:
+  pco2_arterial:
+    reference_unit: "mmHg"
+    normal_range:
+      lower: 35
+      upper: 45
+    outlier_range:
+      min: 0.0
+      max: 250.0
+    bins:
+      below_normal: 5
+      normal: 5
+      above_normal: 5
+
+  pco2_venous:
+    reference_unit: "mmHg"
+    normal_range:
+      lower: 40
+      upper: 52
+    outlier_range:
+      min: 0.0
+      max: 250.0
+    bins:
+      below_normal: 5
+      normal: 5
+      above_normal: 5
+
+  ph_arterial:
+    reference_unit: "(no units)"
+    normal_range:
+      lower: 7.35
+      upper: 7.45
+    outlier_range:
+      min: 6.0
+      max: 10.0
+    bins:
+      below_normal: 5
+      normal: 5
+      above_normal: 5
+
+  ph_venous:
+    reference_unit: "(no units)"
+    normal_range:
+      lower: 7.31
+      upper: 7.41
+    outlier_range:
+      min: 5.0
+      max: 10.0
+    bins:
+      below_normal: 5
+      normal: 5
+      above_normal: 5
+
+  po2_arterial:
+    reference_unit: "mmHg"
+    normal_range:
+      lower: 80
+      upper: 100
+    outlier_range:
+      min: 0.0
+      max: 700.0
+    bins:
+      below_normal: 5
+      normal: 5
+      above_normal: 5
+
+  so2_arterial:
+    reference_unit: "%"
+    normal_range:
+      lower: 90
+      upper: 100
+    outlier_range:
+      min: 0.0
+      max: 100.0
+    bins:
+      below_normal: 5
+      normal: 5
+      above_normal: 5
+
+  so2_central_venous:
+    reference_unit: "%"
+    normal_range:
+      lower: 60
+      upper: 75
+    outlier_range:
+      min: 0.0
+      max: 100.0
+    bins:
+      below_normal: 5
+      normal: 5
+      above_normal: 5
+
+  so2_mixed_venous:
+    reference_unit: "%"
+    normal_range:
+      lower: 60
+      upper: 75
+    outlier_range:
+      min: 0.0
+      max: 100.0
+    bins:
+      below_normal: 5
+      normal: 5
+      above_normal: 5
+
+  sodium:
+    reference_unit: "mmol/L"
+    normal_range:
+      lower: 135
+      upper: 145
+    outlier_range:
+      min: 90.0
+      max: 210.0
+    bins:
+      below_normal: 5
+      normal: 5
+      above_normal: 5
+
+  bicarbonate:
+    reference_unit: "mmol/L"
+    normal_range:
+      lower: 22
+      upper: 28
+    outlier_range:
+      min: 0.0
+      max: 50.0
+    bins:
+      below_normal: 5
+      normal: 5
+      above_normal: 5
+
+  bun:
+    reference_unit: "mg/dL"
+    normal_range:
+      lower: 8
+      upper: 23
+    outlier_range:
+      min: 0.0
+      max: 250.0
+    bins:
+      below_normal: 5
+      normal: 5
+      above_normal: 5
+
+  calcium_total:
+    reference_unit: "mg/dL"
+    normal_range:
+      lower: 8.2
+      upper: 10.2
+    outlier_range:
+      min: 0.0
+      max: 20.0
+    bins:
+      below_normal: 5
+      normal: 5
+      above_normal: 5
+
+  chloride:
+    reference_unit: "mmol/L"
+    normal_range:
+      lower: 96
+      upper: 106
+    outlier_range:
+      min: 50.0
+      max: 140.0
+    bins:
+      below_normal: 5
+      normal: 5
+      above_normal: 5
+
+  creatinine:
+    reference_unit: "mg/dL"
+    normal_range:
+      lower: 0.6
+      upper: 1.2
+    outlier_range:
+      min: 0.0
+      max: 20.0
+    bins:
+      below_normal: 5
+      normal: 5
+      above_normal: 5
+
+  glucose_serum:
+    reference_unit: "mg/dL"
+    normal_range:
+      lower: 70
+      upper: 110
+    outlier_range:
+      min: 0.0
+      max: 2000.0
+    bins:
+      below_normal: 5
+      normal: 5
+      above_normal: 5
+
+  magnesium:
+    reference_unit: "mg/dL"
+    normal_range:
+      lower: 1.3
+      upper: 2.1
+    outlier_range:
+      min: 0.0
+      max: 10.0
+    bins:
+      below_normal: 5
+      normal: 5
+      above_normal: 5
+
+  phosphate:
+    reference_unit: "mg/dL"
+    normal_range:
+      lower: 2.3
+      upper: 4.7
+    outlier_range:
+      min: 0.0
+      max: 15.0
+    bins:
+      below_normal: 5
+      normal: 5
+      above_normal: 5
+
+  potassium:
+    reference_unit: "mmol/L"
+    normal_range:
+      lower: 3.5
+      upper: 5
+    outlier_range:
+      min: 0.0
+      max: 15.0
+    bins:
+      below_normal: 5
+      normal: 5
+      above_normal: 5
+
+  basophils_absolute:
+    reference_unit: "10^3/µL"
+    normal_range:
+      lower: 0
+      upper: 0.2
+    outlier_range:
+      min: 0.0
+      max: 50.0
+    bins:
+      below_normal: 1
+      normal: 5
+      above_normal: 5
+
+  eosinophils_absolute:
+    reference_unit: "10^3/µL"
+    normal_range:
+      lower: 0
+      upper: 0.5
+    outlier_range:
+      min: 0.0
+      max: 50.0
+    bins:
+      below_normal: 1
+      normal: 5
+      above_normal: 5
+
+  hemoglobin:
+    reference_unit: "g/dL"
+    normal_range:
+      lower: 12
+      upper: 18
+    outlier_range:
+      min: 2.0
+      max: 25.0
+    bins:
+      below_normal: 5
+      normal: 5
+      above_normal: 5
+
+  monocytes_absolute:
+    reference_unit: "10^3/µL"
+    normal_range:
+      lower: 0.2
+      upper: 0.8
+    outlier_range:
+      min: 0.0
+      max: 50.0
+    bins:
+      below_normal: 5
+      normal: 5
+      above_normal: 5
+
+  neutrophils_absolute:
+    reference_unit: "10^3/µL"
+    normal_range:
+      lower: 2
+      upper: 7.5
+    outlier_range:
+      min: 0.0
+      max: 50.0
+    bins:
+      below_normal: 5
+      normal: 5
+      above_normal: 5
+
+  platelet_count:
+    reference_unit: "10^3/µL"
+    normal_range:
+      lower: 150
+      upper: 350
+    outlier_range:
+      min: 0.0
+      max: 2000.0
+    bins:
+      below_normal: 5
+      normal: 5
+      above_normal: 5
+
+  wbc:
+    reference_unit: "10^3/µL"
+    normal_range:
+      lower: 4.5
+      upper: 11
+    outlier_range:
+      min: 0.0
+      max: 500.0
+    bins:
+      below_normal: 5
+      normal: 5
+      above_normal: 5
+
+  inr:
+    reference_unit: "(no units)"
+    normal_range:
+      lower: 0.9
+      upper: 1.1
+    outlier_range:
+      min: 0.0
+      max: 15.0
+    bins:
+      below_normal: 5
+      normal: 5
+      above_normal: 5
+
+  ptt:
+    reference_unit: "sec"
+    normal_range:
+      lower: 25
+      upper: 40
+    outlier_range:
+      min: 1.0
+      max: 200.0
+    bins:
+      below_normal: 5
+      normal: 5
+      above_normal: 5
+
+  albumin:
+    reference_unit: "g/dL"
+    normal_range:
+      lower: 3.5
+      upper: 5
+    outlier_range:
+      min: 0.0
+      max: 15.0
+    bins:
+      below_normal: 5
+      normal: 5
+      above_normal: 1
+
+  alkaline_phosphatase:
+    reference_unit: "U/L"
+    normal_range:
+      lower: 30
+      upper: 120
+    outlier_range:
+      min: 0
+      max: 5000
+    bins:
+      below_normal: 1
+      normal: 5
+      above_normal: 5
+
+  alt:
+    reference_unit: "U/L"
+    normal_range:
+      lower: 10
+      upper: 40
+    outlier_range:
+      min: 0
+      max: 20000
+    bins:
+      below_normal: 1
+      normal: 5
+      above_normal: 5
+
+  ast:
+    reference_unit: "U/L"
+    normal_range:
+      lower: 10
+      upper: 30
+    outlier_range:
+      min: 0
+      max: 20000
+    bins:
+      below_normal: 1
+      normal: 5
+      above_normal: 5
+
+  bilirubin_conjugated:
+    reference_unit: "mg/dL"
+    normal_range:
+      lower: 0.1
+      upper: 0.3
+    outlier_range:
+      min: 0.0
+      max: 50.0
+    bins:
+      below_normal: 1
+      normal: 5
+      above_normal: 5
+
+  bilirubin_total:
+    reference_unit: "mg/dL"
+    normal_range:
+      lower: 0.3
+      upper: 1.2
+    outlier_range:
+      min: 0.0
+      max: 80.0
+    bins:
+      below_normal: 1
+      normal: 5
+      above_normal: 5
+
+  bilirubin_unconjugated:
+    reference_unit: "mg/dL"
+    normal_range:
+      lower: 0.2
+      upper: 0.9
+    outlier_range:
+      min: 0.0
+      max: 50.0
+    bins:
+      below_normal: 1
+      normal: 5
+      above_normal: 5
+
+  total_protein:
+    reference_unit: "g/dL"
+    normal_range:
+      lower: 6
+      upper: 8.3
+    outlier_range:
+      min: 0.0
+      max: 20.0
+    bins:
+      below_normal: 5
+      normal: 5
+      above_normal: 5
+
+  calcium_ionized:
+    reference_unit: "mg/dL"
+    normal_range:
+      lower: 4.6
+      upper: 5.1
+    outlier_range:
+      min: 0.0
+      max: 20.0
+    bins:
+      below_normal: 5
+      normal: 5
+      above_normal: 5
+
+  crp:
+    reference_unit: "mg/L"
+    normal_range:
+      lower: 0.08
+      upper: 3.1
+    outlier_range:
+      min: 0.0
+      max: 1000.0
+    bins:
+      below_normal: 1
+      normal: 5
+      above_normal: 5
+
+  esr:
+    reference_unit: "mm/hour"
+    normal_range:
+      lower: 0
+      upper: 20
+    outlier_range:
+      min: 0
+      max: 1000
+    bins:
+      below_normal: 1
+      normal: 5
+      above_normal: 5
+
+  ferritin:
+    reference_unit: "ng/mL"
+    normal_range:
+      lower: 15
+      upper: 200
+    outlier_range:
+      min: 0.0
+      max: 300000.0
+    bins:
+      below_normal: 1
+      normal: 5
+      above_normal: 5
+
+  glucose_fingerstick:
+    reference_unit: "mg/dL"
+    normal_range:
+      lower: 70
+      upper: 110
+    outlier_range:
+      min: 0.0
+      max: 2000.0
+    bins:
+      below_normal: 5
+      normal: 5
+      above_normal: 5
+
+  lactate:
+    reference_unit: "mmol/L"
+    normal_range:
+      lower: 0.5
+      upper: 2
+    outlier_range:
+      min: 0.0
+      max: 30.0
+    bins:
+      below_normal: 1
+      normal: 5
+      above_normal: 5
+
+  ldh:
+    reference_unit: "U/L"
+    normal_range:
+      lower: 100
+      upper: 200
+    outlier_range:
+      min: 0
+      max: 10000
+    bins:
+      below_normal: 1
+      normal: 5
+      above_normal: 5
+
+  procalcitonin:
+    reference_unit: "ng/mL"
+    normal_range:
+      lower: 0
+      upper: 0.05
+    outlier_range:
+      min: 0.0
+      max: 1000.0
+    bins:
+      below_normal: 1
+      normal: 5
+      above_normal: 5
+
+  troponin_i:
+    reference_unit: "ng/L"
+    normal_range:
+      lower: 0
+      upper: 40
+    outlier_range:
+      min: 0.0
+      max: 10000.0
+    bins:
+      below_normal: 1
+      normal: 5
+      above_normal: 5
+
+  troponin_t:
+    reference_unit: "ng/L"
+    normal_range:
+      lower: 0
+      upper: 14
+    outlier_range:
+      min: 0.0
+      max: 10000.0
+    bins:
+      below_normal: 1
+      normal: 5
+      above_normal: 5
+
+vitals:
+  dbp:
+    reference_unit: "mmHg"
+    normal_range:
+      lower: 60
+      upper: 80
+    outlier_range:
+      min: 0
+      max: 200
+    bins:
+      below_normal: 5
+      normal: 5
+      above_normal: 5
+
+  heart_rate:
+    reference_unit: "beats per minute"
+    normal_range:
+      lower: 60
+      upper: 100
+    outlier_range:
+      min: 0
+      max: 300
+    bins:
+      below_normal: 5
+      normal: 5
+      above_normal: 5
+
+  height_cm:
+    reference_unit: "cm"
+    normal_range:
+      lower: 150
+      upper: 190
+    outlier_range:
+      min: 76
+      max: 255
+    bins:
+      below_normal: 5
+      normal: 5
+      above_normal: 5
+
+  map:
+    reference_unit: "mmHg"
+    normal_range:
+      lower: 70
+      upper: 100
+    outlier_range:
+      min: 0
+      max: 250
+    bins:
+      below_normal: 5
+      normal: 5
+      above_normal: 5
+
+  respiratory_rate:
+    reference_unit: "breaths per minute"
+    normal_range:
+      lower: 12
+      upper: 20
+    outlier_range:
+      min: 0
+      max: 60
+    bins:
+      below_normal: 5
+      normal: 5
+      above_normal: 5
+
+  sbp:
+    reference_unit: "mmHg"
+    normal_range:
+      lower: 90
+      upper: 120
+    outlier_range:
+      min: 0
+      max: 300
+    bins:
+      below_normal: 5
+      normal: 5
+      above_normal: 5
+
+  spo2:
+    reference_unit: "%"
+    normal_range:
+      lower: 95
+      upper: 100
+    outlier_range:
+      min: 50
+      max: 100
+    bins:
+      below_normal: 5
+      normal: 5
+      above_normal: 5
+
+  temp_c:
+    reference_unit: "celsius"
+    normal_range:
+      lower: 36.5
+      upper: 37.5
+    outlier_range:
+      min: 32
+      max: 44
+    bins:
+      below_normal: 5
+      normal: 5
+      above_normal: 5
+
+  weight_kg:
+    reference_unit: "kg"
+    normal_range:
+      lower: 50
+      upper: 100
+    outlier_range:
+      min: 30
+      max: 1100
+    bins:
+      below_normal: 5
+      normal: 5
+      above_normal: 5

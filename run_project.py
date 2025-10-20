@@ -36,6 +36,7 @@ class ProjectRunner:
         self.results = {
             'validation': None,
             'tableone': None,
+            'get_ecdf': None,
             'overall_success': False
         }
 
@@ -263,6 +264,54 @@ class ProjectRunner:
             }
             return False
 
+    def run_get_ecdf(self, visualize=False):
+        """
+        Run ECDF generation using code/run_get_ecdf.py.
+
+        Parameters
+        ----------
+        visualize : bool
+            Whether to generate HTML visualizations after ECDF generation
+
+        Returns
+        -------
+        bool
+            True if ECDF generation succeeded
+        """
+        self.print_header("STEP 3: GET ECDF BINS")
+
+        cmd = ['python', 'code/run_get_ecdf.py']
+
+        if visualize:
+            cmd.append('--visualize')
+
+        print(f"Running: {' '.join(cmd)}")
+        print(f"Visualize: {'✓' if visualize else '✗'}\n")
+
+        try:
+            result = subprocess.run(cmd, check=False, cwd=os.getcwd())
+            success = result.returncode == 0
+
+            if success:
+                print(f"\n✅ ECDF generation completed successfully")
+            else:
+                print(f"\n⚠️  ECDF generation completed with exit code {result.returncode}")
+
+            self.results['get_ecdf'] = {
+                'success': success,
+                'exit_code': result.returncode
+            }
+
+            return success
+
+        except Exception as e:
+            print(f"\n❌ ECDF generation failed: {e}")
+            self.results['get_ecdf'] = {
+                'success': False,
+                'error': str(e)
+            }
+            return False
+
     def generate_summary_report(self):
         """Generate final summary report."""
         self.print_header("WORKFLOW SUMMARY")
@@ -288,10 +337,24 @@ class ProjectRunner:
             tbl_status = "✅ SUCCESS" if self.results['tableone']['success'] else "❌ FAILED"
             print(f"Table One:         {tbl_status}")
 
+        # Get ECDF results
+        if self.results['get_ecdf']:
+            ecdf_status = "✅ SUCCESS" if self.results['get_ecdf']['success'] else "❌ FAILED"
+            print(f"Get ECDF:          {ecdf_status}")
+
         # Overall status
         val_ok = self.results['validation'] and self.results['validation']['success']
         tbl_ok = self.results['tableone'] and self.results['tableone']['success']
-        self.results['overall_success'] = val_ok and tbl_ok
+        ecdf_ok = self.results['get_ecdf'] and self.results['get_ecdf']['success']
+
+        # Overall success depends on which steps were run
+        steps_run = [self.results['validation'], self.results['tableone'], self.results['get_ecdf']]
+        steps_run = [s for s in steps_run if s is not None]
+
+        if steps_run:
+            self.results['overall_success'] = all(s.get('success', False) for s in steps_run)
+        else:
+            self.results['overall_success'] = False
 
         print(f"\nOverall Status:    {'✅ SUCCESS' if self.results['overall_success'] else '❌ FAILED'}")
 
@@ -303,6 +366,9 @@ class ProjectRunner:
             print(f"   Validation Results: output/final/results/")
         if self.results['tableone']:
             print(f"   Table One:          output/final/tableone/")
+        if self.results['get_ecdf']:
+            print(f"   ECDF Data:          output/final/ecdf/, output/final/bins/")
+            print(f"   Execution Report:   output/final/execution_report.txt")
 
         return self.results['overall_success']
 
@@ -326,7 +392,7 @@ class ProjectRunner:
         except Exception as e:
             print(f"\n❌ Error launching app: {e}")
 
-    def run(self, validate=True, tableone=True, **kwargs):
+    def run(self, validate=True, tableone=True, get_ecdf=False, **kwargs):
         """
         Run the complete workflow.
 
@@ -336,8 +402,10 @@ class ProjectRunner:
             Run validation step
         tableone : bool
             Run table one generation step
+        get_ecdf : bool
+            Run get ECDF bins step
         **kwargs : dict
-            Additional arguments for validation (tables, use_sample, verbose)
+            Additional arguments for validation (tables, use_sample, verbose, visualize)
 
         Returns
         -------
@@ -353,6 +421,7 @@ class ProjectRunner:
         print(f"Workflow Steps:")
         print(f"  1. Validation: {'✓' if validate else '✗'}")
         print(f"  2. Table One:  {'✓' if tableone else '✗'}")
+        print(f"  3. Get ECDF:   {'✓' if get_ecdf else '✗'}")
 
         # Step 1: Validation
         if validate:
@@ -380,6 +449,12 @@ class ProjectRunner:
         # Step 2: Table One Generation
         if tableone:
             tbl_success = self.run_tableone()
+
+        # Step 3: Get ECDF Bins
+        if get_ecdf:
+            ecdf_success = self.run_get_ecdf(
+                visualize=kwargs.get('visualize', False)
+            )
 
         # Generate summary
         overall_success = self.generate_summary_report()
@@ -413,12 +488,14 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  %(prog)s                                    # Full workflow (auto-launches app)
-  %(prog)s --sample                           # Use 1k ICU sample (auto-launches app)
+  %(prog)s                                    # Full workflow (validation + tableone)
+  %(prog)s --sample                           # Use 1k ICU sample
   %(prog)s --validate-only                    # Only validation
-  %(prog)s --tableone-only                    # Only table one (auto-launches app)
-  %(prog)s --tables patient adt               # Specific tables
-  %(prog)s --sample --continue-on-error       # Continue if validation fails
+  %(prog)s --tableone-only                    # Only table one
+  %(prog)s --get-ecdf-only                    # Only get ECDF bins
+  %(prog)s --get-ecdf-only --visualize        # Get ECDF + HTML visualizations
+  %(prog)s --get-ecdf                         # Full workflow + get ECDF
+  %(prog)s --tables patient adt               # Validate specific tables
   %(prog)s --sample --no-launch-app           # Skip automatic app launch
         """
     )
@@ -429,6 +506,12 @@ Examples:
                                 help='Only run validation step')
     workflow_group.add_argument('--tableone-only', action='store_true',
                                 help='Only run table one generation step')
+    workflow_group.add_argument('--get-ecdf-only', action='store_true',
+                                help='Only run get ECDF bins step')
+    workflow_group.add_argument('--get-ecdf', action='store_true',
+                                help='Include get ECDF bins in workflow')
+    workflow_group.add_argument('--visualize', action='store_true',
+                                help='Generate HTML visualizations (for get ECDF)')
     workflow_group.add_argument('--continue-on-error', action='store_true',
                                 help='Continue to next step even if previous step fails')
     workflow_group.add_argument('--no-launch-app', action='store_true',
@@ -460,12 +543,21 @@ Examples:
     if args.validate_only:
         validate = True
         tableone = False
+        get_ecdf = False
     elif args.tableone_only:
         validate = False
         tableone = True
+        get_ecdf = False
+    elif args.get_ecdf_only:
+        validate = False
+        tableone = False
+        get_ecdf = True
     else:
+        # Default: run validation and tableone
         validate = True
         tableone = True
+        # Get ECDF only if explicitly requested
+        get_ecdf = args.get_ecdf
 
     # Initialize runner
     runner = ProjectRunner(config_path=args.config)
@@ -475,9 +567,11 @@ Examples:
         success = runner.run(
             validate=validate,
             tableone=tableone,
+            get_ecdf=get_ecdf,
             tables=args.tables,
             use_sample=args.sample,
             verbose=args.verbose,
+            visualize=args.visualize,
             continue_on_error=args.continue_on_error,
             no_launch_app=args.no_launch_app
         )
