@@ -2458,7 +2458,8 @@ def main(memory_monitor=None) -> bool:
     clif.convert_dose_units_for_continuous_meds(
         preferred_units=preferred_units,
         override=True, 
-        save_to_table=True
+        save_to_table=True,
+        hospitalization_ids=final_hosp_ids
     )
 
     # Get converted data
@@ -2747,7 +2748,7 @@ def main(memory_monitor=None) -> bool:
 
         # Save interactive plot as HTML
         pio.write_html(fig, output_path_html)
-        fig.show()
+        # fig.show()  # REMOVED: Don't auto-open browser
 
     # Generate all 3 interactive plots (save as HTML)
     plotly_medication_group(
@@ -2847,7 +2848,7 @@ def main(memory_monitor=None) -> bool:
             xaxis=dict(range=[0, 168])
         )
         pio.write_html(fig, output_path_html)
-        fig.show()
+        # fig.show()  # REMOVED: Don't auto-open browser
 
     # Generate and save plots for each medication group (lines: median dose over time)
     plot_median_dose_line_by_hour(
@@ -3366,7 +3367,8 @@ def main(memory_monitor=None) -> bool:
     co.convert_dose_units_for_continuous_meds(
         preferred_units=preferred_units,
         override = True, 
-        save_to_table=True  # Saves to co.medication_admin_continuous.df_converted
+        save_to_table=True,  # Saves to co.medication_admin_continuous.df_converted
+        hospitalization_ids=final_hosp_ids
     )
 
     # Check conversion results
