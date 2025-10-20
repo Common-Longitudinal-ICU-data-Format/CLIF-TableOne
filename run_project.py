@@ -158,8 +158,8 @@ class ProjectRunner:
         """
         self.print_header("STEP 1: CLIF VALIDATION")
 
-        # Build command
-        cmd = ['python', 'run_analysis.py']
+        # Build command - use sys.executable to ensure correct Python interpreter
+        cmd = [sys.executable, 'run_analysis.py']
 
         # Add table flags
         if tables:
@@ -236,7 +236,8 @@ class ProjectRunner:
         """
         self.print_header("STEP 2: TABLE ONE GENERATION")
 
-        cmd = ['python', 'code/run_table_one.py']
+        # Use sys.executable to ensure correct Python interpreter
+        cmd = [sys.executable, 'code/run_table_one.py']
 
         print(f"Running: {' '.join(cmd)}\n")
 
@@ -280,7 +281,8 @@ class ProjectRunner:
         """
         self.print_header("STEP 3: GET ECDF BINS")
 
-        cmd = ['python', 'code/run_get_ecdf.py']
+        # Use sys.executable to ensure correct Python interpreter
+        cmd = [sys.executable, 'code/run_get_ecdf.py']
 
         if visualize:
             cmd.append('--visualize')
