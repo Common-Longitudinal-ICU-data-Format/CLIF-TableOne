@@ -941,6 +941,8 @@ def main(memory_monitor=None) -> bool:
     # ==============================================================================
 
     # Merge all_encounters with encounter_mapping to get encounter_block information
+    # Filter to adult hospitalizations before merge to avoid NaN in encounter_block
+    all_encounters = all_encounters[all_encounters['hospitalization_id'].isin(adult_hosp_ids)]
     all_encounters = pd.merge(all_encounters, encounter_mapping, on='hospitalization_id', how='left')
 
     # Convert location_category and discharge_category to lowercase in place (vectorized)
