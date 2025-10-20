@@ -3127,7 +3127,7 @@ def main(memory_monitor=None) -> bool:
                                 group_by_cols='crrt_mode_category',
                                 output_dir=summary_stats_dir)
     except FileNotFoundError as e:
-        print(f"Warning: Failed to load the ECMO table: {e}. Proceeding without ECMO data.")
+        print(f"Warning: Failed to load the ECMO table: {e}. Proceeding without CRRT data.")
 
 
 
@@ -3151,7 +3151,7 @@ def main(memory_monitor=None) -> bool:
         )
         get_value_counts(clif.patient_assessments, ['assessment_name', 'assessment_category'], output_dir=mcide_dir)
     except FileNotFoundError as e:
-        print(f"Warning: Failed to load the ECMO table: {e}. Proceeding without ECMO data.")
+        print(f"Warning: Failed to load the ECMO table: {e}. Proceeding without Patient Assessments data.")
 
 
     # ==============================================================================

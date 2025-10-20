@@ -22,6 +22,7 @@ import argparse
 import subprocess
 import json
 import pandas as pd
+import logging
 from pathlib import Path
 from datetime import datetime
 
@@ -33,12 +34,40 @@ class ProjectRunner:
         self.config_path = config_path
         self.config = self.load_config()
         self.start_time = datetime.now()
+        self.log_file = self.setup_logging()
+        self.logger = logging.getLogger('workflow')
         self.results = {
             'validation': None,
             'tableone': None,
             'get_ecdf': None,
             'overall_success': False
         }
+
+    def setup_logging(self):
+        """Setup comprehensive logging to capture all workflow output."""
+        # Create logs directory
+        log_dir = Path('output/final/logs')
+        log_dir.mkdir(parents=True, exist_ok=True)
+
+        # Create log file with timestamp
+        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+        log_file = log_dir / f'workflow_execution_{timestamp}.log'
+
+        # Also create a 'latest' symlink/copy
+        latest_log = log_dir / 'workflow_execution_latest.log'
+
+        # Setup logging
+        logging.basicConfig(
+            level=logging.INFO,
+            format='%(asctime)s - %(levelname)s - %(message)s',
+            handlers=[
+                logging.FileHandler(log_file),
+                logging.FileHandler(latest_log, mode='w'),  # Overwrite latest
+                logging.StreamHandler(sys.stdout)  # Also print to console
+            ]
+        )
+
+        return log_file
 
     def load_config(self):
         """Load project configuration."""
@@ -176,32 +205,57 @@ class ProjectRunner:
         if verbose:
             cmd.append('--verbose')
 
-        print(f"Running: {' '.join(cmd)}")
-        print(f"Sample mode: {'✓' if use_sample else '✗'}")
-        print(f"Tables: {', '.join(tables) if tables else 'all'}\n")
+        self.logger.info(f"Running: {' '.join(cmd)}")
+        self.logger.info(f"Sample mode: {'✓' if use_sample else '✗'}")
+        self.logger.info(f"Tables: {', '.join(tables) if tables else 'all'}")
 
         try:
-            result = subprocess.run(cmd, check=False)
-            exit_code = result.returncode
+            # Stream output in real-time while also logging
+            process = subprocess.Popen(
+                cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                bufsize=1,  # Line buffered
+                universal_newlines=True
+            )
+
+            # Stream stdout in real-time
+            for line in process.stdout:
+                line = line.rstrip()
+                if line:  # Skip empty lines
+                    print(line)  # Show in terminal immediately
+                    self.logger.info(line)  # Also log to file
+
+            # Get any remaining stderr
+            stderr_output = process.stderr.read()
+            if stderr_output:
+                for line in stderr_output.strip().split('\n'):
+                    if line:
+                        print(line, file=sys.stderr)
+                        self.logger.error(line)
+
+            # Wait for process to complete
+            exit_code = process.wait()
 
             if exit_code == 0:
-                print(f"\n✅ Validation completed successfully")
+                self.logger.info("✅ Validation completed successfully")
                 critical_tables_ok = True
                 critical_tables_msg = None
             elif exit_code == 2:
-                print(f"\n⚠️  Validation completed with exit code 2 (partial success)")
-                print(f"   Checking critical tables...")
+                self.logger.warning("⚠️  Validation completed with exit code 2 (partial success)")
+                self.logger.info("Checking critical tables...")
 
                 # Check if critical tables meet minimum requirements
                 critical_tables_ok, critical_tables_msg = self.check_critical_tables()
 
                 if critical_tables_ok:
-                    print(f"\n✅ {critical_tables_msg}")
-                    print(f"   Proceeding to Table One generation...")
+                    self.logger.info(f"✅ {critical_tables_msg}")
+                    self.logger.info("Proceeding to Table One generation...")
                 else:
-                    print(f"\n{critical_tables_msg}")
+                    self.logger.error(critical_tables_msg)
             else:
-                print(f"\n❌ Validation failed with exit code {exit_code}")
+                self.logger.error(f"❌ Validation failed with exit code {exit_code}")
                 critical_tables_ok = False
                 critical_tables_msg = "Validation failed"
 
@@ -215,7 +269,7 @@ class ProjectRunner:
             return exit_code == 0, critical_tables_ok
 
         except Exception as e:
-            print(f"\n❌ Validation failed: {e}")
+            self.logger.exception(f"❌ Validation failed: {e}")
             self.results['validation'] = {
                 'success': False,
                 'error': str(e),
@@ -237,26 +291,53 @@ class ProjectRunner:
         # Use sys.executable to ensure correct Python interpreter
         cmd = [sys.executable, 'code/run_table_one.py']
 
-        print(f"Running: {' '.join(cmd)}\n")
+        self.logger.info(f"Running: {' '.join(cmd)}")
 
         try:
-            result = subprocess.run(cmd, check=False, cwd=os.getcwd())
-            success = result.returncode == 0
+            # Stream output in real-time while also logging
+            process = subprocess.Popen(
+                cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                bufsize=1,  # Line buffered
+                universal_newlines=True,
+                cwd=os.getcwd()
+            )
+
+            # Stream stdout in real-time
+            for line in process.stdout:
+                line = line.rstrip()
+                if line:  # Skip empty lines
+                    print(line)  # Show in terminal immediately
+                    self.logger.info(line)  # Also log to file
+
+            # Get any remaining stderr
+            stderr_output = process.stderr.read()
+            if stderr_output:
+                for line in stderr_output.strip().split('\n'):
+                    if line:
+                        print(line, file=sys.stderr)
+                        self.logger.error(line)
+
+            # Wait for process to complete
+            exit_code = process.wait()
+            success = exit_code == 0
 
             if success:
-                print(f"\n✅ Table One generation completed successfully")
+                self.logger.info("✅ Table One generation completed successfully")
             else:
-                print(f"\n⚠️  Table One generation completed with exit code {result.returncode}")
+                self.logger.warning(f"⚠️  Table One generation completed with exit code {exit_code}")
 
             self.results['tableone'] = {
                 'success': success,
-                'exit_code': result.returncode
+                'exit_code': exit_code
             }
 
             return success
 
         except Exception as e:
-            print(f"\n❌ Table One generation failed: {e}")
+            self.logger.exception(f"❌ Table One generation failed: {e}")
             self.results['tableone'] = {
                 'success': False,
                 'error': str(e)
@@ -285,27 +366,54 @@ class ProjectRunner:
         if visualize:
             cmd.append('--visualize')
 
-        print(f"Running: {' '.join(cmd)}")
-        print(f"Visualize: {'✓' if visualize else '✗'}\n")
+        self.logger.info(f"Running: {' '.join(cmd)}")
+        self.logger.info(f"Visualize: {'✓' if visualize else '✗'}")
 
         try:
-            result = subprocess.run(cmd, check=False, cwd=os.getcwd())
-            success = result.returncode == 0
+            # Stream output in real-time while also logging
+            process = subprocess.Popen(
+                cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                bufsize=1,  # Line buffered
+                universal_newlines=True,
+                cwd=os.getcwd()
+            )
+
+            # Stream stdout in real-time
+            for line in process.stdout:
+                line = line.rstrip()
+                if line:  # Skip empty lines
+                    print(line)  # Show in terminal immediately
+                    self.logger.info(line)  # Also log to file
+
+            # Get any remaining stderr
+            stderr_output = process.stderr.read()
+            if stderr_output:
+                for line in stderr_output.strip().split('\n'):
+                    if line:
+                        print(line, file=sys.stderr)
+                        self.logger.error(line)
+
+            # Wait for process to complete
+            exit_code = process.wait()
+            success = exit_code == 0
 
             if success:
-                print(f"\n✅ ECDF generation completed successfully")
+                self.logger.info("✅ ECDF generation completed successfully")
             else:
-                print(f"\n⚠️  ECDF generation completed with exit code {result.returncode}")
+                self.logger.warning(f"⚠️  ECDF generation completed with exit code {exit_code}")
 
             self.results['get_ecdf'] = {
                 'success': success,
-                'exit_code': result.returncode
+                'exit_code': exit_code
             }
 
             return success
 
         except Exception as e:
-            print(f"\n❌ ECDF generation failed: {e}")
+            self.logger.exception(f"❌ ECDF generation failed: {e}")
             self.results['get_ecdf'] = {
                 'success': False,
                 'error': str(e)
@@ -342,35 +450,21 @@ class ProjectRunner:
             ecdf_status = "✅ SUCCESS" if self.results['get_ecdf']['success'] else "❌ FAILED"
             print(f"Get ECDF:          {ecdf_status}")
 
-        # Overall status
-        val_ok = self.results['validation'] and self.results['validation']['success']
-        tbl_ok = self.results['tableone'] and self.results['tableone']['success']
-        ecdf_ok = self.results['get_ecdf'] and self.results['get_ecdf']['success']
-
-        # Overall success depends on which steps were run
-        steps_run = [self.results['validation'], self.results['tableone'], self.results['get_ecdf']]
-        steps_run = [s for s in steps_run if s is not None]
-
-        if steps_run:
-            # Check each step - for validation, accept if critical_tables_ok is True
-            success_checks = []
-            for step in steps_run:
-                # Check if this is the validation step
-                if step == self.results['validation'] and 'critical_tables_ok' in step:
-                    # For validation, accept if either validation succeeded OR critical tables are OK
-                    success_checks.append(step.get('success', False) or step.get('critical_tables_ok', False))
-                else:
-                    # For other steps, just check success
-                    success_checks.append(step.get('success', False))
-
-            self.results['overall_success'] = all(success_checks)
+        # Overall success now only depends on validation critical tables
+        # App should launch unless critical tables validation fails
+        if self.results['validation']:
+            # Success if critical tables passed (even if overall validation had some failures)
+            self.results['overall_success'] = self.results['validation'].get('critical_tables_ok', False)
         else:
-            self.results['overall_success'] = False
+            # If validation wasn't run, consider it successful (for --tableone-only mode)
+            self.results['overall_success'] = True
 
         print(f"\nOverall Status:    {'✅ SUCCESS' if self.results['overall_success'] else '❌ FAILED'}")
 
         # Output locations
         print(f"\n📂 Output Locations:")
+        print(f"   📋 Workflow Log:    {self.log_file}")
+        print(f"   📋 Latest Log:      output/final/logs/workflow_execution_latest.log")
         if self.results['validation']:
             print(f"   Validation Reports: output/final/reports/")
             print(f"   Combined Report:    output/final/reports/combined_validation_report.pdf")
@@ -379,7 +473,10 @@ class ProjectRunner:
             print(f"   Table One:          output/final/tableone/")
         if self.results['get_ecdf']:
             print(f"   ECDF Data:          output/final/ecdf/, output/final/bins/")
-            print(f"   Execution Report:   output/final/execution_report.txt")
+
+        self.logger.info("="*80)
+        self.logger.info(f"Workflow execution log saved to: {self.log_file}")
+        self.logger.info("="*80)
 
         return self.results['overall_success']
 
@@ -425,14 +522,17 @@ class ProjectRunner:
         """
         self.print_header("🏥 CLIF PROJECT RUNNER")
 
-        print(f"Configuration: {self.config_path}")
-        print(f"Data Directory: {self.config.get('tables_path', 'NOT SET')}")
-        print(f"Site Name: {self.config.get('site_name', 'NOT SET')}\n")
-
-        print(f"Workflow Steps:")
-        print(f"  1. Validation: {'✓' if validate else '✗'}")
-        print(f"  2. Table One:  {'✓' if tableone else '✗'}")
-        print(f"  3. Get ECDF:   {'✓' if get_ecdf else '✗'}")
+        self.logger.info("="*80)
+        self.logger.info("🏥 CLIF PROJECT RUNNER - WORKFLOW STARTING")
+        self.logger.info("="*80)
+        self.logger.info(f"Configuration: {self.config_path}")
+        self.logger.info(f"Data Directory: {self.config.get('tables_path', 'NOT SET')}")
+        self.logger.info(f"Site Name: {self.config.get('site_name', 'NOT SET')}")
+        self.logger.info(f"Workflow Steps:")
+        self.logger.info(f"  1. Validation: {'✓' if validate else '✗'}")
+        self.logger.info(f"  2. Table One:  {'✓' if tableone else '✗'}")
+        self.logger.info(f"  3. Get ECDF:   {'✓' if get_ecdf else '✗'}")
+        self.logger.info("="*80)
 
         # Step 1: Validation
         if validate:
@@ -448,11 +548,11 @@ class ProjectRunner:
             if not can_proceed and not kwargs.get('continue_on_error', False):
                 if not critical_tables_ok:
                     # Critical tables failed - show specific error
-                    pass  # Error message already printed by run_validation
+                    pass  # Error message already logged by run_validation
                 else:
                     # General validation failure
-                    print("\n⚠️  Validation failed. Stopping workflow.")
-                    print("   Use --continue-on-error to proceed anyway.")
+                    self.logger.warning("⚠️  Validation failed. Stopping workflow.")
+                    self.logger.info("Use --continue-on-error to proceed anyway.")
 
                 self.generate_summary_report()
                 return False
@@ -470,15 +570,39 @@ class ProjectRunner:
         # Generate summary
         overall_success = self.generate_summary_report()
 
-        # Step 3: Automatic app launch after successful completion
-        if overall_success:
+        # App launch logic - launch unless critical tables failed
+        # Allow override with --continue-on-error
+        should_launch = overall_success or kwargs.get('continue_on_error', False)
+
+        if should_launch:
             # Check if user wants to skip app launch
             if not kwargs.get('no_launch_app', False):
                 print("\n" + "="*80)
                 print("🚀 Launching Streamlit App...")
                 print("="*80)
-                print("\nWorkflow completed successfully!")
-                print("Starting the interactive web application in 3 seconds...")
+
+                # Show warnings for any failed steps
+                warnings_shown = False
+
+                if self.results['tableone'] and not self.results['tableone'].get('success', False):
+                    print("\n⚠️  Warning: Table One generation failed")
+                    print("   The app will launch but Table One data will not be available")
+                    warnings_shown = True
+
+                if self.results['get_ecdf'] and not self.results['get_ecdf'].get('success', False):
+                    print("\n⚠️  Warning: ECDF generation failed")
+                    print("   The app will launch but ECDF data will not be available")
+                    warnings_shown = True
+
+                if not overall_success and kwargs.get('continue_on_error', False):
+                    print("\n⚠️  Warning: Critical tables validation failed")
+                    print("   Launching app anyway due to --continue-on-error flag")
+                    warnings_shown = True
+
+                if not warnings_shown:
+                    print("\nWorkflow completed successfully!")
+
+                print("\nStarting the interactive web application in 3 seconds...")
                 print("(Press Ctrl+C now to skip)\n")
 
                 try:
@@ -488,6 +612,14 @@ class ProjectRunner:
                 except KeyboardInterrupt:
                     print("\n\n⏭️  App launch skipped by user")
                     print("   You can launch it manually with: uv run streamlit run app.py\n")
+        else:
+            # Only happens if critical tables validation failed and no override
+            print("\n" + "="*80)
+            print("❌ App Launch Blocked")
+            print("="*80)
+            print("\nCritical tables validation failed. Cannot launch app.")
+            print("Review validation report: output/final/reports/combined_validation_report.pdf")
+            print("\nUse --continue-on-error flag to bypass this check (not recommended)\n")
 
         return overall_success
 
