@@ -57,22 +57,22 @@ The automated workflow runner orchestrates the complete analysis pipeline:
 
 ```bash
 # Complete workflow with 1k sample (recommended for testing)
-python run_project.py --sample
+uv run python run_project.py --sample
 
 # Full dataset analysis
-python run_project.py
+uv run python run_project.py
 
 # Validation only
-python run_project.py --validate-only --sample
+uv run python run_project.py --validate-only --sample
 
 # Table One only (skip validation)
-python run_project.py --tableone-only
+uv run python run_project.py --tableone-only
 
 # Specific tables
-python run_project.py --tables patient adt hospitalization
+uv run python run_project.py --tables patient adt hospitalization
 
 # Skip automatic app launch
-python run_project.py --sample --no-launch-app
+uv run python run_project.py --sample --no-launch-app
 ```
 ## Web Application
 
