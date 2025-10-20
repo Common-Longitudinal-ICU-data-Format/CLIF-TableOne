@@ -255,7 +255,7 @@ def show_instructions():
     st.markdown("""
     ### What's This About?
 
-    This app validates your CLIF 2.1 data against the official spec. It'll flag issues, but here's the thing—some "errors" might be totally fine for your site. Maybe you have IRB-approved custom categories, or your data just works differently. That's normal.
+    This app validates your CLIF 2.1 data against the official spec. It'll flag issues, but here's the thing—some "errors" might be totally fine for your site. The data at your site might not use a certain drug or a device, and that's totally fine. 
 
     ### Your Workflow:
 
@@ -290,7 +290,7 @@ def show_instructions():
 
     ---
 
-    **Questions?** Check the README or hit up your CLIF contact. You got this. 🚀
+    **Questions?** Hit me up on CLIF Slack- Kaveri Chhikara. You got this. 🚀
     """)
 
 

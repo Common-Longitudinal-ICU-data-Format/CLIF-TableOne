@@ -1,8 +1,6 @@
 # CLIF 2.1 Validation & Summarization Tool
 
-A comprehensive tool for validating and analyzing CLIF 2.1 data tables using clifpy. Available as both an interactive web application and command-line interface.
-
-**🚀 New User?** Check out the [Quick Start Guide](QUICKSTART.md) to get running in 3 steps!
+A comprehensive tool for validating and analyzing CLIF 2.1 data tables using clifpy. 
 
 ## Features
 
@@ -23,14 +21,14 @@ All 18 CLIF 2.1 tables are supported:
 - **Respiratory**: Respiratory Support, Position
 - **Medications**: Medication Admin (Continuous & Intermittent)
 - **Microbiology**: Culture, Non-culture, Susceptibility
-- **Devices**: CRRT Therapy, ECMO/MCS
+- **Devices**: CRRT Therapy, ECMO_MCS
 
 ## Installation
 
 **Prerequisites:**
 - Python 3.8+
 - UV package manager ([install instructions](https://docs.astral.sh/uv/))
-- CLIF 2.1 data in parquet or CSV format
+- CLIF 2.1 data in parquet 
 
 **Setup:**
 ```bash
@@ -47,7 +45,7 @@ Create or update `config/config.json`:
     "site_name": "Your Hospital Name",
     "tables_path": "/path/to/clif/data",
     "filetype": "parquet",
-    "timezone": "America/Chicago"
+    "timezone": "Your timezone as America/Chicago etc.."
 }
 ```
 
@@ -73,12 +71,19 @@ python run_project.py --tableone-only
 # Specific tables
 python run_project.py --tables patient adt hospitalization
 
-# Continue despite validation warnings
-python run_project.py --sample --continue-on-error
-
 # Skip automatic app launch
 python run_project.py --sample --no-launch-app
 ```
+## Web Application
+
+If you just want to launch the app:
+
+```bash
+uv run streamlit run app.py
+```
+
+The app will open at `http://localhost:8501`
+
 
 ### Workflow Steps
 
@@ -118,15 +123,7 @@ output/final/
 ```
 
 ### Performance Guide
-
-| Command | Dataset | Time | Use Case |
-|---------|---------|------|----------|
-| `--validate-only --sample` | Sample | ~5 min | Quick check |
-| `--sample` | Sample | ~10-15 min | Development |
-| `--validate-only` | Full | ~20-30 min | Pre-flight check |
-| (no flags) | Full | ~45-90 min | Production |
-
-### All Options
+#### All Options
 
 ```bash
 Workflow Control:
@@ -144,16 +141,6 @@ Validation Options:
 Configuration:
   --config CONFIG         Path to configuration file
 ```
-
-## Web Application
-
-### Launch
-
-```bash
-uv run streamlit run app.py
-```
-
-The app will open at `http://localhost:8501`
 
 ### Workflow
 
@@ -244,13 +231,6 @@ uv run python run_analysis.py --config custom/config.json --patient --validate
 - `2` - Partial success
 - `130` - Interrupted (Ctrl+C)
 
-### Automation
-
-**Cron Job (Daily Validation):**
-```bash
-# Run at 2 AM daily with 1k sample
-0 2 * * * cd /path/to/CLIF-TableOne && uv run python run_analysis.py --all --validate --sample --quiet >> logs/analysis.log 2>&1
-```
 
 ## Feedback System
 
@@ -269,71 +249,3 @@ The user feedback system allows sites to classify validation errors based on the
    - Provides audit trail of all decisions
 
 3. **Persistence**: Feedback saved to `{table}_validation_response.json`
-
-### Use Cases
-
-- Site-specific categories (IRB-approved custom categories)
-- Known data patterns (documented site-specific characteristics)
-- Progressive review (mark errors as pending until clinical review)
-- Audit trail (track all validation decisions with timestamps)
-
-See [FEEDBACK_SYSTEM.md](FEEDBACK_SYSTEM.md) for technical documentation.
-
-## Requirements
-
-**System:**
-- Python 3.8+
-- UV (package manager)
-
-**Dependencies** (automatically managed by UV):
-- streamlit - Web interface
-- pandas - Data manipulation
-- clifpy - CLIF data validation
-- plotly - Interactive visualizations
-- reportlab - PDF generation
-- duckdb - SQL queries
-- pytz - Timezone handling
-
-**Development Dependencies:**
-- jupyter - Notebooks
-- matplotlib - Static plots
-- seaborn - Statistical visualizations
-
-All dependencies are automatically installed via `uv sync`.
-
-## Troubleshooting
-
-### Configuration Issues
-
-**"Configuration file not found"**
-- Ensure `config/config.json` exists
-- Check path is relative to project root
-
-**"Data directory not found"**
-- Verify `tables_path` in config.json points to correct location
-- Check that CLIF parquet/csv files exist in that directory
-
-**"Table not found"**
-- Ensure file names match expected format:
-  - `patient.parquet` or `clif_patient.parquet`
-  - `hospitalization.parquet` or `clif_hospitalization.parquet`
-
-### Performance Issues
-
-**"Memory Error"**
-- Use `--sample` flag for faster analysis with smaller dataset
-- Close other applications to free up RAM
-- Use `--validate-only` to skip memory-intensive table one generation
-
-## Documentation
-
-- **Quick Start**: [QUICKSTART.md](QUICKSTART.md)
-- **Table One Generation**: [code/README_TABLE_ONE.md](code/README_TABLE_ONE.md)
-- **Table One Viewer**: [TABLEONE_VIEWER_GUIDE.md](TABLEONE_VIEWER_GUIDE.md)
-- **Feedback System**: [FEEDBACK_SYSTEM.md](FEEDBACK_SYSTEM.md)
-- **Command Help**: `python run_project.py --help`
-- **Issues**: [GitHub Issues](https://github.com/Common-Longitudinal-ICU-data-Format/CLIF-TableOne/issues)
-
-## License
-
-See CLIF consortium documentation for licensing information.

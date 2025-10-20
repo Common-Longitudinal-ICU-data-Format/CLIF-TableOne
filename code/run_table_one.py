@@ -176,21 +176,25 @@ def run_table_one_script(memory_monitor):
         code_dir = script_path.parent
         os.chdir(code_dir)
 
-        # Execute the script
-        with open(script_path, 'r') as f:
-            code = f.read()
-
-        # Execute in current namespace to capture outputs
-        exec(code, {'__name__': '__main__', '__file__': str(script_path)})
+        # Import and execute the main function with memory monitoring
+        from generate_table_one_2_1 import main
+        success = main(memory_monitor=memory_monitor)
 
         # Restore original directory
         os.chdir(original_dir)
 
         memory_monitor.checkpoint("Script Complete")
-        print(f"\n{'='*80}")
-        print("✅ TABLE ONE GENERATION SUCCESSFUL")
-        print(f"{'='*80}")
-        return True
+
+        if success:
+            print(f"\n{'='*80}")
+            print("✅ TABLE ONE GENERATION SUCCESSFUL")
+            print(f"{'='*80}")
+        else:
+            print(f"\n{'='*80}")
+            print("⚠️  TABLE ONE GENERATION COMPLETED WITH WARNINGS")
+            print(f"{'='*80}")
+
+        return success
 
     except Exception as e:
         # Restore original directory on error
