@@ -4437,6 +4437,7 @@ def main(memory_monitor=None) -> bool:
     print("✅ TABLE ONE GENERATION COMPLETE")
     print("="*80)
 
+    os.makedirs('../output/intermediate', exist_ok=True)
     final_tableone_df.to_parquet('../output/intermediate/final_tableone_df.parquet')
 
     # Final memory cleanup
