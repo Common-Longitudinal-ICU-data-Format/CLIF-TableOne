@@ -140,11 +140,11 @@ class CLIAnalysisRunner:
                 if sample_exists(self.output_dir):
                     sample_filter = load_sample_list(self.output_dir)
                     if sample_filter:
-                        self.log(self.formatter.info(f"📊 Using 1k ICU sample ({len(sample_filter):,} hospitalizations)"))
+                        self.log(self.formatter.info(f"[STATS] Using 1k ICU sample ({len(sample_filter):,} hospitalizations)"))
                     else:
-                        self.log(self.formatter.warning("⚠️  Sample file exists but could not be loaded. Loading full table."))
+                        self.log(self.formatter.warning("[WARNING] Sample file exists but could not be loaded. Loading full table."))
                 else:
-                    self.log(self.formatter.warning("⚠️  Sample file not found. Loading full table."))
+                    self.log(self.formatter.warning("[WARNING] Sample file not found. Loading full table."))
                     self.log(self.formatter.info("   Generate sample by running: python run_analysis.py --adt --validate --summary"))
 
             # Load table
@@ -346,13 +346,13 @@ class CLIAnalysisRunner:
             tables = ordered_tables
 
         # Header
-        self.log(self.formatter.header("🏥 CLIF TABLE ONE ANALYSIS"), force=True)
+        self.log(self.formatter.header("[HOSPITAL] CLIF TABLE ONE ANALYSIS"), force=True)
         self.log(f"{self.formatter.FOLDER} Data Directory: {self.data_dir}", force=True)
         self.log(f"{self.formatter.FILE} Output Directory: {os.path.join(self.output_dir, 'final', 'reports')} (reports), {os.path.join(self.output_dir, 'final', 'results')} (results)", force=True)
-        self.log(f"📋 Tables: {', '.join(tables)}", force=True)
-        self.log(f"🔍 Validation: {'✓' if run_validation else '✗'}", force=True)
-        self.log(f"📊 Summary: {'✓' if run_summary else '✗'}", force=True)
-        self.log(f"🎯 Sample Mode: {'✓ (1k ICU hospitalizations)' if self.use_sample else '✗'}", force=True)
+        self.log(f"[LIST] Tables: {', '.join(tables)}", force=True)
+        self.log(f"[SEARCH] Validation: {'[OK]' if run_validation else '[X]'}", force=True)
+        self.log(f"[STATS] Summary: {'[OK]' if run_summary else '[X]'}", force=True)
+        self.log(f"[TARGET] Sample Mode: {'[OK] (1k ICU hospitalizations)' if self.use_sample else '[X]'}", force=True)
         self.log("", force=True)
 
         results = {
@@ -435,41 +435,41 @@ class CLIAnalysisRunner:
                                 import traceback
                                 self.log(traceback.format_exc())
                     else:
-                        self.log(f"    ⚠️ No MCIDE collection method for {table_name}")
+                        self.log(f"    [WARNING]No MCIDE collection method for {table_name}")
 
                 # Report MCIDE results
                 if mcide_success > 0:
-                    self.log(self.formatter.success(f"✅ MCIDE statistics collected for {mcide_success} table(s)"))
-                    self.log(f"  📋 MCIDE files: {os.path.join(self.output_dir, 'final', 'tableone', 'mcide')}")
-                    self.log(f"  📊 Stats files: {os.path.join(self.output_dir, 'final', 'tableone', 'summary_stats')}")
+                    self.log(self.formatter.success(f"[SUCCESS] MCIDE statistics collected for {mcide_success} table(s)"))
+                    self.log(f"  [LIST] MCIDE files: {os.path.join(self.output_dir, 'final', 'tableone', 'mcide')}")
+                    self.log(f"  [STATS] Stats files: {os.path.join(self.output_dir, 'final', 'tableone', 'summary_stats')}")
 
                 if mcide_failed:
-                    self.log(self.formatter.warning(f"⚠️  MCIDE collection failed for: {', '.join(mcide_failed)}"))
+                    self.log(self.formatter.warning(f"[WARNING] MCIDE collection failed for: {', '.join(mcide_failed)}"))
 
             except ImportError as e:
-                self.log(self.formatter.warning(f"⚠️  MCIDE collection module not found: {e}"))
+                self.log(self.formatter.warning(f"[WARNING] MCIDE collection module not found: {e}"))
                 self.log("    Ensure the MCIDE module is properly installed in modules/mcide/")
                 if self.verbose:
                     import traceback
                     traceback.print_exc()
             except Exception as e:
-                self.log(self.formatter.warning(f"⚠️  Error during MCIDE collection: {e}"))
+                self.log(self.formatter.warning(f"[WARNING] Error during MCIDE collection: {e}"))
                 if self.verbose:
                     import traceback
                     traceback.print_exc()
 
         # Summary
-        self.log("\n" + self.formatter.header("📊 ANALYSIS SUMMARY"), force=True)
-        self.log(f"✅ Successfully analyzed: {results['total_success']} table(s)", force=True)
+        self.log("\n" + self.formatter.header("[STATS] ANALYSIS SUMMARY"), force=True)
+        self.log(f"[SUCCESS] Successfully analyzed: {results['total_success']} table(s)", force=True)
         if results['total_failed'] > 0:
-            self.log(f"❌ Failed: {results['total_failed']} table(s)", force=True)
+            self.log(f"[ERROR] Failed: {results['total_failed']} table(s)", force=True)
             for table in results['tables_failed']:
                 error = results['details'][table].get('error', 'Unknown error')
                 self.log(f"  - {table}: {error}", force=True)
 
         self.log(f"\n{self.formatter.FOLDER} Results saved to:", force=True)
-        self.log(f"  📄 Reports: {os.path.join(self.output_dir, 'final', 'reports')}", force=True)
-        self.log(f"  📊 Results: {os.path.join(self.output_dir, 'final', 'results')}", force=True)
+        self.log(f"  [REPORT] Reports: {os.path.join(self.output_dir, 'final', 'reports')}", force=True)
+        self.log(f"  [STATS] Results: {os.path.join(self.output_dir, 'final', 'results')}", force=True)
 
         # Generate combined report if multiple tables were analyzed and validation was run
         if len(results['tables_analyzed']) > 1 and run_validation and self.generate_pdf:

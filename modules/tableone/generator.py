@@ -2644,10 +2644,29 @@ def main(memory_monitor=None) -> bool:
 
     print(f"Converting {len(preferred_units)} vasopressors to mcg/kg/min...")
 
+    # Pre-load only weight_kg vitals using Polars for efficiency
+    print("Pre-loading weight data for medication conversion...")
+    vitals_path = os.path.join(clif.data_directory, 'clif_vitals.parquet')
+
+    # Use Polars to load only what we need
+    weight_df_pl = (
+        pl.scan_parquet(vitals_path)
+        .filter(
+            (pl.col('hospitalization_id').is_in(final_hosp_ids)) &
+            (pl.col('vital_category') == 'weight_kg')
+        )
+        .collect()
+    )
+
+    # Convert to Pandas for CLIF compatibility
+    weight_vitals_df = weight_df_pl.to_pandas()
+    print(f"Loaded {len(weight_vitals_df):,} weight measurements for {weight_df_pl['hospitalization_id'].n_unique()} hospitalizations")
+
     # Convert units (uses clifpy orchestrator)
     clif.convert_dose_units_for_continuous_meds(
         preferred_units=preferred_units,
-        override=True, 
+        vitals_df=weight_vitals_df,  # Pass pre-loaded weight data
+        override=True,
         save_to_table=True,
         hospitalization_ids=final_hosp_ids
     )
@@ -2668,6 +2687,11 @@ def main(memory_monitor=None) -> bool:
     if len(failed_conversions) > 0:
         print(f"\n⚠️ Found {len(failed_conversions)} conversion issues:")
         print(failed_conversions[['med_category', '_clean_unit', '_convert_status', 'count']].to_string(index=False))
+
+    # Clean up weight data to free memory
+    del weight_vitals_df, weight_df_pl
+    gc.collect()
+    print("✓ Cleaned up weight data from memory")
 
     # ============================================================================
     # 3. Calculate Median and IQR for Vasopressors (Optimized)

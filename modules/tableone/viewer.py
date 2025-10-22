@@ -299,8 +299,8 @@ def display_medications_tab(tableone_dir):
         st.caption("**Area Under Curve (7 days)**")
         with open(vaso_area_path, 'r') as f:
             html_content = f.read()
-        # Increased height to show full plot with legend
-        st.components.v1.html(html_content, height=700, scrolling=False)
+        # Display plot with enough height to show legend
+        st.components.v1.html(html_content, height=500, width=None,scrolling=False)
     else:
         st.info("ℹ️ Vasoactive area curve not found")
 
@@ -309,7 +309,7 @@ def display_medications_tab(tableone_dir):
         st.caption("**Median Dose by Hour**")
         with open(vaso_dose_path, 'r') as f:
             html_content = f.read()
-        st.components.v1.html(html_content, height=700, scrolling=False)
+        st.components.v1.html(html_content, height=500, scrolling=True)
     else:
         st.info("ℹ️ Vasoactive median dose plot not found")
 
@@ -323,7 +323,7 @@ def display_medications_tab(tableone_dir):
         st.caption("**Area Under Curve (7 days)**")
         with open(sedative_area_path, 'r') as f:
             html_content = f.read()
-        st.components.v1.html(html_content, height=700, scrolling=False)
+        st.components.v1.html(html_content, height=500, scrolling=True)
     else:
         st.info("ℹ️ Sedative area curve not found")
 
@@ -332,7 +332,7 @@ def display_medications_tab(tableone_dir):
         st.caption("**Median Dose by Hour**")
         with open(sedative_dose_path, 'r') as f:
             html_content = f.read()
-        st.components.v1.html(html_content, height=700, scrolling=False)
+        st.components.v1.html(html_content, height=500, scrolling=True)
     else:
         st.info("ℹ️ Sedative median dose plot not found")
 
@@ -346,7 +346,7 @@ def display_medications_tab(tableone_dir):
         st.caption("**Area Under Curve (7 days)**")
         with open(paralytic_area_path, 'r') as f:
             html_content = f.read()
-        st.components.v1.html(html_content, height=700, scrolling=False)
+        st.components.v1.html(html_content, height=500, scrolling=True)
     else:
         st.info("ℹ️ Paralytic area curve not found")
 
@@ -355,7 +355,7 @@ def display_medications_tab(tableone_dir):
         st.caption("**Median Dose by Hour**")
         with open(paralytic_dose_path, 'r') as f:
             html_content = f.read()
-        st.components.v1.html(html_content, height=700, scrolling=False)
+        st.components.v1.html(html_content, height=500, scrolling=True)
     else:
         st.info("ℹ️ Paralytic median dose plot not found")
 
