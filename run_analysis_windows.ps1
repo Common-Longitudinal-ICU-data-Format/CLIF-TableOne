@@ -10,7 +10,7 @@ Write-Host "Running CLIF Analysis with UTF-8 support..." -ForegroundColor Cyan
 Write-Host ""
 
 # Run the Python script with all command line arguments
-python run_analysis.py $args
+uv run python run_analysis.py $args
 
 # Check exit code
 if ($LASTEXITCODE -ne 0) {

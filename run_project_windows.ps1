@@ -10,7 +10,7 @@ Write-Host "Running CLIF Table One Project with UTF-8 support..." -ForegroundCol
 Write-Host ""
 
 # Run the Python script with all command line arguments
-python run_project.py $args
+uv run python run_project.py $args
 
 # Check exit code
 if ($LASTEXITCODE -ne 0) {

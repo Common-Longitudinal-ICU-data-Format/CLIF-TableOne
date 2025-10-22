@@ -10,7 +10,7 @@ echo.
 echo Running CLIF Table One Project with UTF-8 support...
 echo.
 
-python run_project.py %*
+uv run python run_project.py %*
 
 if %ERRORLEVEL% NEQ 0 (
     echo.

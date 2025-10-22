@@ -10,7 +10,7 @@ echo.
 echo Starting CLIF Table One Streamlit App with UTF-8 support...
 echo.
 
-streamlit run app.py %*
+uv run streamlit run app.py %*
 
 if %ERRORLEVEL% NEQ 0 (
     echo.

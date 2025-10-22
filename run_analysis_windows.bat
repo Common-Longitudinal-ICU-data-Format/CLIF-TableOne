@@ -10,7 +10,7 @@ echo.
 echo Running CLIF Analysis with UTF-8 support...
 echo.
 
-python run_analysis.py %*
+uv run python run_analysis.py %*
 
 if %ERRORLEVEL% NEQ 0 (
     echo.

@@ -1,6 +1,6 @@
 # Table One Results Viewer - User Guide
 
-The Streamlit app now includes a comprehensive Table One Results Viewer that displays all generated cohort analysis results in an organized, interactive interface.
+The Streamlit app includes a comprehensive Table One Results Viewer that displays all generated cohort analysis results in an organized, interactive interface.
 
 ## Accessing the Viewer
 
@@ -171,8 +171,6 @@ output/final/tableone/
 If certain visualizations are not available, the viewer will display:
 - ⚠️ Warning - For critical files (CONSORT diagram, Table One CSVs)
 - ℹ️ Info - For optional files (SOFA histogram, specific Sankey diagrams)
-
-The viewer gracefully handles missing files and continues to display all available results.
 
 ## Workflow Integration
 

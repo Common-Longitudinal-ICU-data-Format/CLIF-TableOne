@@ -10,7 +10,7 @@ Write-Host "Starting CLIF Table One Streamlit App with UTF-8 support..." -Foregr
 Write-Host ""
 
 # Run the Streamlit app with all command line arguments
-streamlit run app.py $args
+uv run streamlit run app.py $args
 
 # Check exit code
 if ($LASTEXITCODE -ne 0) {

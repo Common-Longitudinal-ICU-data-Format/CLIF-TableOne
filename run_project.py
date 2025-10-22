@@ -224,36 +224,62 @@ class ProjectRunner:
         self.logger.info(f"Tables: {', '.join(tables) if tables else 'all'}")
 
         try:
-            # Stream output in real-time while also logging
-            process = subprocess.Popen(
-                cmd,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True,
-                bufsize=1,  # Line buffered
-                universal_newlines=True
-            )
+            # Use different approach for Windows vs Unix-like systems
+            if sys.platform == 'win32':
+                # On Windows, use communicate() to avoid deadlocks
+                process = subprocess.Popen(
+                    cmd,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT,  # Merge stderr into stdout
+                    text=True,
+                    universal_newlines=True
+                )
 
-            # Stream stdout in real-time
-            for line in process.stdout:
-                line = line.rstrip()
-                if line:  # Skip empty lines
-                    print(line)  # Show in terminal immediately
-                    self.logger.info(line)  # Also log to file
+                # Read output in chunks to show progress
+                while True:
+                    output = process.stdout.readline()
+                    if output == '' and process.poll() is not None:
+                        break
+                    if output:
+                        line = output.rstrip()
+                        if line:  # Skip empty lines
+                            print(line)  # Show in terminal immediately
+                            self.logger.info(line)  # Also log to file
 
-            # Get any remaining stderr
-            stderr_output = process.stderr.read()
-            if stderr_output:
-                for line in stderr_output.strip().split('\n'):
-                    if line:
-                        print(line, file=sys.stderr)
-                        self.logger.error(line)
+                # Get exit code
+                exit_code = process.poll()
+            else:
+                # Original Unix/Linux/MacOS approach
+                process = subprocess.Popen(
+                    cmd,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    text=True,
+                    bufsize=1,  # Line buffered
+                    universal_newlines=True
+                )
 
-            # Wait for process to complete
-            exit_code = process.wait()
+                # Stream stdout in real-time
+                for line in process.stdout:
+                    line = line.rstrip()
+                    if line:  # Skip empty lines
+                        print(line)  # Show in terminal immediately
+                        self.logger.info(line)  # Also log to file
+
+                # Get any remaining stderr
+                stderr_output = process.stderr.read()
+                if stderr_output:
+                    for line in stderr_output.strip().split('\n'):
+                        if line:
+                            print(line, file=sys.stderr)
+                            self.logger.error(line)
+
+                # Wait for process to complete
+                exit_code = process.wait()
 
             if exit_code == 0:
-                self.logger.info("✅ Validation completed successfully")
+                print("\n[SUCCESS] Validation completed successfully")
+                self.logger.info("[SUCCESS] Validation completed successfully")
                 critical_tables_ok = True
                 critical_tables_msg = None
             elif exit_code == 2:
@@ -494,15 +520,18 @@ class ProjectRunner:
 
         # Step 1: Validation
         if validate:
+            print("\n[DEBUG] Starting validation step...")
             val_success, critical_tables_ok = self.run_validation(
                 tables=kwargs.get('tables'),
                 use_sample=kwargs.get('use_sample', False),
                 verbose=kwargs.get('verbose', False),
                 no_summary=kwargs.get('no_summary', False)
             )
+            print(f"[DEBUG] Validation completed. val_success={val_success}, critical_tables_ok={critical_tables_ok}")
 
             # Decide whether to proceed based on validation results
             can_proceed = val_success or critical_tables_ok
+            print(f"[DEBUG] Can proceed to next step: {can_proceed}")
 
             if not can_proceed and not kwargs.get('continue_on_error', False):
                 if not critical_tables_ok:
@@ -510,7 +539,7 @@ class ProjectRunner:
                     pass  # Error message already logged by run_validation
                 else:
                     # General validation failure
-                    self.logger.warning("⚠️  Validation failed. Stopping workflow.")
+                    self.logger.warning("[WARNING] Validation failed. Stopping workflow.")
                     self.logger.info("Use --continue-on-error to proceed anyway.")
 
                 self.generate_summary_report()
@@ -518,6 +547,7 @@ class ProjectRunner:
 
         # Step 2: Table One Generation
         if tableone:
+            print("\n[DEBUG] Starting Table One generation...")
             tbl_success = self.run_tableone()
 
         # Step 3: Get ECDF Bins
