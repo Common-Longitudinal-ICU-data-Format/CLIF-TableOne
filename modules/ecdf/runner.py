@@ -110,6 +110,7 @@ class ECDFRunner:
             self.project_root / 'output/final/bins/labs',
             self.project_root / 'output/final/bins/vitals',
             self.project_root / 'output/final/bins/respiratory_support',
+            self.project_root / 'output/final/stats',
         ]
 
         missing_dirs = []
@@ -118,7 +119,10 @@ class ECDFRunner:
         for dir_path in expected_dirs:
             if dir_path.exists():
                 # Count files in directory
-                file_count = len(list(dir_path.glob('*.parquet')))
+                if dir_path.name == 'stats':
+                    file_count = len(list(dir_path.glob('*.csv')))
+                else:
+                    file_count = len(list(dir_path.glob('*.parquet')))
                 existing_dirs.append((str(dir_path), file_count))
             else:
                 missing_dirs.append(str(dir_path))
@@ -201,6 +205,65 @@ class ECDFRunner:
             traceback.print_exc()
             return False
 
+    def execute_statistics_generation(self):
+        """Execute collection statistics generation."""
+        print(f"\n{'='*80}")
+        print("GENERATING COLLECTION STATISTICS")
+        print(f"{'='*80}")
+        print(f"Module: modules.ecdf.statistics")
+        print(f"{'='*80}\n")
+
+        try:
+            # Import necessary functions
+            from .generator import load_configs, extract_icu_time_windows, discover_lab_category_units
+            from .statistics import compute_collection_statistics
+
+            # Load configurations
+            clif_config, outlier_config, lab_vital_config = load_configs()
+
+            # Extract ICU time windows
+            icu_windows = extract_icu_time_windows(
+                clif_config['tables_path'],
+                clif_config['file_type']
+            )
+
+            # Discover lab category-unit combinations
+            lab_category_units = discover_lab_category_units(
+                clif_config['tables_path'],
+                clif_config['file_type']
+            )
+
+            # Compute statistics
+            output_dir = self.project_root / 'output/final'
+            stats_path = compute_collection_statistics(
+                icu_windows=icu_windows,
+                tables_path=clif_config['tables_path'],
+                file_type=clif_config['file_type'],
+                lab_category_units=lab_category_units,
+                lab_vital_config=lab_vital_config,
+                output_dir=str(output_dir)
+            )
+
+            if stats_path:
+                print(f"\n{'='*80}")
+                print("✅ COLLECTION STATISTICS SUCCESSFUL")
+                print(f"{'='*80}")
+                return True
+            else:
+                print(f"\n{'='*80}")
+                print("⚠️  COLLECTION STATISTICS GENERATED NO DATA")
+                print(f"{'='*80}")
+                return False
+
+        except Exception as e:
+            print(f"\n{'='*80}")
+            print("❌ COLLECTION STATISTICS FAILED")
+            print(f"{'='*80}")
+            print(f"\nError: {e}")
+            print(f"\nTraceback:")
+            traceback.print_exc()
+            return False
+
     def generate_report(self, success, validation_passed, total_time):
         """Generate a summary report."""
         report_path = self.project_root / 'output/final/ecdf_execution_report.txt'
@@ -231,6 +294,8 @@ class ECDFRunner:
             f.write("│   ├── labs/\n")
             f.write("│   ├── vitals/\n")
             f.write("│   └── respiratory_support/\n")
+            f.write("├── stats/            # Collection statistics CSV\n")
+            f.write("│   └── collection_statistics.csv\n")
             f.write("└── unit_mismatches.log\n")
 
         print(f"\n📊 Execution report saved: {report_path}")
@@ -271,13 +336,20 @@ class ECDFRunner:
         # Step 3: Run ECDF generation
         success = self.execute_ecdf_generation()
 
-        # Step 4: Run visualization (optional)
+        # Step 4: Run collection statistics generation
+        stats_success = False
+        if success:
+            stats_success = self.execute_statistics_generation()
+            if not stats_success:
+                print("\n⚠️  ECDF generation succeeded but statistics generation failed")
+
+        # Step 5: Run visualization (optional)
         if success and visualize:
             viz_success = self.execute_visualization()
             if not viz_success:
                 print("\n⚠️  ECDF generation succeeded but visualization failed")
 
-        # Step 5: Validate outputs
+        # Step 6: Validate outputs
         validation_passed = False
         if success:
             validation_passed = self.validate_outputs()
