@@ -1489,6 +1489,12 @@ def compute_sofa_polars(
     combined_parts = []
     for time_col, df in time_cols:
         df_renamed = df.rename({time_col: 'event_time'})
+        # Cast event_time to microsecond precision for consistency across all data sources
+        # This prevents "Datetime('ns', timezone) is incompatible with Datetime('μs', timezone)" errors
+        # Use dt.cast_time_unit to preserve the timezone that was already set
+        df_renamed = df_renamed.with_columns([
+            pl.col('event_time').dt.cast_time_unit('us').alias('event_time')
+        ])
         combined_parts.append(df_renamed)
 
     if not combined_parts:

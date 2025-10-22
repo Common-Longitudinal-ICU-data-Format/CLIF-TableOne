@@ -528,19 +528,19 @@ class MCIDEStatsCollector:
         # MCIDE collections
         self.collect_mcide(lf, 'patient_assessments', ['assessment_name', 'assessment_category', 'assessment_group'])
 
-    def collect_patient_procedures(self):
-        """Collect MCIDE for patient procedures table"""
-        logger.info("Processing patient procedures table...")
-        table_path = self.get_table_path('patient_procedures')
+    # def collect_patient_procedures(self):
+    #     """Collect MCIDE for patient procedures table"""
+    #     logger.info("Processing patient procedures table...")
+    #     table_path = self.get_table_path('patient_procedures')
 
-        if not table_path:
-            logger.warning(f"Patient procedures table not found")
-            return
+    #     if not table_path:
+    #         logger.warning(f"Patient procedures table not found")
+    #         return
 
-        lf = pl.scan_parquet(table_path) if self.file_type == 'parquet' else pl.scan_csv(table_path)
+    #     lf = pl.scan_parquet(table_path) if self.file_type == 'parquet' else pl.scan_csv(table_path)
 
-        # MCIDE collections
-        self.collect_mcide(lf, 'patient_procedures', ['procedure_name', 'procedure_category'])
+    #     # MCIDE collections
+    #     self.collect_mcide(lf, 'patient_procedures', ['procedure_name', 'procedure_category'])
 
     def collect_position(self):
         """Collect MCIDE for position table"""
@@ -554,7 +554,7 @@ class MCIDEStatsCollector:
         lf = pl.scan_parquet(table_path) if self.file_type == 'parquet' else pl.scan_csv(table_path)
 
         # MCIDE collections
-        self.collect_mcide(lf, 'position', ['position'])
+        self.collect_mcide(lf, 'position', ['position_name', 'position_category'])
 
     def collect_hospital_diagnosis(self):
         """Collect MCIDE for hospital diagnosis table"""

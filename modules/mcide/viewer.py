@@ -145,7 +145,22 @@ def display_mcide_file(filepath: str, table_name: str):
         Name of the table for context
     """
     try:
-        df = pd.read_csv(filepath)
+        # Read CSV with explicit encoding and error handling for Windows compatibility
+        try:
+            df = pd.read_csv(filepath, encoding='utf-8')
+        except UnicodeDecodeError:
+            # Fallback to latin-1 if UTF-8 fails
+            df = pd.read_csv(filepath, encoding='latin-1')
+        except Exception as e:
+            # If pandas read_csv fails, try reading the file manually
+            import csv
+            with open(filepath, 'r', encoding='utf-8', errors='replace') as f:
+                reader = csv.reader(f)
+                data = list(reader)
+                if data:
+                    df = pd.DataFrame(data[1:], columns=data[0])
+                else:
+                    raise ValueError("Empty CSV file")
 
         # Get column names for display
         column_desc = format_column_names(filepath)
@@ -224,6 +239,9 @@ def display_mcide_file(filepath: str, table_name: str):
 
     except Exception as e:
         st.error(f"Error loading file: {str(e)}")
+        # Add more detailed error information for debugging
+        if st.checkbox("Show detailed error", key=f"error_details_{filepath}"):
+            st.code(f"File path: {filepath}\nError type: {type(e).__name__}\nError message: {str(e)}")
 
 
 def display_mcide_tab(output_dir: str = 'output'):
@@ -414,9 +432,22 @@ def display_table_mcide(table_name: str, output_dir: str = 'output'):
 
         for stats_file in sorted(stats_files):
             try:
-                # Read JSON file
-                with open(stats_file, 'r') as f:
-                    stats_data = json.load(f)
+                # Read JSON file with explicit encoding for Windows compatibility
+                try:
+                    with open(stats_file, 'r', encoding='utf-8') as f:
+                        stats_data = json.load(f)
+                except UnicodeDecodeError:
+                    # Fallback to utf-8-sig to handle BOM if present
+                    with open(stats_file, 'r', encoding='utf-8-sig') as f:
+                        stats_data = json.load(f)
+                except json.JSONDecodeError as e:
+                    # If JSON parsing fails, try to read the file content
+                    with open(stats_file, 'r', encoding='utf-8', errors='replace') as f:
+                        content = f.read()
+                    st.error(f"Invalid JSON in {os.path.basename(stats_file)}: {str(e)}")
+                    if st.checkbox(f"Show raw content of {os.path.basename(stats_file)}", key=f"raw_{stats_file}"):
+                        st.code(content[:1000])  # Show first 1000 chars
+                    continue
 
                 # Extract filename for display
                 stats_name = os.path.basename(stats_file).replace('.json', '').replace('_', ' ').title()
@@ -463,8 +494,12 @@ def display_table_mcide(table_name: str, output_dir: str = 'output'):
                 else:
                     st.json(stats_data)
 
+            except FileNotFoundError:
+                st.error(f"Statistics file not found: {os.path.basename(stats_file)}")
             except Exception as e:
-                st.error(f"Error loading statistics file: {str(e)}")
+                st.error(f"Error loading statistics file {os.path.basename(stats_file)}: {str(e)}")
+                if st.checkbox(f"Show detailed error for {os.path.basename(stats_file)}", key=f"error_{stats_file}"):
+                    st.code(f"File path: {stats_file}\nError type: {type(e).__name__}\nError message: {str(e)}")
 
             if len(stats_files) > 1:
                 st.divider()
