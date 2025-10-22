@@ -238,6 +238,12 @@ def extract_icu_time_windows(
     # Collect with streaming
     icu_windows_df = icu_windows.collect(streaming=True)
 
+    # Strip timezone from datetime columns to enable comparison with other datetime columns
+    icu_windows_df = icu_windows_df.with_columns([
+        pl.col('in_dttm').dt.replace_time_zone(None),
+        pl.col('out_dttm').dt.replace_time_zone(None)
+    ])
+
     print(f"✓ Found {len(icu_windows_df):,} ICU time windows")
 
     return icu_windows_df
@@ -432,10 +438,10 @@ def process_category(
     )
 
     # Filter to values during ICU stay only (temporal filtering)
-    # Convert datetime to UTC for comparison (handles timezone/precision mismatches)
+    # Strip timezone from datetime column for comparison with timezone-naive ICU windows
     data_filtered = data_icu.filter(
-        (pl.col(datetime_col).dt.convert_time_zone("UTC") >= pl.col('in_dttm')) &
-        (pl.col(datetime_col).dt.convert_time_zone("UTC") <= pl.col('out_dttm'))
+        (pl.col(datetime_col).dt.replace_time_zone(None) >= pl.col('in_dttm')) &
+        (pl.col(datetime_col).dt.replace_time_zone(None) <= pl.col('out_dttm'))
     ).select([value_col])
 
     # Collect with streaming
@@ -611,10 +617,10 @@ def process_respiratory_column(
     )
 
     # Filter to values during ICU stay only (temporal filtering)
-    # Convert datetime to UTC for comparison (handles timezone/precision mismatches)
+    # Strip timezone from datetime column for comparison with timezone-naive ICU windows
     data_filtered = data_icu.filter(
-        (pl.col('recorded_dttm').dt.convert_time_zone("UTC") >= pl.col('in_dttm')) &
-        (pl.col('recorded_dttm').dt.convert_time_zone("UTC") <= pl.col('out_dttm'))
+        (pl.col('recorded_dttm').dt.replace_time_zone(None) >= pl.col('in_dttm')) &
+        (pl.col('recorded_dttm').dt.replace_time_zone(None) <= pl.col('out_dttm'))
     ).select([column_name])
 
     # Collect with streaming
