@@ -300,7 +300,7 @@ def display_medications_tab(tableone_dir):
         with open(vaso_area_path, 'r') as f:
             html_content = f.read()
         # Display plot with enough height to show legend
-        st.components.v1.html(html_content, height=500, width=None,scrolling=False)
+        st.components.v1.html(html_content, height=500, scrolling=True)
     else:
         st.info("ℹ️ Vasoactive area curve not found")
 

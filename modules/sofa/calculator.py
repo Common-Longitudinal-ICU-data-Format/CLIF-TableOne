@@ -16,6 +16,79 @@ import logging
 logger = logging.getLogger(__name__)
 
 
+def ensure_timezone_lazy(col: pl.Expr, target_tz: str) -> pl.Expr:
+    """
+    Ensure column is in target timezone during lazy evaluation.
+
+    This function handles timezone conversion for lazy dataframes,
+    ensuring comparisons can happen without timezone mismatch errors.
+
+    Parameters
+    ----------
+    col : pl.Expr
+        Polars column expression
+    target_tz : str
+        Target timezone (e.g., 'America/New_York', 'UTC')
+
+    Returns
+    -------
+    pl.Expr
+        Column expression with timezone conversion applied
+    """
+    # For lazy operations, attempt to convert to target timezone
+    # If already in correct timezone, this is a no-op
+    # If naive, this will localize it
+    return col.dt.convert_time_zone(target_tz)
+
+
+def ensure_local_timezone(df: pl.DataFrame, col_name: str, local_tz: str) -> pl.DataFrame:
+    """
+    Ensure column is in local timezone, handling all cases.
+
+    Cases handled:
+    1. Timezone-naive: Assumes it's in local timezone, localizes it
+    2. Already in local timezone: No change
+    3. Different timezone (including UTC): Converts to local timezone
+
+    Parameters
+    ----------
+    df : pl.DataFrame
+        DataFrame containing the column
+    col_name : str
+        Name of the datetime column
+    local_tz : str
+        Local timezone from config
+
+    Returns
+    -------
+    pl.DataFrame
+        DataFrame with column in local timezone
+    """
+    dtype_str = str(df[col_name].dtype)
+
+    # Skip if not a datetime column
+    if 'Datetime' not in dtype_str:
+        logger.warning(f"{col_name}: Not a datetime column, skipping timezone handling")
+        return df
+
+    if 'time_zone=None' in dtype_str:
+        # Naive datetime: assume it's already in local timezone, just localize
+        logger.info(f"{col_name}: Naive datetime, localizing to {local_tz}")
+        return df.with_columns([
+            pl.col(col_name).dt.replace_time_zone(local_tz).alias(col_name)
+        ])
+    elif f"time_zone='{local_tz}'" in dtype_str or f'time_zone="{local_tz}"' in dtype_str:
+        # Already in local timezone
+        logger.debug(f"{col_name}: Already in {local_tz}")
+        return df
+    else:
+        # In different timezone (including UTC), convert to local
+        logger.info(f"{col_name}: Converting from {dtype_str} to {local_tz}")
+        return df.with_columns([
+            pl.col(col_name).dt.convert_time_zone(local_tz).alias(col_name)
+        ])
+
+
 def _convert_datetime_to_timezone(df: pl.DataFrame, timezone: str) -> pl.DataFrame:
     """
     Convert all datetime columns in Polars DataFrame to specified timezone.
@@ -369,6 +442,12 @@ def _load_labs(
         pl.col('hospitalization_id').is_in(hospitalization_ids)
     )
 
+    # Ensure datetime column is in local timezone BEFORE join (for lazy evaluation)
+    if timezone:
+        labs = labs.with_columns([
+            ensure_timezone_lazy(pl.col('lab_result_dttm'), timezone).alias('lab_result_dttm')
+        ])
+
     # Join with cohort to apply time window filter
     labs = labs.join(
         cohort_df.lazy(),
@@ -389,9 +468,7 @@ def _load_labs(
         'lab_value_numeric'
     ]).collect()
 
-    # Convert timezone if specified
-    if timezone:
-        labs = _convert_datetime_to_timezone(labs, timezone)
+    # No need to convert timezone here since we already ensured it during lazy evaluation
 
     # Add row number to handle multiple values at same timestamp
     # This ensures each row is unique for pivoting (no aggregation needed)
@@ -458,6 +535,12 @@ def _load_vitals(
         pl.col('hospitalization_id').is_in(hospitalization_ids)
     )
 
+    # Ensure datetime column is in local timezone BEFORE join (for lazy evaluation)
+    if timezone:
+        vitals = vitals.with_columns([
+            ensure_timezone_lazy(pl.col('recorded_dttm'), timezone).alias('recorded_dttm')
+        ])
+
     # Join with cohort to apply time window filter
     vitals = vitals.join(
         cohort_df.lazy(),
@@ -478,9 +561,7 @@ def _load_vitals(
         'vital_value'
     ]).collect()
 
-    # Convert timezone if specified
-    if timezone:
-        vitals = _convert_datetime_to_timezone(vitals, timezone)
+    # No need to convert timezone here since we already ensured it during lazy evaluation
 
     # Pivot vitals to wide format
     vitals_wide = vitals.pivot(
@@ -540,6 +621,12 @@ def _load_patient_assessments(
         pl.col('hospitalization_id').is_in(hospitalization_ids)
     )
 
+    # Ensure datetime column is in local timezone BEFORE join (for lazy evaluation)
+    if timezone:
+        assessments = assessments.with_columns([
+            ensure_timezone_lazy(pl.col('recorded_dttm'), timezone).alias('recorded_dttm')
+        ])
+
     # Join with cohort to apply time window filter
     assessments = assessments.join(
         cohort_df.lazy(),
@@ -565,9 +652,7 @@ def _load_patient_assessments(
         'assessment_value'
     ]).collect()
 
-    # Convert timezone if specified
-    if timezone:
-        assessments = _convert_datetime_to_timezone(assessments, timezone)
+    # No need to convert timezone here since we already ensured it during lazy evaluation
 
     # Pivot assessments to wide format
     assessments_wide = assessments.pivot(
@@ -644,6 +729,12 @@ def _load_respiratory_support(
         pl.col('hospitalization_id').is_in(hospitalization_ids)
     )
 
+    # Ensure datetime column is in local timezone BEFORE join (for lazy evaluation)
+    if timezone:
+        resp = resp.with_columns([
+            ensure_timezone_lazy(pl.col('recorded_dttm'), timezone).alias('recorded_dttm')
+        ])
+
     # Join with expanded cohort to load data from lookback period
     resp = resp.join(
         cohort_expanded.lazy(),
@@ -667,9 +758,7 @@ def _load_respiratory_support(
         'end_dttm'
     ]).collect()
 
-    # Convert timezone if specified
-    if timezone:
-        resp = _convert_datetime_to_timezone(resp, timezone)
+    # No need to convert timezone here since we already ensured it during lazy evaluation
 
     # Create respiratory support episodes for forward-filling
     # This applies waterfall heuristics and creates hierarchical episode IDs
@@ -773,6 +862,12 @@ def _load_and_convert_medications(
         pl.col('hospitalization_id').is_in(hospitalization_ids)
     )
 
+    # Ensure datetime column is in local timezone BEFORE join (for lazy evaluation)
+    if timezone:
+        meds = meds.with_columns([
+            ensure_timezone_lazy(pl.col('admin_dttm'), timezone).alias('admin_dttm')
+        ])
+
     # Join with cohort to apply time window filter
     meds = meds.join(
         cohort_df.lazy(),
@@ -785,9 +880,7 @@ def _load_and_convert_medications(
 
     meds = meds.collect()
 
-    # Convert timezone if specified
-    if timezone:
-        meds = _convert_datetime_to_timezone(meds, timezone)
+    # No need to convert timezone here since we already ensured it during lazy evaluation
 
     # Clean dose units
     meds = meds.with_columns([
@@ -804,6 +897,12 @@ def _load_and_convert_medications(
         else:
             weight_data = pl.scan_csv(str(weight_file))
 
+        # Ensure datetime column is in local timezone BEFORE collecting
+        if timezone:
+            weight_data = weight_data.with_columns([
+                ensure_timezone_lazy(pl.col('recorded_dttm'), timezone).alias('recorded_dttm')
+            ])
+
         weight_data = weight_data.filter(
             pl.col('hospitalization_id').is_in(hospitalization_ids) &
             (pl.col('vital_category') == 'weight_kg')
@@ -813,9 +912,7 @@ def _load_and_convert_medications(
             pl.col('vital_value').alias('weight_kg')
         ]).collect()
 
-        # Convert timezone if specified
-        if timezone:
-            weight_data = _convert_datetime_to_timezone(weight_data, timezone)
+        # No need to convert timezone here since we already ensured it during lazy evaluation
     else:
         logger.warning(f"Weight data file not found: {weight_file}")
         weight_data = pl.DataFrame({
@@ -1337,38 +1434,36 @@ def compute_sofa_polars(
     if id_name not in cohort_df.columns:
         raise ValueError(f"id_name '{id_name}' not found in cohort_df columns")
 
-    # Convert cohort datetime columns to UTC for consistent comparison with data files
-    # Data files are typically in UTC, so we need to match that
-    logger.info("Converting cohort datetime columns to UTC for consistent filtering...")
-    cohort_df_utc = cohort_df.clone()
+    # Ensure cohort datetime columns are in local timezone for consistent comparison
+    # Data files should be in local timezone (naive or aware)
+    logger.info(f"Ensuring cohort datetime columns are in local timezone: {timezone}")
+    cohort_df_local = cohort_df.clone()
     for col in ['start_dttm', 'end_dttm']:
-        dtype_str = str(cohort_df_utc[col].dtype)
-        if 'Datetime' in dtype_str:
-            # Convert to UTC (adjust time, not just relabel)
-            # Also cast to microsecond precision for consistency
-            cohort_df_utc = cohort_df_utc.with_columns([
-                pl.col(col).dt.convert_time_zone("UTC").dt.cast_time_unit("us").alias(col)
-            ])
+        cohort_df_local = ensure_local_timezone(cohort_df_local, col, timezone)
+        # Also cast to microsecond precision for consistency
+        cohort_df_local = cohort_df_local.with_columns([
+            pl.col(col).dt.cast_time_unit("us").alias(col)
+        ])
 
     # Extract unique hospitalization_ids for filtering
-    hospitalization_ids = cohort_df_utc['hospitalization_id'].unique().to_list()
+    hospitalization_ids = cohort_df_local['hospitalization_id'].unique().to_list()
     logger.info(f"Loading data for {len(hospitalization_ids)} unique hospitalization(s)")
 
-    # Load all required tables (using UTC-converted cohort for consistent filtering)
+    # Load all required tables (using local timezone cohort for consistent filtering)
     logger.info("Loading labs data...")
-    labs_df = _load_labs(data_directory, filetype, hospitalization_ids, cohort_df_utc, timezone)
+    labs_df = _load_labs(data_directory, filetype, hospitalization_ids, cohort_df_local, timezone)
 
     logger.info("Loading vitals data...")
-    vitals_df = _load_vitals(data_directory, filetype, hospitalization_ids, cohort_df_utc, timezone)
+    vitals_df = _load_vitals(data_directory, filetype, hospitalization_ids, cohort_df_local, timezone)
 
     logger.info("Loading patient assessments data...")
-    assessments_df = _load_patient_assessments(data_directory, filetype, hospitalization_ids, cohort_df_utc, timezone)
+    assessments_df = _load_patient_assessments(data_directory, filetype, hospitalization_ids, cohort_df_local, timezone)
 
     logger.info("Loading respiratory support data...")
-    resp_df = _load_respiratory_support(data_directory, filetype, hospitalization_ids, cohort_df_utc, lookback_hours=24, timezone=timezone)
+    resp_df = _load_respiratory_support(data_directory, filetype, hospitalization_ids, cohort_df_local, lookback_hours=24, timezone=timezone)
 
     logger.info("Loading and converting medication data...")
-    meds_df = _load_and_convert_medications(data_directory, filetype, hospitalization_ids, cohort_df_utc, vitals_df, timezone)
+    meds_df = _load_and_convert_medications(data_directory, filetype, hospitalization_ids, cohort_df_local, vitals_df, timezone)
 
     # Combine all data sources
     logger.info("Combining all data sources...")
@@ -1389,7 +1484,7 @@ def compute_sofa_polars(
         time_cols.append(('admin_dttm', meds_df))
 
     # Rename all time columns to common 'event_time' and stack vertically
-    id_cols = [col for col in cohort_df_utc.columns if col not in ['start_dttm', 'end_dttm']]
+    id_cols = [col for col in cohort_df_local.columns if col not in ['start_dttm', 'end_dttm']]
 
     combined_parts = []
     for time_col, df in time_cols:
@@ -1435,7 +1530,7 @@ def compute_sofa_polars(
     labs_with_po2 = labs_df.filter(pl.col('po2_arterial').is_not_null())
 
     # Calculate concurrent P/F using respiratory support data (with forward-filled FiO2)
-    id_cols = [col for col in cohort_df_utc.columns if col not in ['start_dttm', 'end_dttm']]
+    id_cols = [col for col in cohort_df_local.columns if col not in ['start_dttm', 'end_dttm']]
     concurrent_pf_df = _calculate_concurrent_pf_ratios(
         labs_with_po2,
         resp_df,
