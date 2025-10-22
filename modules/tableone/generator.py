@@ -1848,7 +1848,7 @@ def main(memory_monitor=None) -> bool:
     ax2.set_ylim(0, 100)
 
     plt.tight_layout()
-    plt.savefig(f'{output_dir}code_status_stacked_bar_with_missingness_excl_missing_cat.png',
+    plt.savefig(f'{output_dir}/code_status_stacked_bar_with_missingness_excl_missing_cat.png',
                 dpi=300, bbox_inches='tight')
     plt.close()
 
@@ -3779,8 +3779,8 @@ def main(memory_monitor=None) -> bool:
     # ============================================================================
 
     output_dir = get_output_path('final', 'tableone')
-    hospice_trends.to_csv(f'{output_dir}hospice_trends_summary.csv', index=False)
-    print(f"✅ Saved: {output_dir}hospice_trends_summary.csv")
+    hospice_trends.to_csv(f'{output_dir}/hospice_trends_summary.csv', index=False)
+    print(f"✅ Saved: {output_dir}/hospice_trends_summary.csv")
 
     # ============================================================================
     # Create Combined Figure
@@ -3921,7 +3921,7 @@ def main(memory_monitor=None) -> bool:
                  fontsize=16, fontweight='bold', pad=15)
 
     plt.tight_layout()
-    plt.savefig(f'{output_dir}hospice_mortality_combined_trends.png',
+    plt.savefig(f'{output_dir}/hospice_mortality_combined_trends.png',
                 dpi=300, bbox_inches='tight', facecolor='white', edgecolor='none')
     plt.close()
 
@@ -4010,8 +4010,8 @@ def main(memory_monitor=None) -> bool:
 
     # Save comprehensive summary
     output_dir = get_output_path('final', 'tableone')
-    cci_summary.to_csv(f'{output_dir}cci_hospice_mortality_comprehensive_summary.csv', index=False)
-    print(f"✅ Saved: {output_dir}cci_hospice_mortality_comprehensive_summary.csv")
+    cci_summary.to_csv(f'{output_dir}/cci_hospice_mortality_comprehensive_summary.csv', index=False)
+    print(f"✅ Saved: {output_dir}/cci_hospice_mortality_comprehensive_summary.csv")
 
     # Save the plotting data ("data behind the figure") to a separate CSV file
     # This replicates the data used for each panel in the grid:
@@ -4026,8 +4026,8 @@ def main(memory_monitor=None) -> bool:
 
     plot_data_df = pd.concat(plot_data, axis=0)
 
-    plot_data_df.to_csv(f'{output_dir}cci_mortality_hospice_trends_by_year_category_plotdata.csv', index=False)
-    print(f"✅ Saved plotting data for figure: {output_dir}cci_mortality_hospice_trends_by_year_category_plotdata.csv")
+    plot_data_df.to_csv(f'{output_dir}/cci_mortality_hospice_trends_by_year_category_plotdata.csv', index=False)
+    print(f"✅ Saved plotting data for figure: {output_dir}/cci_mortality_hospice_trends_by_year_category_plotdata.csv")
 
     # Display summary statistics
     print("\n" + "="*80)
@@ -4156,7 +4156,7 @@ def main(memory_monitor=None) -> bool:
     plt.suptitle('Mortality vs Hospice Trends by Comorbidity Burden',
                  fontsize=18, fontweight='bold', y=0.995)
     plt.tight_layout()
-    plt.savefig(f'{output_dir}cci_mortality_hospice_comprehensive.png',
+    plt.savefig(f'{output_dir}/cci_mortality_hospice_comprehensive.png',
                 dpi=300, bbox_inches='tight', facecolor='white', edgecolor='none')
     plt.close()
 

@@ -51,17 +51,29 @@ def get_table_mcide_files(mcide_dir: str, table_name: str) -> List[str]:
     List[str]
         List of CSV file paths for the table
     """
-    # Try both with and without clif_ prefix
-    patterns = [
-        f"{table_name}_*_mcide.csv",
-        f"clif_{table_name}_*_mcide.csv"
-    ]
+    # Get all MCIDE files
+    all_files = glob.glob(os.path.join(mcide_dir, '*_mcide.csv'))
 
-    files = []
-    for pattern in patterns:
-        files.extend(glob.glob(os.path.join(mcide_dir, pattern)))
+    # Filter for this specific table
+    # Need to handle compound table names correctly
+    table_files = []
+    for filepath in all_files:
+        filename = os.path.basename(filepath)
 
-    return sorted(list(set(files)))  # Remove duplicates and sort
+        # Remove clif_ prefix if present
+        if filename.startswith('clif_'):
+            filename = filename[5:]
+
+        # Check for exact table name match (not just prefix)
+        # The pattern is: tablename_columnnames_mcide.csv
+        # So we need to ensure the table name is followed by underscore
+        if filename.startswith(f"{table_name}_") and not filename.startswith(f"{table_name}_assessments_"):
+            # Special case: exclude patient_assessments when looking for patient
+            if table_name == 'patient' and filename.startswith('patient_assessments_'):
+                continue
+            table_files.append(filepath)
+
+    return sorted(table_files)
 
 
 def format_column_names(filename: str) -> str:
@@ -360,12 +372,24 @@ def display_table_mcide(table_name: str, output_dir: str = 'output'):
     stats_files = []
     if os.path.exists(stats_dir):
         # Look for stats files for this table
-        patterns = [
-            f"{table_name}_*.json",
-            f"*{table_name}_*.json"
-        ]
+        # Handle special cases where table name differs from file prefix
+        if table_name == 'crrt_therapy':
+            # CRRT files are named crrt_* not crrt_therapy_*
+            patterns = [
+                "crrt_*.json"
+            ]
+        else:
+            # For other tables, look for exact table name prefix
+            patterns = [
+                f"{table_name}_*.json"
+            ]
+
         for pattern in patterns:
-            stats_files.extend(glob.glob(os.path.join(stats_dir, pattern)))
+            found_files = glob.glob(os.path.join(stats_dir, pattern))
+            # Add to stats_files, avoiding duplicates
+            for file in found_files:
+                if file not in stats_files:
+                    stats_files.append(file)
 
     if not table_files and not stats_files:
         st.info(f"📊 No MCIDE data available for {table_name} yet.")
