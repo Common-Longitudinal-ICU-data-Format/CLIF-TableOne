@@ -35,6 +35,8 @@ from pathlib import Path
 
 # Add modules to path
 sys.path.insert(0, os.path.dirname(__file__))
+# Add code directory for MCIDE import
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'code'))
 
 from modules.cli import CLIAnalysisRunner, ConsoleFormatter
 

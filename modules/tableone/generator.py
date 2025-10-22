@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Converted from: generate_table_one_2_1.ipynb
+Converted from: code/archives/generate_table_one_2_1.ipynb
 """
 
 
@@ -72,6 +72,7 @@ from clifpy.clif_orchestrator import ClifOrchestrator
 from clifpy.utils import apply_outlier_handling
 from clifpy.utils.comorbidity import calculate_cci
 from clifpy.utils.stitching_encounters import stitch_encounters
+from modules.sofa.calculator import compute_sofa_polars
 from matplotlib.patches import FancyBboxPatch
 from pathlib import Path
 from scipy import stats
@@ -119,7 +120,9 @@ def main(memory_monitor=None) -> bool:
         print(f"  [Memory Checkpoint: {label}]")
 
     # Load configuration
-    config_path = "../config/config.json"
+    # Get the project root directory (3 levels up from this file)
+    project_root = Path(__file__).parent.parent.parent
+    config_path = project_root / "config" / "config.json"
     with open(config_path, 'r') as f:
         config = json.load(f)
 
@@ -127,7 +130,16 @@ def main(memory_monitor=None) -> bool:
 
     # Create the output directory for tableone results if it does not already exist
     # Create necessary output directories within output/final
-    output_base_dir = Path("../output/final")
+
+    # Get output paths helper
+    def get_output_path(*parts):
+        """Helper to get output paths relative to project root"""
+        path = project_root / 'output'
+        for part in parts:
+            path = path / part
+        return str(path)
+
+    output_base_dir = project_root / "output" / "final"
     # Add all required subdirectories, including 'tableone/figures'
     subdirs = [
         'tableone',
@@ -142,9 +154,9 @@ def main(memory_monitor=None) -> bool:
         dir_path = output_base_dir / subdir
         dir_path.mkdir(parents=True, exist_ok=True)
     output_dir = output_base_dir / 'tableone'
-    mcide_dir = '../output/final/tableone/mcide'
-    clifpy_dir = '../output/final/clifpy'
-    summary_stats_dir = '../output/final/tableone/summary_stats'
+    mcide_dir = get_output_path('final', 'tableone', 'mcide')
+    clifpy_dir = get_output_path('final', 'clifpy')
+    summary_stats_dir = get_output_path('final', 'tableone', 'summary_stats')
 
     print(f"\n=� Configuration:")
     print(f"   Data directory: {config['tables_path']}")
@@ -181,7 +193,7 @@ def main(memory_monitor=None) -> bool:
         'recorded_dttm',
         'device_name',
         'device_category',
-        'mode_name', 
+        'mode_name',
         'mode_category',
         'tracheostomy',
         'fio2_set',
@@ -189,9 +201,11 @@ def main(memory_monitor=None) -> bool:
         'resp_rate_set',
         'peep_set',
         'resp_rate_obs',
-        'tidal_volume_set', 
+        'tidal_volume_set',
         'pressure_control_set',
         'pressure_support_set',
+        'flow_rate_set',           # Added for ventilator settings table
+        'inspiratory_time_set',     # Added for ventilator settings table
         'peak_inspiratory_pressure_set',
         'peak_inspiratory_pressure_obs',
         'plateau_pressure_obs',
@@ -222,50 +236,102 @@ def main(memory_monitor=None) -> bool:
     # ## Functions
     # ==============================================================================
 
-    def get_value_counts(clif_table, field_names, output_dir=None):
+    # NOTE: MCIDE collection has been moved to a separate script (generate_mcide_and_stats.py)
+    # for better memory efficiency. Run that script independently after validation
+    # to collect MCIDE statistics and summary stats without loading large tables into memory.
+
+    # Import MCIDE collector if available (kept for backward compatibility)
+    try:
+        # Updated import path after refactoring
+        from modules.mcide.collector import get_value_counts_polars
+        POLARS_AVAILABLE = True
+    except ImportError:
+        POLARS_AVAILABLE = False
+        # print("Note: Polars-based MCIDE collection not available. Using pandas fallback.")
+
+    def get_value_counts_mcide(clif_table, table_name, field_names, output_dir=None, config=None):
         """
         Get N (count) for all unique combinations of the specified fields from CLIF table.
-    
+        Uses Polars for efficient scanning if available, otherwise falls back to pandas.
+
         Parameters
         ----------
-        clif_table : CLIF table object
-            CLIF table object with .df attribute (e.g., clif.patient, clif.crrt_therapy).
+        clif_table : CLIF table object or None
+            CLIF table object with .df attribute (e.g., clif.patient). Can be None if using Polars.
+        table_name : str
+            Name of the table (e.g., 'patient', 'labs')
         field_names : list of str
             List of field names to calculate count combinations for.
         output_dir : str, optional
-            Directory path to save CSV file. If provided, saves summary CSV.
-            Default is None (no files saved).
-    
+            Directory path to save CSV file. If provided, saves MCIDE CSV.
+        config : dict, optional
+            Configuration dictionary with tables_path and filetype
+
         Returns
         -------
-        pd.DataFrame
+        pd.DataFrame or pl.DataFrame
             DataFrame with all unique combinations of field_names and a column 'N' with counts.
-
-        Examples
-        --------
-        >>> result = get_value_counts(clif.patient, ['sex_name','sex_category'])
-        >>> result = get_value_counts(clif.patient, ['race_name', 'race_category'], 
-        ...                          output_dir='../output/final/tableone')
         """
+        # Try Polars-based approach if available and config provided
+        if POLARS_AVAILABLE and config and output_dir:
+            try:
+                tables_path = config.get('tables_path', '')
+                file_type = config.get('filetype', 'parquet')
+                table_path = os.path.join(tables_path, f"{table_name}.{file_type}")
+
+                if os.path.exists(table_path):
+                    # Use Polars for efficient scanning
+                    result = get_value_counts_polars(
+                        table_path,
+                        table_name,
+                        field_names,
+                        output_dir,
+                        file_type
+                    )
+                    # Convert to pandas for compatibility if needed
+                    if hasattr(result, 'to_pandas'):
+                        return result.to_pandas()
+                    return result
+            except Exception as e:
+                print(f"Warning: Polars collection failed for {table_name}, using pandas: {e}")
+
+        # Fallback to pandas approach
+        if clif_table is None:
+            raise ValueError("CLIF table object required when Polars is not available")
+
         df = clif_table.df
         # Filter to only valid columns
         valid_fields = [field for field in field_names if field in df.columns]
         if not valid_fields:
-            raise ValueError("None of the specified fields are in the DataFrame.")
-        
+            print(f"Warning: None of {field_names} found in {table_name}")
+            return pd.DataFrame()
+
         # Group by all specified fields and count
         combo_counts = (
             df.groupby(valid_fields, dropna=False)
               .size()
               .reset_index(name='N')
         )
-    
+
         if output_dir:
             os.makedirs(output_dir, exist_ok=True)
-            out_path = f"{output_dir}/{'_'.join(valid_fields)}_counts.csv"
+            # Use new naming convention
+            columns_str = '_'.join(valid_fields)
+            filename = f"{table_name}_{columns_str}_mcide.csv"
+            out_path = os.path.join(output_dir, filename)
             combo_counts.to_csv(out_path, index=False)
-    
+
         return combo_counts
+
+    # Keep original function for backward compatibility
+    def get_value_counts(clif_table, field_names, output_dir=None):
+        """Legacy function for backward compatibility."""
+        # Extract table name from clif_table if possible
+        table_name = "unknown"
+        if hasattr(clif_table, '__class__'):
+            table_name = clif_table.__class__.__name__.lower().replace('table', '')
+
+        return get_value_counts_mcide(clif_table, table_name, field_names, output_dir)
 
     def create_summary_table(clif_table, numeric_cols, group_by_cols=None, output_dir=None):
         """
@@ -294,7 +360,7 @@ def main(memory_monitor=None) -> bool:
         >>> summary = create_summary_table(clif.respiratory_support, 
         ...                                ['fio2_set', 'peep_set'], 
         ...                                group_by_cols='device_category',
-        ...                                output_dir='../output/final/tableone')
+        ...                                output_dir=get_output_path('final', 'tableone'))
         """
         df = clif_table.df
         table_name = str(clif_table).split('.')[-1].split()[0]
@@ -606,25 +672,49 @@ def main(memory_monitor=None) -> bool:
         # Filter and sort
         adt_filtered = adt_cohort[adt_cohort['encounter_block'].isin(encounter_blocks)].copy()
         adt_filtered = adt_filtered.sort_values(['encounter_block', 'in_dttm'])
-    
+
         # Simplify locations
         adt_filtered['location_simple'] = adt_filtered['location_category'].apply(simplify_location_category)
-    
+
+        # Drop reverse transitions (ICU/Ward/Procedural to ED) within each encounter
+        # These are artifacts from stitching and should be ignored
+        initial_count = len(adt_filtered)
+
+        # Create previous location column for each encounter_block
+        adt_filtered['prev_location'] = adt_filtered.groupby('encounter_block')['location_simple'].shift(1)
+
+        # Identify reverse transitions to ED
+        reverse_to_ed = (
+            (adt_filtered['location_simple'] == 'ED') &
+            (adt_filtered['prev_location'].isin(['ICU', 'Ward', 'Procedural']))
+        )
+
+        # Drop these rows
+        rows_to_drop = reverse_to_ed.sum()
+        if rows_to_drop > 0:
+            print(f"    📋 Dropping {rows_to_drop:,} reverse transitions to ED (from ICU/Ward/Procedural)")
+            print(f"       This represents {rows_to_drop/initial_count*100:.2f}% of {initial_count:,} total transitions")
+
+        adt_filtered = adt_filtered[~reverse_to_ed].copy()
+
+        # Drop the helper column
+        adt_filtered = adt_filtered.drop(columns=['prev_location'])
+
         # Add position/segment rank
         adt_filtered['segment_rank'] = adt_filtered.groupby('encounter_block').cumcount() + 1
         adt_filtered = adt_filtered[adt_filtered['segment_rank'] <= max_locations]
-    
+
         # Pivot to wide format
         sankey_df = adt_filtered.pivot(
             index='encounter_block',
             columns='segment_rank',
             values='location_simple'
         ).reset_index()
-    
+
         # Rename columns to float format (1.0, 2.0, etc.) to match example
         column_mapping = {col: float(col) for col in sankey_df.columns if col != 'encounter_block'}
         sankey_df = sankey_df.rename(columns=column_mapping)
-    
+
         # Fill NaN with 'Discharged'
         location_cols = [float(i) for i in range(1, max_locations + 1)]
         for col in location_cols:
@@ -632,15 +722,16 @@ def main(memory_monitor=None) -> bool:
                 sankey_df[col] = 'Discharged'
             else:
                 sankey_df[col] = sankey_df[col].fillna('Discharged')
-    
+
         # Merge death information
         sankey_df = sankey_df.merge(
-            outcome_df[['encounter_block', 'death_enc']], 
-            on='encounter_block', 
+            outcome_df[['encounter_block', 'death_enc']],
+            on='encounter_block',
             how='left'
         )
-    
+
         return sankey_df, location_cols
+
 
 
     def propagate_death(df, location_cols):
@@ -778,7 +869,7 @@ def main(memory_monitor=None) -> bool:
         data_directory=config['tables_path'],
         filetype=config['file_type'],
         timezone=config['timezone'],
-        output_directory='../output/final/clifpy'
+        output_directory=get_output_path('final', 'clifpy')
     )
 
 
@@ -820,11 +911,13 @@ def main(memory_monitor=None) -> bool:
         how='inner'
     )
 
-    get_value_counts(clif.adt, ['location_name', 'location_category'], output_dir=mcide_dir)
-    get_value_counts(clif.hospitalization, ['discharge_name', 'discharge_category'], output_dir=mcide_dir)
-    get_value_counts(clif.hospitalization, ['admission_type_name', 'admission_type_category'], output_dir=mcide_dir)
-    get_value_counts(clif.patient, ['race_name', 'race_category'], output_dir=mcide_dir)
-    get_value_counts(clif.patient, ['ethnicity_name', 'ethnicity_category'], output_dir=mcide_dir)
+    # MCIDE collection moved to separate script: generate_mcide_and_stats.py
+    # This runs independently for better memory efficiency
+    # get_value_counts_mcide(clif.adt, 'adt', ['location_name', 'location_category', 'location_type'], output_dir=mcide_dir, config=config)
+    # get_value_counts_mcide(clif.hospitalization, 'hospitalization', ['discharge_name', 'discharge_category'], output_dir=mcide_dir, config=config)
+    # get_value_counts_mcide(clif.hospitalization, 'hospitalization', ['admission_type_name', 'admission_type_category'], output_dir=mcide_dir, config=config)
+    # get_value_counts_mcide(clif.patient, 'patient', ['race_name', 'race_category'], output_dir=mcide_dir, config=config)
+    # get_value_counts_mcide(clif.patient, 'patient', ['ethnicity_name', 'ethnicity_category'], output_dir=mcide_dir, config=config)
 
     # Check for duplicates by ['hospitalization_id', 'in_dttm', 'out_dttm']
     dup_counts = all_encounters.duplicated(subset=['hospitalization_id', 'in_dttm', 'out_dttm']).sum()
@@ -856,6 +949,7 @@ def main(memory_monitor=None) -> bool:
         ]
     ].copy()
 
+    # no filtering by year
     if config['site_name'].lower() == "mimic":
         # MIMIC: only age >= 18, no admit year restriction
         adult_encounters = adult_encounters[
@@ -865,15 +959,15 @@ def main(memory_monitor=None) -> bool:
         # Other sites: age >= 18 and admission between 2018-2024 inclusive
         adult_encounters = adult_encounters[
             (adult_encounters['age_at_admission'] >= 18) &
-            (adult_encounters['age_at_admission'].notna()) &
-            (adult_encounters['admission_dttm'].dt.year >= 2018) &
-            (adult_encounters['admission_dttm'].dt.year <= 2024)
+            (adult_encounters['age_at_admission'].notna()) #&
+            # (adult_encounters['admission_dttm'].dt.year >= 2018) &
+            # (adult_encounters['admission_dttm'].dt.year <= 2024)
         ]
 
     print(f"\nFiltering Results:")
     print(f"   Total hospitalizations: {len(all_encounters['hospitalization_id'].unique()):,}")
-    print(f"   Adult hospitalizations (age >= 18, 2018-2024): {len(adult_encounters['hospitalization_id'].unique()):,}")
-    print(f"   Excluded (age < 18 or outside 2018-2024): {len(all_encounters['hospitalization_id'].unique()) - len(adult_encounters['hospitalization_id'].unique()):,}")
+    print(f"   Adult hospitalizations (age >= 18): {len(adult_encounters['hospitalization_id'].unique()):,}")
+    print(f"   Excluded (age < 18): {len(all_encounters['hospitalization_id'].unique()) - len(adult_encounters['hospitalization_id'].unique()):,}")
 
 
     strobe_counts["0_total_hospitalizations"] = len(all_encounters['hospitalization_id'].unique())
@@ -999,14 +1093,29 @@ def main(memory_monitor=None) -> bool:
     print("=" * 80)
 
     print(f"\nLoading respiratory_support table...")
-    clif.load_table('respiratory_support',
-                            columns=rst_required_columns,
-                            filters={'hospitalization_id': list(adult_hosp_ids)})
-    print(f"Respiratory support loaded ({len(clif.respiratory_support.df):,} rows)")
+    # Try to load respiratory support with all columns, but handle gracefully if some don't exist
+    try:
+        clif.load_table('respiratory_support',
+                               columns=rst_required_columns,
+                               filters={'hospitalization_id': list(adult_hosp_ids)})
+        print(f"Respiratory support loaded ({len(clif.respiratory_support.df):,} rows)")
+    except Exception as e:
+        # If specific columns don't exist, try loading without the optional new columns
+        print(f"⚠️ Warning: Could not load all requested columns: {e}")
+        print("   Attempting to load with core columns only...")
 
-    get_value_counts(clif.respiratory_support, ['device_name', 'device_category'], output_dir=mcide_dir)
-    get_value_counts(clif.respiratory_support, ['mode_name', 'mode_category'], output_dir=mcide_dir)
-    get_value_counts(clif.respiratory_support, ['device_name', 'device_category', 'mode_name', 'mode_category'], output_dir=mcide_dir)
+        # Core columns that should always exist
+        core_rst_columns = [col for col in rst_required_columns
+                           if col not in ['flow_rate_set', 'inspiratory_time_set']]
+
+        clif.load_table('respiratory_support',
+                               columns=core_rst_columns,
+                               filters={'hospitalization_id': list(adult_hosp_ids)})
+        print(f"Respiratory support loaded with core columns ({len(clif.respiratory_support.df):,} rows)")
+
+    # MCIDE collection moved to separate script: generate_mcide_and_stats.py
+    # get_value_counts_mcide(clif.respiratory_support, 'respiratory_support', ['device_name', 'device_category'], output_dir=mcide_dir, config=config)
+    # get_value_counts_mcide(clif.respiratory_support, 'respiratory_support', ['mode_name', 'mode_category'], output_dir=mcide_dir, config=config)
 
     # Standardize category columns to lowercase
     print(f"\nStandardizing category columns...")
@@ -1113,7 +1222,7 @@ def main(memory_monitor=None) -> bool:
     # ==============================================================================
 
     strobe_counts_df = pd.DataFrame(list(strobe_counts.items()), columns=['count_name', 'count_value'])
-    strobe_counts_df.to_csv('../output/final/tableone/strobe_counts.csv', index=False)
+    strobe_counts_df.to_csv(get_output_path('final', 'tableone', 'strobe_counts.csv'), index=False)
     # Calculate mortality rates
     mortality_rates = {
         'ICU Hospitalizations': final_cohort.loc[final_cohort['icu_enc'] == 1, 'death_enc'].mean() * 100,
@@ -1123,7 +1232,7 @@ def main(memory_monitor=None) -> bool:
         'All Critically Ill Adults': final_cohort['death_enc'].mean() * 100,
     }
     mortality_rates_df = pd.DataFrame(list(mortality_rates.items()), columns=['count_name', 'count_value'])
-    mortality_rates_df.to_csv('../output/final/tableone/mortality_rates.csv', index=False)
+    mortality_rates_df.to_csv(get_output_path('final', 'tableone', 'mortality_rates.csv'), index=False)
 
     cohort_df = encounter_mapping.copy()
     cohort_df = cohort_df[cohort_df['encounter_block'].isin(final_cohort['encounter_block'])]
@@ -1208,14 +1317,14 @@ def main(memory_monitor=None) -> bool:
         # Do NOT draw arrows from the four groups to the all critically ill adults box
 
         plt.tight_layout()
-        plt.savefig('../output/final/tableone/consort_flow_diagram.png', dpi=300, bbox_inches='tight', facecolor='white', edgecolor='none')
+        plt.savefig(get_output_path('final', 'tableone', 'consort_flow_diagram.png'), dpi=300, bbox_inches='tight', facecolor='white', edgecolor='none')
         plt.close()
 
 
     warnings.filterwarnings('ignore', category=FutureWarning, module='upsetplot')
 
     # Create output directory if it doesn't exist
-    os.makedirs('../output/final/tableone', exist_ok=True)
+    os.makedirs(get_output_path('final', 'tableone'), exist_ok=True)
 
     # Prepare final_cohort data for UpSet and venn plots
     summary_df = final_cohort[['encounter_block', 'icu_enc', 'death_enc', 'high_support_enc', 'vaso_support_enc']].drop_duplicates()
@@ -1233,7 +1342,7 @@ def main(memory_monitor=None) -> bool:
     summary_df['Died'] = summary_df['Died'].fillna(0).astype(bool)
     summary_df['Advanced O2 Support'] = summary_df['Advanced O2 Support'].fillna(0).astype(bool)
     summary_df['Vasoactive Support'] = summary_df['Vasoactive Support'].fillna(0).astype(bool)
-    summary_df.to_csv('../output/final/tableone/upset_data.csv', index=False)
+    summary_df.to_csv(get_output_path('final', 'tableone', 'upset_data.csv'), index=False)
 
     # ========== UpSet Plot ==========
     fig = plt.figure(figsize=(16, 12))
@@ -1260,7 +1369,7 @@ def main(memory_monitor=None) -> bool:
                      ax.get_xticklabels() + ax.get_yticklabels()):
             item.set_fontsize(12)
 
-    plt.savefig('../output/final/tableone/cohort_intersect_upset_plot.png', dpi=300, bbox_inches='tight')
+    plt.savefig(get_output_path('final', 'tableone', 'cohort_intersect_upset_plot.png'), dpi=300, bbox_inches='tight')
     plt.close()
 
     # ========== Venn Diagrams ==========
@@ -1282,7 +1391,7 @@ def main(memory_monitor=None) -> bool:
     fig = plt.figure(figsize=(12, 10))
     venny4py(sets=sets_dict, dpi=300)
     plt.suptitle('4-way Venn Diagram', fontsize=16, y=0.98)
-    plt.savefig('../output/final/tableone/venn_all_4_groups.png', dpi=300, bbox_inches='tight')
+    plt.savefig(get_output_path('final', 'tableone', 'venn_all_4_groups.png'), dpi=300, bbox_inches='tight')
     plt.close('all')
     print("✅ Saved: ../output/final/tableone/venn_all_4_groups.png")
 
@@ -1502,7 +1611,8 @@ def main(memory_monitor=None) -> bool:
         'code_status'
     )
 
-    get_value_counts(clif.code_status, ['code_status_name', 'code_status_category'], output_dir=mcide_dir)
+    # MCIDE collection moved to separate script: generate_mcide_and_stats.py
+    # get_value_counts_mcide(clif.code_status, 'code_status', ['code_status_name', 'code_status_category'], output_dir=mcide_dir, config=config)
     print(f"   code_status loaded: {len(clif.code_status.df):,} rows")
     print(f"   Unique code_status categories: {clif.code_status.df['code_status_category'].nunique()}")
     print(f"   Unique code_status patients: {clif.code_status.df['patient_id'].nunique()}")
@@ -1597,7 +1707,7 @@ def main(memory_monitor=None) -> bool:
     # Save to CSV Files
     # ============================================================================
 
-    output_dir = '../output/final/tableone/'
+    output_dir = get_output_path('final', 'tableone')
 
     # Save counts
     df_counts.to_csv(f'{output_dir}code_status_counts_by_encounter_type.csv')
@@ -1964,7 +2074,8 @@ def main(memory_monitor=None) -> bool:
     # Define all ventilator settings
     vent_settings = [
         'fio2_set', 'lpm_set', 'tidal_volume_set', 'resp_rate_set',
-        'pressure_control_set', 'pressure_support_set', 'peep_set'
+        'pressure_control_set', 'pressure_support_set', 'peep_set',
+        'flow_rate_set', 'inspiratory_time_set'
     ]
 
     # Check which columns exist
@@ -2051,7 +2162,7 @@ def main(memory_monitor=None) -> bool:
     tv_stats = tv_stats[tv_stats['count'] >= 10]
 
     # Save CSV for Tidal Volume data
-    tv_csv_path = '../output/final/tableone/tidal_volume_volume_control_modes.csv'
+    tv_csv_path = get_output_path('final', 'tableone', 'tidal_volume_volume_control_modes.csv')
     tv_stats.to_csv(tv_csv_path, index=False)
     print(f"✅ Saved CSV: {tv_csv_path}")
 
@@ -2071,7 +2182,7 @@ def main(memory_monitor=None) -> bool:
     ax.set_xlim(0, 168)
 
     plt.tight_layout()
-    plt.savefig('../output/final/tableone/tidal_volume_volume_control_modes.png', dpi=300, bbox_inches='tight')
+    plt.savefig(get_output_path('final', 'tableone', 'tidal_volume_volume_control_modes.png'), dpi=300, bbox_inches='tight')
     plt.close()
 
     print(f"\n✅ Saved: ../output/final/tableone/tidal_volume_volume_control_modes.png")
@@ -2094,7 +2205,7 @@ def main(memory_monitor=None) -> bool:
     pc_stats = pc_stats[pc_stats['count'] >= 10]
 
     # Save CSV for Pressure Control data
-    pc_csv_path = '../output/final/tableone/pressure_control_pressure_control_mode.csv'
+    pc_csv_path = get_output_path('final', 'tableone', 'pressure_control_pressure_control_mode.csv')
     pc_stats.to_csv(pc_csv_path, index=False)
     print(f"✅ Saved CSV: {pc_csv_path}")
 
@@ -2114,7 +2225,7 @@ def main(memory_monitor=None) -> bool:
     ax.set_xlim(0, 168)
 
     plt.tight_layout()
-    plt.savefig('../output/final/tableone/pressure_control_pressure_control_mode.png', dpi=300, bbox_inches='tight')
+    plt.savefig(get_output_path('final', 'tableone', 'pressure_control_pressure_control_mode.png'), dpi=300, bbox_inches='tight')
     plt.close()
 
     print(f"✅ Saved: ../output/final/tableone/pressure_control_pressure_control_mode.png")
@@ -2127,26 +2238,39 @@ def main(memory_monitor=None) -> bool:
     # Ventilator settings of interest
     vent_settings = [
         'fio2_set',
+        'lpm_set',
         'tidal_volume_set',
         'resp_rate_set',
         'pressure_control_set',
         'peep_set',
-        'pressure_support_set'
+        'pressure_support_set',
+        'flow_rate_set',
+        'inspiratory_time_set'
     ]
 
     # ✅ OPTIMIZATION: Use groupby instead of nested loops (10-50x faster!)
-    # Filter to combinations with at least 10 observations
-    group_counts = resp_imv_post_start.groupby(['device_category', 'mode_category']).size()
-    valid_groups = group_counts[group_counts >= 10].index
+    # Use full respiratory support data - ALL device and mode combinations
+    resp_valid = resp_stitched.copy()
 
-    # Filter data to only valid groups
-    resp_valid = resp_imv_post_start[
-        resp_imv_post_start.set_index(['device_category', 'mode_category']).index.isin(valid_groups)
-    ].copy()
+    # Check which columns actually exist in the data (graceful handling for missing columns)
+    existing_settings = [col for col in vent_settings if col in resp_valid.columns]
+    missing_settings = [col for col in vent_settings if col not in resp_valid.columns]
 
-    print(f"Calculating statistics for {len(valid_groups)} device-mode combinations...")
+    if missing_settings:
+        print(f"\n⚠️ Warning: The following ventilator settings are not available in the data: {', '.join(missing_settings)}")
+        print(f"   Proceeding with {len(existing_settings)} available settings: {', '.join(existing_settings)}")
+    else:
+        print(f"\n✅ All {len(existing_settings)} ventilator settings found in the data")
 
-    # Calculate median, Q1, Q3
+    # Update vent_settings to only include existing columns
+    vent_settings = existing_settings
+
+    # Count all device-mode combinations
+    group_counts = resp_valid.groupby(['device_category', 'mode_category']).size()
+
+    print(f"Calculating statistics for {len(group_counts)} device-mode combinations from full respiratory support data...")
+
+    # Calculate median, Q1, Q3 (only for existing columns)
     medians = resp_valid.groupby(['device_category', 'mode_category'])[vent_settings].median()
     q1 = resp_valid.groupby(['device_category', 'mode_category'])[vent_settings].quantile(0.25)
     q3 = resp_valid.groupby(['device_category', 'mode_category'])[vent_settings].quantile(0.75)
@@ -2169,19 +2293,35 @@ def main(memory_monitor=None) -> bool:
                 q3_reset[setting].round(1).astype(str) + ')'
             )
 
-    # Rename columns
-    settings_summary = settings_summary.rename(columns={
-        'mode_category': 'ventilator_setting',
+    # Build rename dictionary only for columns that exist
+    rename_dict = {}
+    # Rename mode_category to ventilator_setting for consistency in output
+    if 'mode_category' in settings_summary.columns:
+        rename_dict['mode_category'] = 'ventilator_setting'
+
+    column_mapping = {
         'fio2_set': 'FiO2 Set',
+        'lpm_set': 'LPM Set',
         'tidal_volume_set': 'Tidal Volume Set',
         'resp_rate_set': 'Resp Rate Set',
         'pressure_control_set': 'Pressure Control Set',
         'peep_set': 'PEEP Set',
-        'pressure_support_set': 'Pressure Support Set'
-    })
+        'pressure_support_set': 'Pressure Support Set',
+        'flow_rate_set': 'Flow Rate Set',
+        'inspiratory_time_set': 'Inspiratory Time Set'
+    }
 
-    # Sort by device and mode
-    settings_summary = settings_summary.sort_values(['device_category', 'ventilator_setting'])
+    # Only add columns that exist in settings_summary
+    for old_name, new_name in column_mapping.items():
+        if old_name in settings_summary.columns:
+            rename_dict[old_name] = new_name
+
+    # Rename columns
+    settings_summary = settings_summary.rename(columns=rename_dict)
+
+    # Sort by device and mode (use 'ventilator_setting' after rename)
+    sort_col = 'ventilator_setting' if 'ventilator_setting' in settings_summary.columns else 'mode_category'
+    settings_summary = settings_summary.sort_values(['device_category', sort_col])
 
     # Display and save
     print("\n" + "="*80)
@@ -2189,7 +2329,7 @@ def main(memory_monitor=None) -> bool:
     print("="*80)
     print(settings_summary.to_string(index=False))
 
-    settings_summary.to_csv('../output/final/tableone/ventilator_settings_by_device_mode.csv', index=False)
+    settings_summary.to_csv(get_output_path('final', 'tableone', 'ventilator_settings_by_device_mode.csv'), index=False)
     print(f"\n✅ Saved: ../output/final/tableone/ventilator_settings_by_device_mode.csv")
 
     # ============================================================================
@@ -2203,25 +2343,50 @@ def main(memory_monitor=None) -> bool:
     # Count non-null observations for each setting (vectorized)
     counts_summary = resp_valid.groupby(['device_category', 'mode_category'])[vent_settings].count().reset_index()
 
-    # Rename columns
-    counts_summary = counts_summary.rename(columns={
-        'mode_category': 'ventilator_setting',
+    # Build rename dictionary only for columns that exist
+    counts_rename_dict = {}
+    # Rename mode_category to ventilator_setting for consistency in output
+    if 'mode_category' in counts_summary.columns:
+        counts_rename_dict['mode_category'] = 'ventilator_setting'
+
+    counts_column_mapping = {
         'fio2_set': 'FiO2 Set (N)',
+        'lpm_set': 'LPM Set (N)',
         'tidal_volume_set': 'Tidal Volume Set (N)',
         'resp_rate_set': 'Resp Rate Set (N)',
         'pressure_control_set': 'Pressure Control Set (N)',
         'peep_set': 'PEEP Set (N)',
-        'pressure_support_set': 'Pressure Support Set (N)'
-    })
+        'pressure_support_set': 'Pressure Support Set (N)',
+        'flow_rate_set': 'Flow Rate Set (N)',
+        'inspiratory_time_set': 'Inspiratory Time Set (N)'
+    }
 
-    # Sort
-    counts_summary = counts_summary.sort_values(['device_category', 'ventilator_setting'])
+    # Only add columns that exist in counts_summary
+    for old_name, new_name in counts_column_mapping.items():
+        if old_name in counts_summary.columns:
+            counts_rename_dict[old_name] = new_name
+
+    # Rename columns
+    counts_summary = counts_summary.rename(columns=counts_rename_dict)
+
+    # Sort (use 'ventilator_setting' after rename)
+    sort_col = 'ventilator_setting' if 'ventilator_setting' in counts_summary.columns else 'mode_category'
+    counts_summary = counts_summary.sort_values(['device_category', sort_col])
 
     print("\nObservation Counts by Device and Mode:")
     print(counts_summary.to_string(index=False))
 
-    counts_summary.to_csv('../output/final/tableone/ventilator_settings_counts_by_device_mode.csv', index=False)
+    counts_summary.to_csv(get_output_path('final', 'tableone', 'ventilator_settings_counts_by_device_mode.csv'), index=False)
     print(f"\n✅ Saved: ../output/final/tableone/ventilator_settings_counts_by_device_mode.csv")
+
+    # Save total observations count for table reconstruction
+    total_resp_obs = len(resp_valid)  # Total respiratory support observations
+    total_obs_df = pd.DataFrame({
+        'metric': ['total_respiratory_support_observations'],
+        'value': [total_resp_obs]
+    })
+    total_obs_df.to_csv(get_output_path('final', 'tableone', 'ventilator_settings_total_observations.csv'), index=False)
+    print(f"✅ Saved total observations count ({total_resp_obs:,}): ../output/final/tableone/ventilator_settings_total_observations.csv")
 
     print("\n" + "="*80)
     print("VENTILATOR MODE PROPORTIONS - FIRST 24 HOURS OF IMV")
@@ -2269,6 +2434,7 @@ def main(memory_monitor=None) -> bool:
 
     # Count observations per mode
     mode_counts = imv_first_24h['mode_group'].value_counts()
+    # Use first 24h IMV count for mode proportions analysis
     total_obs = len(imv_first_24h)
 
     # Calculate proportions
@@ -2293,8 +2459,32 @@ def main(memory_monitor=None) -> bool:
     print(plot_data.to_string(index=False))
 
     # Save the data
-    plot_data.to_csv('../output/final/tableone/mode_proportions_first_24h.csv', index=False)
+    plot_data.to_csv(get_output_path('final', 'tableone', 'mode_proportions_first_24h.csv'), index=False)
     print(f"\n✅ Saved: ../output/final/tableone/mode_proportions_first_24h.csv")
+
+    # ============================================================================
+    # 5. Generate Ventilator Settings Table (Combined Image)
+    # ============================================================================
+    print("\n" + "="*80)
+    print("GENERATING VENTILATOR SETTINGS TABLE IMAGE")
+    print("="*80)
+
+    try:
+        # Import the ventilator table generation function from the same module
+        from .ventilator_table import plot_ventilator_table
+
+        # Generate the table with the full respiratory support dataset count
+        save_path = get_output_path('final', 'tableone', 'ventilator_settings_table.png')
+        total_resp_obs = len(resp_stitched)  # Use full respiratory support dataset for the table
+        fig = plot_ventilator_table(save_path=save_path, total_observations=total_resp_obs)
+        print(f"✅ Ventilator settings table image generated successfully")
+
+    except ImportError as e:
+        print(f"⚠️ Could not import ventilator table generation function: {e}")
+        print("   Skipping ventilator settings table image generation")
+    except Exception as e:
+        print(f"⚠️ Error generating ventilator settings table: {e}")
+        print("   Skipping ventilator settings table image generation")
 
     fig, ax = plt.subplots(figsize=(6, 8))
     # Define colors for each mode (matching the image)
@@ -2347,7 +2537,7 @@ def main(memory_monitor=None) -> bool:
     ax.grid(axis='y', alpha=0.3)
 
     plt.tight_layout()
-    plt.savefig('../output/final/tableone/mode_proportions_first_24h_vertical.png',
+    plt.savefig(get_output_path('final', 'tableone', 'mode_proportions_first_24h_vertical.png'),
                dpi=300, bbox_inches='tight')
     plt.close('all')
 
@@ -2682,7 +2872,7 @@ def main(memory_monitor=None) -> bool:
         pct_pivot.add_suffix('_pct')
     ], axis=1)
 
-    hourly_df.to_csv('../output/final/tableone/medications_hourly_data.csv', index=False)
+    hourly_df.to_csv(get_output_path('final', 'tableone', 'medications_hourly_data.csv'), index=False)
     print(f"✅ Saved: ../output/final/tableone/medications_hourly_data.csv")
 
     # ============================================================================
@@ -2753,15 +2943,15 @@ def main(memory_monitor=None) -> bool:
     # Generate all 3 interactive plots (save as HTML)
     plotly_medication_group(
         'vasoactive', med_groups['vasoactive'], hourly_df, 
-        '../output/final/tableone/vasoactive_area_curve_7d.html'
+        get_output_path('final', 'tableone', 'vasoactive_area_curve_7d.html')
     )
     plotly_medication_group(
         'sedative', med_groups['sedative'], hourly_df, 
-        '../output/final/tableone/sedative_area_curve_7d.html'
+        get_output_path('final', 'tableone', 'sedative_area_curve_7d.html')
     )
     plotly_medication_group(
         'paralytic', med_groups['paralytic'], hourly_df,
-        '../output/final/tableone/paralytic_area_curve_7d.html'
+        get_output_path('final', 'tableone', 'paralytic_area_curve_7d.html')
     )
 
     print("\n✅ All medication plots (plotly) created and saved as HTML!")
@@ -2853,15 +3043,15 @@ def main(memory_monitor=None) -> bool:
     # Generate and save plots for each medication group (lines: median dose over time)
     plot_median_dose_line_by_hour(
         'vasoactive', med_groups['vasoactive'], meds_7d,
-        '../output/final/tableone/vasoactive_median_dose_by_hour.html'
+        get_output_path('final', 'tableone', 'vasoactive_median_dose_by_hour.html')
     )
     plot_median_dose_line_by_hour(
         'sedative', med_groups['sedative'], meds_7d,
-        '../output/final/tableone/sedative_median_dose_by_hour.html'
+        get_output_path('final', 'tableone', 'sedative_median_dose_by_hour.html')
     )
     plot_median_dose_line_by_hour(
         'paralytic', med_groups['paralytic'], meds_7d,
-        '../output/final/tableone/paralytic_median_dose_by_hour.html'
+        get_output_path('final', 'tableone', 'paralytic_median_dose_by_hour.html')
     )
 
     print("\n✅ All median dose line plots by hour (plotly) created and saved as HTML!")
@@ -2901,7 +3091,7 @@ def main(memory_monitor=None) -> bool:
     summary_df = summary_df[['group', 'medication', 'n_encounters', 'pct_encounters', 
                              'median_dose', 'q1_dose', 'q3_dose', 'dose_unit']]
 
-    summary_df.to_csv('../output/final/tableone/medications_summary_stats.csv', index=False)
+    summary_df.to_csv(get_output_path('final', 'tableone', 'medications_summary_stats.csv'), index=False)
     print(f"✅ Saved: ../output/final/tableone/medications_summary_stats.csv")
 
     # Memory cleanup: Clear medication processing data
@@ -2919,33 +3109,36 @@ def main(memory_monitor=None) -> bool:
     # ----------------------------------------------------------------------------
     # Load Labs
     # ----------------------------------------------------------------------------
-    print(f"\nLoading labs table...")
-    clif.load_table(
-        'labs',
-        columns=['hospitalization_id', 'lab_result_dttm', 'lab_category', 'lab_value_numeric', 'reference_unit'],
-        filters={
-            'hospitalization_id': final_hosp_ids
-        }
-    )
-    clif.labs.df= pd.merge(clif.labs.df, encounter_mapping, 
-                                            on='hospitalization_id', how='left')
+    # print(f"\nLoading labs table...")
+    # clif.load_table(
+    #     'labs',
+    #     columns=['hospitalization_id', 'lab_result_dttm', 'lab_category', 'lab_value_numeric', 'reference_unit'],
+    #     filters={
+    #         'hospitalization_id': final_hosp_ids
+    #     }
+    # )
+    # clif.labs.df= pd.merge(clif.labs.df, encounter_mapping, 
+    #                                         on='hospitalization_id', how='left')
 
 
     print("Applying outlier handling to Labs data...")
     print("=" * 50)
-    get_value_counts(clif.labs, ['lab_name', 'lab_category', 'lab_loinc_code'], output_dir=mcide_dir)
-    # get_value_counts(clif.labs, ['lab_specimen_name', 'lab_specimen_category'], output_dir=mcide_dir)
-    apply_outlier_handling(clif.labs)
-    create_summary_table(clif.labs, 'lab_value_numeric',group_by_cols='lab_category',
-                        output_dir=summary_stats_dir)
-    create_summary_table(clif.labs, 'lab_value_numeric',group_by_cols=['lab_category', 'reference_unit'],
-                        output_dir=summary_stats_dir)
+    # MCIDE collection moved to separate script: generate_mcide_and_stats.py
+    # This avoids loading large tables into memory
+    # MCIDE and summary statistics moved to separate script (generate_mcide_and_stats.py)
+    # get_value_counts_mcide(clif.labs, 'labs', ['lab_name', 'lab_category', 'lab_loinc_code'], output_dir=mcide_dir, config=config)
+    # apply_outlier_handling(clif.labs)
+    # create_summary_table(clif.labs, 'lab_value_numeric',group_by_cols='lab_category',
+    #                     output_dir=summary_stats_dir)
+    # Summary statistics moved to MCIDE collection (generate_mcide_and_stats.py)
+    # create_summary_table(clif.labs, 'lab_value_numeric',group_by_cols=['lab_category', 'reference_unit'],
+    #                     output_dir=summary_stats_dir)
 
     # Memory cleanup: Clear labs dataframe (keep the table object)
-    print("Clearing labs dataframe from memory...")
-    clif.labs.df = None  # Clear the large dataframe but keep the table object
-    gc.collect()
-    checkpoint("9. Labs Processing Complete")
+    # print("Clearing labs dataframe from memory...")
+    # clif.labs.df = None  # Clear the large dataframe but keep the table object
+    # gc.collect()
+    # checkpoint("9. Labs Processing Complete")
 
 
     # ==============================================================================
@@ -3007,7 +3200,7 @@ def main(memory_monitor=None) -> bool:
     # Step 7: Save both table and summary statistics to CSV
 
     # First, write the comorbidity table to CSV
-    out_csv = '../output/final/tableone/comorbidities_per_1000_hospitalizations.csv'
+    out_csv = get_output_path('final', 'tableone', 'comorbidities_per_1000_hospitalizations.csv')
     comorbidity_summary.to_csv(out_csv, index=False)
 
     # Write summary statistics to a second csv, and then append to same file as lines at the end
@@ -3021,7 +3214,7 @@ def main(memory_monitor=None) -> bool:
     ]
 
     # Save the summary stats to a separate CSV for clarity (and also appending to the main comorbidity file for convenience)
-    summary_csv = '../output/final/tableone/comorbidities_per_1000_hospitalizations_summary.csv'
+    summary_csv = get_output_path('final', 'tableone', 'comorbidities_per_1000_hospitalizations_summary.csv')
     with open(summary_csv, 'w', newline='') as f:
         writer = csv.writer(f)
         writer.writerow(['Metric', 'Value'])
@@ -3053,7 +3246,7 @@ def main(memory_monitor=None) -> bool:
     ax.grid(axis='x', linestyle='-', alpha=0.3)
     ax.set_axisbelow(True)
     plt.tight_layout()
-    plt.savefig('../output/final/tableone/comorbidities_per_1000_barplot.png', dpi=300, bbox_inches='tight', facecolor='white')
+    plt.savefig(get_output_path('final', 'tableone', 'comorbidities_per_1000_barplot.png'), dpi=300, bbox_inches='tight', facecolor='white')
     plt.close()
 
 
@@ -3084,11 +3277,12 @@ def main(memory_monitor=None) -> bool:
         final_tableone_df = final_tableone_df.merge(ecmo_df, on='encounter_block', how='left')
         # Optionally fill NaN with 0 if you want on_ecmo=0 for non-ECMO
         final_tableone_df['on_ecmo'] = final_tableone_df['on_ecmo'].fillna(0).astype(int)
-        get_value_counts(clif.ecmo_mcs, ['device_name', 'device_category'], output_dir=mcide_dir)
-        create_summary_table(clif.ecmo_mcs, 
-                                ['device_rate', 'sweep', 'fdO2','flow'],
-                                group_by_cols='device_category',
-                                output_dir=summary_stats_dir)
+        # MCIDE and summary statistics moved to separate script: generate_mcide_and_stats.py
+        # get_value_counts_mcide(clif.ecmo_mcs, 'ecmo_mcs', ['device_name', 'device_category'], output_dir=mcide_dir, config=config)
+        # create_summary_table(clif.ecmo_mcs,
+        #                         ['device_rate', 'sweep', 'fdO2','flow'],
+        #                         group_by_cols='device_category',
+        #                         output_dir=summary_stats_dir)
     except FileNotFoundError as e:
         print(f"Warning: Failed to load the ECMO table: {e}. Proceeding without ECMO data.")
 
@@ -3121,12 +3315,13 @@ def main(memory_monitor=None) -> bool:
             final_tableone_df['on_crrt'] = 0
         else:
             final_tableone_df['on_crrt'] = final_tableone_df['on_crrt'].fillna(0).astype(int)
-        get_value_counts(clif.crrt_therapy, ['crrt_mode_name', 'crrt_mode_category'], output_dir=mcide_dir)
-        create_summary_table(clif.crrt_therapy, 
-                                ['blood_flow_rate', 'pre_filter_replacement_fluid_rate', 'post_filter_replacement_fluid_rate',
-                                    'dialysate_flow_rate', 'ultrafiltration_out'],
-                                group_by_cols='crrt_mode_category',
-                                output_dir=summary_stats_dir)
+        # MCIDE and summary statistics moved to separate script: generate_mcide_and_stats.py
+        # get_value_counts_mcide(clif.crrt_therapy, 'crrt_therapy', ['crrt_mode_name', 'crrt_mode_category'], output_dir=mcide_dir, config=config)
+        # create_summary_table(clif.crrt_therapy,
+        #                         ['blood_flow_rate', 'pre_filter_replacement_fluid_rate', 'post_filter_replacement_fluid_rate',
+        #                             'dialysate_flow_rate', 'ultrafiltration_out'],
+        #                         group_by_cols='crrt_mode_category',
+        #                         output_dir=summary_stats_dir)
     except FileNotFoundError as e:
         print(f"Warning: Failed to load the ECMO table: {e}. Proceeding without CRRT data.")
 
@@ -3150,7 +3345,8 @@ def main(memory_monitor=None) -> bool:
             on='hospitalization_id',
             how='left'
         )
-        get_value_counts(clif.patient_assessments, ['assessment_name', 'assessment_category'], output_dir=mcide_dir)
+        # MCIDE collection moved to separate script: generate_mcide_and_stats.py
+        # get_value_counts_mcide(clif.patient_assessments, 'patient_assessments', ['assessment_name', 'assessment_category', 'assessment_group'], output_dir=mcide_dir, config=config)
     except FileNotFoundError as e:
         print(f"Warning: Failed to load the ECMO table: {e}. Proceeding without Patient Assessments data.")
 
@@ -3302,113 +3498,56 @@ def main(memory_monitor=None) -> bool:
     # ==============================================================================
 
     checkpoint("10. Starting SOFA Computation")
-    print("Initializing ClifOrchestrator for SOFA computation...")
-    co = ClifOrchestrator(
-        data_directory=config['tables_path'],
-        filetype=config['file_type'],
-        timezone=config['timezone'],
-        output_directory=clifpy_dir
-    )
-    print("✅ ClifOrchestrator initialized")
+    print("Preparing SOFA cohort for Polars computation...")
 
     # Filter to icu_enc == 1
-    sofa_cohort_df = final_tableone_df[final_tableone_df['icu_enc'] == 1][['hospitalization_id', 'encounter_block', 'icu_enc', 'first_icu_in_dttm']]
-    sofa_cohort_df['start_time'] = sofa_cohort_df['first_icu_in_dttm']
-    sofa_cohort_df['end_time'] = sofa_cohort_df['start_time'] + pd.Timedelta(hours=24)
-    sofa_cohort_df= sofa_cohort_df[['hospitalization_id', 'encounter_block', 'start_time', 'end_time']]
+    sofa_cohort_df = final_tableone_df[final_tableone_df['icu_enc'] == 1][['hospitalization_id', 'encounter_block', 'first_icu_in_dttm']].copy()
+    sofa_cohort_df['start_dttm'] = sofa_cohort_df['first_icu_in_dttm']
+    sofa_cohort_df['end_dttm'] = sofa_cohort_df['start_dttm'] + pd.Timedelta(hours=24)
+    sofa_cohort_df = sofa_cohort_df[['hospitalization_id', 'encounter_block', 'start_dttm', 'end_dttm']]
     sofa_cohort_ids = cohort_df['hospitalization_id'].astype(str).unique().tolist()
 
+    # Convert to Polars
+    sofa_cohort_pl = pl.from_pandas(sofa_cohort_df)
 
-    # Load required tables for SOFA computation with cohort filtering
-    print("Loading required tables for SOFA computation...")
-    print("SOFA requires: Labs (creatinine, platelet_count, po2_arterial, bilirubin_total)")
-    print("               Vitals (map, spo2)")
-    print("               Assessments (gcs_total)")
-    print("               Medications (norepinephrine, epinephrine, dopamine, dobutamine)")
-    print("               Respiratory (device_category, fio2_set)")
+    print(f"Cohort shape: {sofa_cohort_pl.shape}")
+    print(f"Cohort columns: {sofa_cohort_pl.columns}")
 
-    # Define columns to load for each table (optimize memory usage)
-    sofa_columns = {
-        'labs': ['hospitalization_id', 'lab_result_dttm', 'lab_category', 'lab_value', 'lab_value_numeric'],
-        'vitals': ['hospitalization_id', 'recorded_dttm', 'vital_category', 'vital_value'],
-        'patient_assessments': ['hospitalization_id', 'recorded_dttm', 'assessment_category', 'numerical_value', 'categorical_value'],
-        'medication_admin_continuous': None,  # Load all columns
-        'respiratory_support': None  # Load all columns
-    }
+    # Compute SOFA scores using Polars
+    print("\n" + "="*60)
+    print("Computing SOFA scores with Polars...")
+    print("="*60 + "\n")
 
-    sofa_tables = ['labs', 'vitals', 'patient_assessments', 'medication_admin_continuous', 'respiratory_support']
-
-    for table_name in sofa_tables:
-        table_cols = sofa_columns.get(table_name)
-        print(f"Loading {table_name} with {len(table_cols) if table_cols else 'all'} columns and {len(sofa_cohort_ids)} hospitalization filters...")
-        co.load_table(
-            table_name,
-            filters={'hospitalization_id': sofa_cohort_ids},
-            columns=table_cols
-        )
-
-    co.encounter_mapping = encounter_mapping[encounter_mapping['hospitalization_id'].isin(cohort_df['hospitalization_id'])]
-    print("✅ All required tables loaded for SOFA computation")
-
-    # Convert medication units to mcg/kg/min for SOFA computation
-    print("Converting medication units to mcg/kg/min for SOFA...")
-
-    # Define preferred units for SOFA medications
-    preferred_units = {
-        'norepinephrine': 'mcg/kg/min',
-        'epinephrine': 'mcg/kg/min',
-        'dopamine': 'mcg/kg/min',
-        'dobutamine': 'mcg/kg/min'
-    }
-
-    print(f"Converting {len(preferred_units)} medications: {list(preferred_units.keys())}")
-
-    # Convert units (uses vitals table for weight data)
-    co.convert_dose_units_for_continuous_meds(
-        preferred_units=preferred_units,
-        override = True, 
-        save_to_table=True,  # Saves to co.medication_admin_continuous.df_converted
-        hospitalization_ids=final_hosp_ids
+    sofa_scores_pl = compute_sofa_polars(
+        data_directory=config['tables_path'],
+        cohort_df=sofa_cohort_pl,
+        filetype=config['file_type'],
+        id_name='encounter_block',
+        extremal_type='worst',
+        fill_na_scores_with_zero=True,
+        remove_outliers=True,
+        timezone=config['timezone']
     )
 
-    # Check conversion results
-    conversion_counts = co.medication_admin_continuous.conversion_counts
+    # Convert back to Pandas for compatibility with rest of code
+    sofa_scores = sofa_scores_pl.to_pandas()
 
-    print("\n=== Conversion Summary ===")
-    print(f"Total conversion records: {len(conversion_counts):,}")
+    print(f"\n✅ SOFA computation complete!")
+    print(f"Result shape: {sofa_scores.shape}")
+    print(f"\nFirst few rows:")
+    print(sofa_scores.head())
 
-    # Check for conversion failures
-    success_count = conversion_counts[conversion_counts['_convert_status'] == 'success']['count'].sum()
-    total_count = conversion_counts['count'].sum()
-
-    print(f"Successful conversions: {success_count:,} / {total_count:,} ({100*success_count/total_count:.1f}%)")
-
-    # Show any failed conversions
-    failed_conversions = conversion_counts[conversion_counts['_convert_status'] != 'success']
-    if len(failed_conversions) > 0:
-        print(f"\n⚠️ Found {len(failed_conversions)} conversion issues:")
-        for _, row in failed_conversions.head(10).iterrows():
-            print(f"  {row['med_category']}: {row['_clean_unit']} → {row['_convert_status']} ({row['count']} records)")
-    else:
-        print("✅ All conversions successful!")
-    print("\n✅ Medication unit conversion completed")
-
-    print("Computing SOFA")
-    sofa_scores = co.compute_sofa_scores(
-        cohort_df=sofa_cohort_df,
-        id_name='encounter_block'
-    )
-
-    sofa_scores = sofa_scores.merge(
-        final_tableone_df[['encounter_block', 'death_enc']], 
-        how='left', 
+    # Note: death_enc will come from final_tableone_df when we merge later
+    # For now, get death_enc temporarily for mortality calculations
+    sofa_scores_with_death = sofa_scores.merge(
+        final_tableone_df[['encounter_block', 'death_enc']],
+        how='left',
         on='encounter_block'
     )
 
-
     #  Prepare the data
     # Group by SOFA score and calculate mortality rate and counts
-    sofa_mortality = sofa_scores.groupby('sofa_total').agg({
+    sofa_mortality = sofa_scores_with_death.groupby('sofa_total').agg({
         'death_enc': ['mean', 'count']
     }).reset_index()
 
@@ -3492,7 +3631,7 @@ def main(memory_monitor=None) -> bool:
     plt.subplots_adjust(bottom=0.15)  # Make room for patient counts
 
     # Save the figure
-    plt.savefig('../output/final/tableone/sofa_mortality_histogram.png',
+    plt.savefig(get_output_path('final', 'tableone', 'sofa_mortality_histogram.png'),
                 dpi=300, bbox_inches='tight', facecolor='white')
     plt.close()
 
@@ -3540,15 +3679,15 @@ def main(memory_monitor=None) -> bool:
     sofa_export['ci_margin_95'] = sofa_export['ci_margin_95'].round(2)
 
     # Save to CSV
-    output_path = '../output/final/tableone/sofa_mortality_summary.csv'
+    output_path = get_output_path('final', 'tableone', 'sofa_mortality_summary.csv')
     sofa_export.to_csv(output_path, index=False)
 
     print(f"\n=== SOFA Mortality Summary Saved ===")
     print(f"File saved to: {output_path}")
 
     # Join sofa_scores with final_tableone_df on 'encounter_block'
+    # Note: sofa_scores doesn't have death_enc anymore, so no conflict
     final_tableone_df = final_tableone_df.merge(sofa_scores, on='encounter_block', how='left')
-    final_tableone_df = final_tableone_df.drop(columns=['death_enc_y'])
 
     # AGGRESSIVE MEMORY CLEANUP: Clear all SOFA-related data
     print("\n" + "="*80)
@@ -3557,29 +3696,8 @@ def main(memory_monitor=None) -> bool:
     print("Clearing SOFA computation data from memory...")
 
     # Delete SOFA computation variables
-    del sofa_scores, sofa_mortality, sofa_export, sofa_cohort_df, sofa_cohort_ids
-    del ci_data, preferred_units, conversion_counts
-
-    # Delete large tables from ClifOrchestrator
-    if hasattr(co, 'vitals') and co.vitals is not None:
-        print("  Deleting co.vitals...")
-        del co.vitals
-    if hasattr(co, 'labs') and co.labs is not None:
-        print("  Deleting co.labs...")
-        del co.labs
-    if hasattr(co, 'patient_assessments') and co.patient_assessments is not None:
-        print("  Deleting co.patient_assessments...")
-        del co.patient_assessments
-    if hasattr(co, 'medication_admin_continuous') and co.medication_admin_continuous is not None:
-        print("  Deleting co.medication_admin_continuous...")
-        del co.medication_admin_continuous
-    if hasattr(co, 'respiratory_support') and co.respiratory_support is not None:
-        print("  Deleting co.respiratory_support...")
-        del co.respiratory_support
-
-    # Delete the ClifOrchestrator instance itself
-    print("  Deleting ClifOrchestrator instance...")
-    del co
+    del sofa_scores, sofa_mortality, sofa_export, sofa_cohort_df, sofa_cohort_ids, sofa_cohort_pl, sofa_scores_pl
+    del ci_data
 
     # Force garbage collection
     gc.collect()
@@ -3660,7 +3778,7 @@ def main(memory_monitor=None) -> bool:
     # Save Results DataFrame
     # ============================================================================
 
-    output_dir = '../output/final/tableone/'
+    output_dir = get_output_path('final', 'tableone')
     hospice_trends.to_csv(f'{output_dir}hospice_trends_summary.csv', index=False)
     print(f"✅ Saved: {output_dir}hospice_trends_summary.csv")
 
@@ -3891,7 +4009,7 @@ def main(memory_monitor=None) -> bool:
     ]]
 
     # Save comprehensive summary
-    output_dir = '../output/final/tableone/'
+    output_dir = get_output_path('final', 'tableone')
     cci_summary.to_csv(f'{output_dir}cci_hospice_mortality_comprehensive_summary.csv', index=False)
     print(f"✅ Saved: {output_dir}cci_hospice_mortality_comprehensive_summary.csv")
 
@@ -4100,7 +4218,9 @@ def main(memory_monitor=None) -> bool:
         # ✅ PRE-COMPUTE: Common values used throughout
         N_enc = len(df)
         N_pat = len(patient_demographics)
-    
+        # Count unique hospitals
+        N_hospitals = df['hospital_id'].nunique() if 'hospital_id' in df.columns else None
+
         # ✅ OPTIMIZATION: Compute all summations once
         flag_sums = {}
         for col in df.columns:
@@ -4130,6 +4250,10 @@ def main(memory_monitor=None) -> bool:
         # -------------------------------------------------------------------------
         rows.append(("N: Encounter blocks", f"{N_enc:,}"))
         rows.append(("N: Unique patients", f"{N_pat:,}"))
+
+        # Add hospital count if available
+        if N_hospitals is not None:
+            rows.append(("N: Hospitals", f"{N_hospitals:,}"))
     
         # -------------------------------------------------------------------------
         # 2. Demographics
@@ -4387,7 +4511,7 @@ def main(memory_monitor=None) -> bool:
     print(tbl_overall.to_string(index=False))
 
     # Save
-    tbl_overall.to_csv('../output/final/tableone/table_one_overall.csv', index=False)
+    tbl_overall.to_csv(get_output_path('final', 'tableone', 'table_one_overall.csv'), index=False)
     print(f"\n✅ Saved: ../output/final/tableone/table_one_overall.csv")
 
     # ============================================================================
@@ -4430,15 +4554,15 @@ def main(memory_monitor=None) -> bool:
         print(table_by_year.to_string(index=False))
     
         # Save
-        table_by_year.to_csv('../output/final/tableone/table_one_by_year.csv', index=False)
+        table_by_year.to_csv(get_output_path('final', 'tableone', 'table_one_by_year.csv'), index=False)
         print(f"\n✅ Saved: ../output/final/tableone/table_one_by_year.csv")
 
     print("\n" + "="*80)
     print("✅ TABLE ONE GENERATION COMPLETE")
     print("="*80)
 
-    os.makedirs('../output/intermediate', exist_ok=True)
-    final_tableone_df.to_parquet('../output/intermediate/final_tableone_df.parquet')
+    os.makedirs(project_root / 'output/intermediate', exist_ok=True)
+    final_tableone_df.to_parquet(project_root / 'output/intermediate/final_tableone_df.parquet')
 
     # Final memory cleanup
     print("\nFinal memory cleanup...")

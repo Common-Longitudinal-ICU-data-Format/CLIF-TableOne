@@ -51,3 +51,14 @@ code/dev_aggregate.ipynb
 # Temporary files
 *.tmp
 *.bak
+
+# dont push
+code/archives
+code/archives/generate_table_one_2_1.ipynb
+
+__pycache__
+.DS_Store
+.venv
+.claude
+Intersections_4.txt
+Venn_4.png
