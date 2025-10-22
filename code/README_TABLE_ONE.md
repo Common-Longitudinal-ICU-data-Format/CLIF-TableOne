@@ -4,8 +4,9 @@ This directory contains the optimized Table One generation script with memory mo
 
 ## Files
 
-- **`generate_table_one_2_1.py`** - Main script for generating Table One (memory optimized)
-- **`run_table_one.py`** - Execution wrapper with memory monitoring and validation
+- **`../run_tableone.py`** - Main script for generating Table One (memory optimized, located in project root)
+- **`../modules/tableone/generator.py`** - Core Table One generation module
+- **`../modules/tableone/runner.py`** - Execution wrapper with memory monitoring and validation
 - **`README_TABLE_ONE.md`** - This file
 
 ## Memory Optimizations
@@ -49,7 +50,8 @@ python run_table_one.py
 ### Direct Script Execution (without monitoring)
 
 ```bash
-python generate_table_one_2_1.py
+# From the project root directory:
+uv run run_tableone.py
 ```
 
 ### Output

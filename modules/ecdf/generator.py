@@ -46,10 +46,8 @@ import pandas as pd
 import numpy as np
 from datetime import datetime
 
-# Import binning functions from get_ecdf/utils.py
-import sys
-sys.path.insert(0, str(Path(__file__).parent))
-from utils import create_all_bins
+# Import binning functions from the same module
+from .utils import create_all_bins
 
 
 # ============================================================================
@@ -57,9 +55,9 @@ from utils import create_all_bins
 # ============================================================================
 
 def load_configs(
-    clif_config_path: str = 'config/config.json',
-    outlier_config_path: str = 'get_ecdf/ecdf_config/outlier_config.yaml',
-    lab_vital_config_path: str = 'get_ecdf/ecdf_config/lab_vital_config.yaml'
+    clif_config_path: str = None,
+    outlier_config_path: str = None,
+    lab_vital_config_path: str = None
 ) -> Tuple[Dict, Dict, Dict]:
     """
     Load all required configuration files.
@@ -67,6 +65,16 @@ def load_configs(
     Returns:
         Tuple of (clif_config, outlier_config, lab_vital_config)
     """
+    # Get project root and set default paths
+    project_root = Path(__file__).parent.parent.parent
+
+    if clif_config_path is None:
+        clif_config_path = project_root / 'config' / 'config.json'
+    if outlier_config_path is None:
+        outlier_config_path = Path(__file__).parent / 'config' / 'outlier_config.yaml'
+    if lab_vital_config_path is None:
+        lab_vital_config_path = Path(__file__).parent / 'config' / 'lab_vital_config.yaml'
+
     # Load clif_config.json
     if not os.path.exists(clif_config_path):
         raise FileNotFoundError(f"CLIF config not found: {clif_config_path}")
@@ -93,17 +101,27 @@ def load_configs(
 
 def copy_configs_to_output(
     output_dir: str,
-    clif_config_path: str = 'config/config.json',
-    outlier_config_path: str = 'get_ecdf/ecdf_config/outlier_config.yaml',
-    lab_vital_config_path: str = 'get_ecdf/ecdf_config/lab_vital_config.yaml'
+    clif_config_path: str = None,
+    outlier_config_path: str = None,
+    lab_vital_config_path: str = None
 ):
     """Copy configuration files to output directory."""
+    # Get project root and set default paths
+    project_root = Path(__file__).parent.parent.parent
+
+    if clif_config_path is None:
+        clif_config_path = project_root / 'config' / 'config.json'
+    if outlier_config_path is None:
+        outlier_config_path = Path(__file__).parent / 'config' / 'outlier_config.yaml'
+    if lab_vital_config_path is None:
+        lab_vital_config_path = Path(__file__).parent / 'config' / 'lab_vital_config.yaml'
+
     config_dir = os.path.join(output_dir, 'configs')
     os.makedirs(config_dir, exist_ok=True)
 
-    shutil.copy(clif_config_path, os.path.join(config_dir, 'config.json'))
-    shutil.copy(outlier_config_path, os.path.join(config_dir, 'outlier_config.yaml'))
-    shutil.copy(lab_vital_config_path, os.path.join(config_dir, 'lab_vital_config.yaml'))
+    shutil.copy(str(clif_config_path), os.path.join(config_dir, 'config.json'))
+    shutil.copy(str(outlier_config_path), os.path.join(config_dir, 'outlier_config.yaml'))
+    shutil.copy(str(lab_vital_config_path), os.path.join(config_dir, 'lab_vital_config.yaml'))
 
     print(f"✓ Copied configs to {config_dir}")
 

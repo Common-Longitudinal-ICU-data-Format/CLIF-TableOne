@@ -41,6 +41,26 @@ class CLIAnalysisRunner:
         'vitals': VitalsAnalyzer
     }
 
+    # Tables that support hospitalization_id filtering (can use 1k ICU sample)
+    # Excludes: patient (uses patient_id), hospitalization (defines the sample),
+    # adt (used to create the sample), code_status (uses patient_id)
+    SAMPLE_ELIGIBLE_TABLES = [
+        'labs',
+        'medication_admin_continuous',
+        'medication_admin_intermittent',
+        'microbiology_culture',
+        'microbiology_nonculture',
+        'microbiology_susceptibility',
+        'vitals',
+        'patient_assessments',
+        'respiratory_support',
+        'position',
+        'patient_procedures',
+        'crrt_therapy',
+        'ecmo_mcs',
+        'hospital_diagnosis'
+    ]
+
     def __init__(self, config: Dict[str, Any], verbose: bool = False, quiet: bool = False,
                  generate_pdf: bool = True, use_sample: bool = False):
         """
@@ -128,12 +148,15 @@ class CLIAnalysisRunner:
                     self.log(self.formatter.info("   Generate sample by running: python run_analysis.py --adt --validate --summary"))
 
             # Load table
-            if sample_filter:
+            # Only pass sample_filter to tables that support hospitalization_id filtering
+            if table_name in self.SAMPLE_ELIGIBLE_TABLES and sample_filter:
                 self.log(self.formatter.progress(f"Loading {table_name} table with 1k sample"))
+                analyzer = analyzer_class(self.data_dir, self.filetype, self.timezone, self.output_dir, sample_filter)
             else:
+                if sample_filter and table_name not in self.SAMPLE_ELIGIBLE_TABLES:
+                    self.log(self.formatter.info(f"Note: {table_name} does not support sampling, loading full dataset"))
                 self.log(self.formatter.progress(f"Loading {table_name} table"))
-
-            analyzer = analyzer_class(self.data_dir, self.filetype, self.timezone, self.output_dir, sample_filter)
+                analyzer = analyzer_class(self.data_dir, self.filetype, self.timezone, self.output_dir, None)
 
             if analyzer.table is None:
                 result['error'] = f"Failed to load {table_name} table"
@@ -353,6 +376,87 @@ class CLIAnalysisRunner:
             else:
                 results['tables_failed'].append(table_name)
                 results['total_failed'] += 1
+
+        # Run MCIDE collection if validation was performed and we have successful tables
+        if run_validation and results['tables_analyzed']:
+            self.log(f"\n{self.formatter.section('MCIDE Statistics Collection')}", force=True)
+            try:
+                # Import from the new module location
+                from modules.mcide import MCIDEStatsCollector
+                
+                # Create MCIDE collector with the same config
+                mcide_config = {
+                    'tables_path': self.data_dir,
+                    'output_dir': self.output_dir,
+                    'filetype': self.filetype
+                }
+
+                collector = MCIDEStatsCollector(mcide_config)
+                
+                # Track successful collections
+                mcide_success = 0
+                mcide_failed = []
+
+                # Define collection methods for each table
+                collection_methods = {
+                    'patient': collector.collect_patient,
+                    'hospitalization': collector.collect_hospitalization,
+                    'adt': collector.collect_adt,
+                    'labs': collector.collect_labs_stats,
+                    'vitals': collector.collect_vitals_stats,
+                    'medication_admin_continuous': lambda: collector.collect_medication_stats('continuous'),
+                    'medication_admin_intermittent': lambda: collector.collect_medication_stats('intermittent'),
+                    'respiratory_support': collector.collect_respiratory_support,
+                    'microbiology_culture': lambda: collector.collect_microbiology('culture'),
+                    'microbiology_nonculture': lambda: collector.collect_microbiology('nonculture'),
+                    'microbiology_susceptibility': collector.collect_microbiology_susceptibility,
+                    'patient_assessments': collector.collect_patient_assessments,
+                    # 'patient_procedures': collector.collect_patient_procedures,  # Not collecting MCIDE for this
+                    'position': collector.collect_position,
+                    'crrt_therapy': collector.collect_crrt_stats,
+                    'ecmo_mcs': collector.collect_ecmo_stats,
+                    # 'hospital_diagnosis': collector.collect_hospital_diagnosis,  # Not collecting MCIDE for this
+                    'code_status': collector.collect_code_status
+                }
+
+                # Collect MCIDE for successfully validated tables
+                self.log(f"  Tables to process: {results['tables_analyzed']}", force=True)
+                for table_name in results['tables_analyzed']:
+                    if table_name in collection_methods:
+                        try:
+                            self.log(f"  Collecting MCIDE for {table_name}...", force=True)
+                            collection_methods[table_name]()
+                            mcide_success += 1
+                            self.log(f"    ✓ Successfully collected MCIDE for {table_name}", force=True)
+                        except Exception as e:
+                            mcide_failed.append(table_name)
+                            self.log(self.formatter.warning(f"    ✗ Could not collect MCIDE for {table_name}: {e}"))
+                            if self.verbose:
+                                import traceback
+                                self.log(traceback.format_exc())
+                    else:
+                        self.log(f"    ⚠️ No MCIDE collection method for {table_name}")
+
+                # Report MCIDE results
+                if mcide_success > 0:
+                    self.log(self.formatter.success(f"✅ MCIDE statistics collected for {mcide_success} table(s)"))
+                    self.log(f"  📋 MCIDE files: {os.path.join(self.output_dir, 'final', 'tableone', 'mcide')}")
+                    self.log(f"  📊 Stats files: {os.path.join(self.output_dir, 'final', 'tableone', 'summary_stats')}")
+
+                if mcide_failed:
+                    self.log(self.formatter.warning(f"⚠️  MCIDE collection failed for: {', '.join(mcide_failed)}"))
+
+            except ImportError as e:
+                self.log(self.formatter.warning(f"⚠️  MCIDE collection module not found: {e}"))
+                self.log("    Ensure the MCIDE module is properly installed in modules/mcide/")
+                if self.verbose:
+                    import traceback
+                    traceback.print_exc()
+            except Exception as e:
+                self.log(self.formatter.warning(f"⚠️  Error during MCIDE collection: {e}"))
+                if self.verbose:
+                    import traceback
+                    traceback.print_exc()
 
         # Summary
         self.log("\n" + self.formatter.header("📊 ANALYSIS SUMMARY"), force=True)

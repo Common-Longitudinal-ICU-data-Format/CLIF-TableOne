@@ -47,7 +47,8 @@ from modules.utils import (
     get_status_display,
     show_categorical_numeric_distribution
 )
-from modules.tableone_viewer import check_tableone_results_available, show_tableone_results
+from modules.tableone.viewer import check_tableone_results_available, show_tableone_results
+from modules.mcide.viewer import display_table_mcide
 import plotly.graph_objects as go
 import plotly.express as px
 
@@ -579,6 +580,7 @@ def main():
                 st.session_state.current_page = "📊 Table One Results"
                 st.rerun()
 
+
         # All CLIF 2.1 tables are now implemented
         available_tables = ['patient', 'hospitalization', 'adt', 'code_status', 'crrt_therapy', 'ecmo_mcs',
                            'hospital_diagnosis', 'labs', 'medication_admin_continuous', 'medication_admin_intermittent',
@@ -591,7 +593,7 @@ def main():
 
         st.divider()
 
-        # Table selection dropdown - always visible (except on Table One Results page)
+        # Table selection dropdown - always visible (except on Table One Results and MCIDE pages)
         # On Home page: show placeholder, on Table Analysis: show selected table
         if st.session_state.current_page == "🏠 Home":
             # Show dropdown with placeholder on Home page
@@ -678,7 +680,7 @@ def main():
                 st.session_state.force_reanalyze = True
                 st.rerun()
         else:
-            # On Table One Results page: set default selected_table for page logic
+            # On Table One Results or MCIDE page: set default selected_table for page logic
             selected_table = st.session_state.get('last_selected_table', available_tables[0])
 
         st.divider()
@@ -1103,13 +1105,16 @@ def analyze_table(table_name, config, run_validation, run_outlier_handling, forc
             st.write("4. You have clifpy installed: `pip install clifpy`")
             return
 
-    # Create tabs for validation and summary
-    tab1, tab2 = st.tabs(["🔍 Validation", "📊 Summary"])
+    # Create tabs for validation, MCIDE, and summary
+    tab1, tab2, tab3 = st.tabs(["🔍 Validation", "📋 MCIDE", "📊 Summary"])
 
     with tab1:
         display_validation_results(analyzer, validation_results, existing_feedback, table_name)
 
     with tab2:
+        display_table_mcide(table_name, config.get('output_dir', 'output'))
+
+    with tab3:
         display_summary_statistics(analyzer, summary_stats, table_name)
 
     # Clear analysis_just_completed flag without triggering rerun
@@ -1539,11 +1544,95 @@ def analyze_all_tables(config, available_tables, use_sample=False, generate_aggr
                         import traceback
                         st.code(traceback.format_exc())
 
+        # Generate MCIDE statistics after successful validation
+        if results['success']:
+            st.divider()
+            st.markdown("### 📊 MCIDE Statistics Collection")
+
+            with st.spinner("Collecting MCIDE statistics for validated tables..."):
+                try:
+                    # Import the MCIDE collector
+                    import sys
+                    from pathlib import Path
+
+                    # Add code directory to path if needed
+                    code_dir = Path(__file__).parent / 'code'
+                    if str(code_dir) not in sys.path:
+                        sys.path.insert(0, str(code_dir))
+
+                    # Import and run the MCIDE collector
+                    from modules.mcide import MCIDEStatsCollector
+
+                    # Create collector instance
+                    collector = MCIDEStatsCollector(config)
+
+                    # Track collection progress
+                    mcide_progress = st.progress(0)
+                    mcide_status = st.empty()
+
+                    # Define collection steps
+                    collection_steps = [
+                        ('patient', collector.collect_patient),
+                        ('hospitalization', collector.collect_hospitalization),
+                        ('adt', collector.collect_adt),
+                        ('labs', collector.collect_labs_stats),
+                        ('vitals', collector.collect_vitals_stats),
+                        ('medication_admin_continuous', lambda: collector.collect_medication_stats('continuous')),
+                        ('medication_admin_intermittent', lambda: collector.collect_medication_stats('intermittent')),
+                        ('respiratory_support', collector.collect_respiratory_support),
+                        ('microbiology_culture', collector.collect_microbiology_culture),
+                        ('microbiology_nonculture', collector.collect_microbiology_nonculture),
+                        ('microbiology_susceptibility', collector.collect_microbiology_susceptibility),
+                        ('patient_assessments', collector.collect_patient_assessments),
+                        ('patient_procedures', collector.collect_patient_procedures),
+                        ('position', collector.collect_position),
+                        ('crrt_therapy', collector.collect_crrt_stats),
+                        ('ecmo_mcs', collector.collect_ecmo_stats),
+                        ('hospital_diagnosis', collector.collect_hospital_diagnosis),
+                        ('code_status', collector.collect_code_status)
+                    ]
+
+                    # Only collect for successfully validated tables
+                    successful_collections = 0
+                    total_steps = len([s for s in collection_steps if s[0] in results['success']])
+                    current_step = 0
+
+                    for table_name, collect_func in collection_steps:
+                        if table_name in results['success']:
+                            current_step += 1
+                            mcide_status.text(f"Collecting MCIDE for {TABLE_DISPLAY_NAMES.get(table_name, table_name)}... ({current_step}/{total_steps})")
+
+                            try:
+                                collect_func()
+                                successful_collections += 1
+                            except Exception as e:
+                                if config.get('verbose', False):
+                                    st.warning(f"Could not collect MCIDE for {table_name}: {e}")
+
+                            mcide_progress.progress(current_step / total_steps)
+
+                    # Clear progress indicators
+                    mcide_progress.empty()
+                    mcide_status.empty()
+
+                    if successful_collections > 0:
+                        st.success(f"✅ MCIDE statistics collected for {successful_collections} tables")
+                        st.info("Navigate to individual tables and click the 'MCIDE' tab to view the collected data")
+                    else:
+                        st.warning("⚠️ No MCIDE statistics were collected")
+
+                except Exception as e:
+                    st.error(f"❌ Error collecting MCIDE statistics: {e}")
+                    if config.get('verbose', False):
+                        import traceback
+                        st.code(traceback.format_exc())
+
         # Next steps
         st.divider()
         st.markdown("### 🎯 Next Steps")
         st.write("✓ Navigate to individual tables to view detailed results")
         st.write("✓ Download the combined report above")
+        st.write("✓ Check the MCIDE tab on individual tables for collected statistics")
         st.write("✓ Review and provide feedback on validation errors")
 
 
@@ -1643,7 +1732,7 @@ def display_validation_results(analyzer, validation_results, existing_feedback, 
 
     # Get required columns from analyzer if available
     required_columns = []
-    if analyzer and hasattr(analyzer, 'table') and hasattr(analyzer.table, 'schema'):
+    if analyzer and hasattr(analyzer, 'table') and hasattr(analyzer.table, 'schema') and analyzer.table.schema:
         required_columns = analyzer.table.schema.get('required_columns', [])
 
     # Get configured timezone
@@ -2715,60 +2804,6 @@ def display_summary_statistics(analyzer, summary_stats, table_name):
 
                 st.divider()
 
-        # Display medication name to category mappings 
-        if analyzer:
-            st.markdown("#### 📋 Medication Name to Category Mappings")
-            st.caption("Mapping of medication names to standardized categories")
-
-            # Check if mapping file exists
-            intermediate_dir = os.path.join(st.session_state.config.get('output_dir', 'output'), 'intermediate')
-            mapping_file = os.path.join(intermediate_dir, 'medication_name_category_mappings.csv')
-
-            if os.path.exists(mapping_file):
-                try:
-                    mappings_df = pd.read_csv(mapping_file)
-
-                    # Show summary statistics
-                    col1, col2, col3 = st.columns(3)
-                    with col1:
-                        st.metric("Total Unique Names", f"{len(mappings_df):,}")
-                    with col2:
-                        st.metric("Total Occurrences", f"{mappings_df['frequency'].sum():,}")
-                    with col3:
-                        st.metric("Unique Categories", f"{mappings_df['med_category'].nunique():,}")
-
-                    # Show top mappings (no search)
-                    st.dataframe(
-                        mappings_df.head(100),
-                        column_config={
-                            "med_name": st.column_config.TextColumn("Medication Name", width="large"),
-                            "med_category": st.column_config.TextColumn("Category", width="medium"),
-                            "frequency": st.column_config.NumberColumn("Frequency", format="%d"),
-                            "unique_hospitalizations": st.column_config.NumberColumn("Unique Hospitalizations", format="%d")
-                        },
-                        hide_index=True,
-                        width='stretch',
-                        height=400
-                    )
-
-                    # Download option
-                    csv = mappings_df.to_csv(index=False)
-                    st.download_button(
-                        label="📥 Download Full Mapping CSV",
-                        data=csv,
-                        file_name="medication_name_category_mappings.csv",
-                        mime="text/csv"
-                    )
-                except Exception as e:
-                    st.warning(f"Could not load medication mappings: {e}")
-            else:
-                # Try to generate the mappings if analyzer is available
-                if hasattr(analyzer, 'save_name_category_mappings'):
-                    saved_path = analyzer.save_name_category_mappings()
-                    if saved_path:
-                        st.success(f"Generated and saved mappings")
-                        st.rerun()
-
         # Medication dose statistics table
         if analyzer and hasattr(analyzer, 'get_dose_statistics_table'):
             st.markdown("#### 📊 Dose Distribution Statistics")
@@ -2832,15 +2867,8 @@ def display_summary_statistics(analyzer, summary_stats, table_name):
                             st.success("✅ Plots regenerated")
                             st.rerun()
             else:
-                # Generate plots button
-                if st.button("📊 Generate Distribution Plots"):
-                    with st.spinner("Generating distribution plots..."):
-                        plot_path = analyzer.generate_distribution_plots(max_meds=20)
-                        if plot_path:
-                            st.success("✅ Plots generated")
-                            st.rerun()
-                        else:
-                            st.warning("Could not generate plots")
+                # Plots not yet generated - show info message
+                st.info("📊 Distribution plots not yet generated. Run full analysis to generate plots.")
 
         st.divider()
 
@@ -2877,60 +2905,6 @@ def display_summary_statistics(analyzer, summary_stats, table_name):
                         """, unsafe_allow_html=True)
 
                 st.divider()
-
-        # Display medication name to category mappings
-        if analyzer:
-            st.markdown("#### 📋 Medication Name to Category Mappings")
-            st.caption("Mapping of medication names to standardized categories")
-
-            # Check if mapping file exists
-            intermediate_dir = os.path.join(st.session_state.config.get('output_dir', 'output'), 'intermediate')
-            mapping_file = os.path.join(intermediate_dir, 'medication_intermittent_name_category_mappings.csv')
-
-            if os.path.exists(mapping_file):
-                try:
-                    mappings_df = pd.read_csv(mapping_file)
-
-                    # Show summary statistics
-                    col1, col2, col3 = st.columns(3)
-                    with col1:
-                        st.metric("Total Unique Names", f"{len(mappings_df):,}")
-                    with col2:
-                        st.metric("Total Occurrences", f"{mappings_df['frequency'].sum():,}")
-                    with col3:
-                        st.metric("Unique Categories", f"{mappings_df['med_category'].nunique():,}")
-
-                    # Show top mappings (no search)
-                    st.dataframe(
-                        mappings_df.head(100),
-                        column_config={
-                            "med_name": st.column_config.TextColumn("Medication Name", width="large"),
-                            "med_category": st.column_config.TextColumn("Category", width="medium"),
-                            "frequency": st.column_config.NumberColumn("Frequency", format="%d"),
-                            "unique_hospitalizations": st.column_config.NumberColumn("Unique Hospitalizations", format="%d")
-                        },
-                        hide_index=True,
-                        width='stretch',
-                        height=400
-                    )
-
-                    # Download option
-                    csv = mappings_df.to_csv(index=False)
-                    st.download_button(
-                        label="📥 Download Full Mapping CSV",
-                        data=csv,
-                        file_name="medication_intermittent_name_category_mappings.csv",
-                        mime="text/csv"
-                    )
-                except Exception as e:
-                    st.warning(f"Could not load medication mappings: {e}")
-            else:
-                # Try to generate the mappings if analyzer is available
-                if hasattr(analyzer, 'save_name_category_mappings'):
-                    saved_path = analyzer.save_name_category_mappings()
-                    if saved_path:
-                        st.success(f"Generated and saved mappings")
-                        st.rerun()
 
         # Medication dose statistics table
         if analyzer and hasattr(analyzer, 'get_dose_statistics_table'):
@@ -2995,15 +2969,8 @@ def display_summary_statistics(analyzer, summary_stats, table_name):
                             st.success("✅ Plots regenerated")
                             st.rerun()
             else:
-                # Generate plots button
-                if st.button("📊 Generate Distribution Plots", key="gen_intermittent_plots"):
-                    with st.spinner("Generating distribution plots..."):
-                        plot_path = analyzer.generate_distribution_plots(max_meds=20)
-                        if plot_path:
-                            st.success("✅ Plots generated")
-                            st.rerun()
-                        else:
-                            st.warning("Could not generate plots")
+                # Plots not yet generated - show info message
+                st.info("📊 Distribution plots not yet generated. Run full analysis to generate plots.")
 
         st.divider()
 

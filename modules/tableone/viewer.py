@@ -299,7 +299,8 @@ def display_medications_tab(tableone_dir):
         st.caption("**Area Under Curve (7 days)**")
         with open(vaso_area_path, 'r') as f:
             html_content = f.read()
-        st.components.v1.html(html_content, height=500, scrolling=True)
+        # Increased height to show full plot with legend
+        st.components.v1.html(html_content, height=700, scrolling=False)
     else:
         st.info("ℹ️ Vasoactive area curve not found")
 
@@ -308,7 +309,7 @@ def display_medications_tab(tableone_dir):
         st.caption("**Median Dose by Hour**")
         with open(vaso_dose_path, 'r') as f:
             html_content = f.read()
-        st.components.v1.html(html_content, height=500, scrolling=True)
+        st.components.v1.html(html_content, height=700, scrolling=False)
     else:
         st.info("ℹ️ Vasoactive median dose plot not found")
 
@@ -322,7 +323,7 @@ def display_medications_tab(tableone_dir):
         st.caption("**Area Under Curve (7 days)**")
         with open(sedative_area_path, 'r') as f:
             html_content = f.read()
-        st.components.v1.html(html_content, height=500, scrolling=True)
+        st.components.v1.html(html_content, height=700, scrolling=False)
     else:
         st.info("ℹ️ Sedative area curve not found")
 
@@ -331,7 +332,7 @@ def display_medications_tab(tableone_dir):
         st.caption("**Median Dose by Hour**")
         with open(sedative_dose_path, 'r') as f:
             html_content = f.read()
-        st.components.v1.html(html_content, height=500, scrolling=True)
+        st.components.v1.html(html_content, height=700, scrolling=False)
     else:
         st.info("ℹ️ Sedative median dose plot not found")
 
@@ -345,7 +346,7 @@ def display_medications_tab(tableone_dir):
         st.caption("**Area Under Curve (7 days)**")
         with open(paralytic_area_path, 'r') as f:
             html_content = f.read()
-        st.components.v1.html(html_content, height=500, scrolling=True)
+        st.components.v1.html(html_content, height=700, scrolling=False)
     else:
         st.info("ℹ️ Paralytic area curve not found")
 
@@ -354,7 +355,7 @@ def display_medications_tab(tableone_dir):
         st.caption("**Median Dose by Hour**")
         with open(paralytic_dose_path, 'r') as f:
             html_content = f.read()
-        st.components.v1.html(html_content, height=500, scrolling=True)
+        st.components.v1.html(html_content, height=700, scrolling=False)
     else:
         st.info("ℹ️ Paralytic median dose plot not found")
 
@@ -411,46 +412,83 @@ def display_imv_tab(tableone_dir):
 
     st.divider()
 
-    # Ventilator Settings Tables
+    # Ventilator Settings Table
     st.subheader("📊 Ventilator Settings by Device Mode")
 
-    col1, col2 = st.columns(2)
+    # Display the combined ventilator settings table image
+    vent_table_path = tableone_dir / 'ventilator_settings_table.png'
+    if vent_table_path.exists():
+        st.image(str(vent_table_path), use_container_width=True)
 
-    with col1:
-        # Ventilator settings summary
-        vent_settings_path = tableone_dir / 'ventilator_settings_by_device_mode.csv'
-        if vent_settings_path.exists():
-            st.caption("**Ventilator Settings Summary**")
-            df = pd.read_csv(vent_settings_path)
-            st.dataframe(df, use_container_width=True, height=400)
+        # Provide download buttons for the underlying data
+        col1, col2 = st.columns(2)
 
-            st.download_button(
-                label="📥 Download Settings Summary",
-                data=df.to_csv(index=False).encode('utf-8'),
-                file_name='ventilator_settings_by_device_mode.csv',
-                mime='text/csv',
-                key='vent_settings_summary'
-            )
-        else:
-            st.info("ℹ️ Ventilator settings summary not found")
+        with col1:
+            # Download settings summary CSV
+            vent_settings_path = tableone_dir / 'ventilator_settings_by_device_mode.csv'
+            if vent_settings_path.exists():
+                df = pd.read_csv(vent_settings_path)
+                st.download_button(
+                    label="📥 Download Settings Summary (CSV)",
+                    data=df.to_csv(index=False).encode('utf-8'),
+                    file_name='ventilator_settings_by_device_mode.csv',
+                    mime='text/csv',
+                    key='vent_settings_summary'
+                )
 
-    with col2:
-        # Ventilator settings counts
-        vent_counts_path = tableone_dir / 'ventilator_settings_counts_by_device_mode.csv'
-        if vent_counts_path.exists():
-            st.caption("**Ventilator Settings Counts**")
-            df = pd.read_csv(vent_counts_path)
-            st.dataframe(df, use_container_width=True, height=400)
+        with col2:
+            # Download counts CSV
+            vent_counts_path = tableone_dir / 'ventilator_settings_counts_by_device_mode.csv'
+            if vent_counts_path.exists():
+                df = pd.read_csv(vent_counts_path)
+                st.download_button(
+                    label="📥 Download Settings Counts (CSV)",
+                    data=df.to_csv(index=False).encode('utf-8'),
+                    file_name='ventilator_settings_counts_by_device_mode.csv',
+                    mime='text/csv',
+                    key='vent_settings_counts'
+                )
+    else:
+        # Fall back to displaying CSVs if image doesn't exist
+        st.info("ℹ️ Ventilator settings table image not found. Displaying raw data instead.")
 
-            st.download_button(
-                label="📥 Download Settings Counts",
-                data=df.to_csv(index=False).encode('utf-8'),
-                file_name='ventilator_settings_counts_by_device_mode.csv',
-                mime='text/csv',
-                key='vent_settings_counts'
-            )
-        else:
-            st.info("ℹ️ Ventilator settings counts not found")
+        col1, col2 = st.columns(2)
+
+        with col1:
+            # Ventilator settings summary
+            vent_settings_path = tableone_dir / 'ventilator_settings_by_device_mode.csv'
+            if vent_settings_path.exists():
+                st.caption("**Ventilator Settings Summary**")
+                df = pd.read_csv(vent_settings_path)
+                st.dataframe(df, use_container_width=True, height=400)
+
+                st.download_button(
+                    label="📥 Download Settings Summary",
+                    data=df.to_csv(index=False).encode('utf-8'),
+                    file_name='ventilator_settings_by_device_mode.csv',
+                    mime='text/csv',
+                    key='vent_settings_summary_fallback'
+                )
+            else:
+                st.info("ℹ️ Ventilator settings summary not found")
+
+        with col2:
+            # Ventilator settings counts
+            vent_counts_path = tableone_dir / 'ventilator_settings_counts_by_device_mode.csv'
+            if vent_counts_path.exists():
+                st.caption("**Ventilator Settings Counts**")
+                df = pd.read_csv(vent_counts_path)
+                st.dataframe(df, use_container_width=True, height=400)
+
+                st.download_button(
+                    label="📥 Download Settings Counts",
+                    data=df.to_csv(index=False).encode('utf-8'),
+                    file_name='ventilator_settings_counts_by_device_mode.csv',
+                    mime='text/csv',
+                    key='vent_settings_counts_fallback'
+                )
+            else:
+                st.info("ℹ️ Ventilator settings counts not found")
 
 
 def display_comorbidities_tab(tableone_dir):
@@ -531,6 +569,14 @@ def show_tableone_results(output_dir='output'):
     # Header
     st.title("📊 Table One Results")
     st.caption("Comprehensive cohort analysis and visualization results")
+
+    # Command line instructions
+    st.info("💡 **To update Table One results, run the following command:**")
+    st.code(
+        "uv run run_tableone.py",
+        language="bash"
+    )
+    st.caption("This will generate Table One statistics and visualizations based on your validated data.")
 
     # Execution report summary if available
     report_path = tableone_dir / 'execution_report.txt'

@@ -4,14 +4,15 @@ A comprehensive tool for validating and analyzing CLIF 2.1 data tables using cli
 
 ## Features
 
-- ✅ **CLIF 2.1 Validation** - Full schema and data quality validation using clifpy
-- 📊 **Summary Statistics** - Data distributions, missingness analysis, and quality metrics
-- 💾 **User Feedback System** - Accept/reject validation errors with site-specific justifications
-- 🔄 **Persistent Caching** - Results persist across sessions for efficient workflow
-- 📈 **Interactive Visualizations** - Year distributions, missingness charts, and quality metrics
-- 📄 **PDF Reports** - Automated generation of validation and summary reports
-- 🎯 **Multiple Interfaces** - Web app for exploration, CLI for automation
-- 📊 **Table One Viewer** - Interactive display of cohort analysis with CONSORT diagrams, demographics, medications, ventilation, and outcomes
+- CLIF 2.1 validation using clifpy
+- Summary statistics and quality metrics
+- MCIDE collection
+- User feedback system for validation errors
+- Persistent caching
+- Interactive visualizations
+- PDF report generation
+- Web app and CLI interfaces
+- Table One generation with cohort analysis
 
 ## Supported Tables
 
@@ -54,17 +55,17 @@ Create or update `config/config.json`:
 **Recommended command to run the complete analysis pipeline:**
 
 ```bash
-uv run python run_project.py --sample --get-ecdf
+uv run python run_project.py --sample --no-summary --get-ecdf
 ```
 
-This single command runs:
-1. ✅ **Validation** - Validates all 18 CLIF tables (with 1k ICU sample)
-2. 📊 **Table One** - Generates cohort analysis with CONSORT diagrams
-3. 📈 **ECDF Bins** - Computes distributions for labs/vitals/respiratory data
-4. 🚀 **App Launch** - Automatically opens the Streamlit web interface
+This runs:
+1. Validation (all 18 tables with 1k ICU sample)
+2. MCIDE collection
+3. Table One generation
+4. ECDF bins computation
+5. Streamlit app launch
 
-**Time:** ~15-20 minutes
-**Output:** All validation reports, Table One CSVs/visualizations, and ECDF data for EDA apps
+**Time:** ~10-15 minutes
 
 ---
 
@@ -77,9 +78,12 @@ This single command runs:
 uv run python run_project.py --get-ecdf
 
 # Skip automatic app launch
-uv run python run_project.py --sample --get-ecdf --no-launch-app
+uv run python run_project.py --sample --no-summary --get-ecdf --no-launch-app
 
 # Validation only (quick data quality check)
+uv run python run_project.py --validate-only --sample --no-summary
+
+# Validation with full summaries (when you need detailed statistics)
 uv run python run_project.py --validate-only --sample
 
 # Table One only (skip validation)
@@ -93,14 +97,6 @@ uv run python run_project.py --get-ecdf-only --visualize
 uv run python run_project.py --tables patient adt hospitalization
 ```
 
-### What is ECDF?
-
-The get-ecdf feature generates ECDF (Empirical Cumulative Distribution Function) and quantile bins for labs/vitals/respiratory data during ICU stays. This data is used by exploratory data analysis (EDA) applications for visualization and statistical analysis.
-
-**When to use:**
-- Setting up an EDA app that needs pre-computed distributions
-- Generating statistical baselines for data quality monitoring
-- Creating reference distributions for visualization tools
 
 **Requirements:**
 - `config/config.json` - Main CLIF configuration
@@ -174,6 +170,8 @@ output/final/
 │   ├── table_one_by_year.csv
 │   ├── consort_flow_diagram.png
 │   ├── execution_report.txt
+│   ├── mcide/          # MCIDE value counts
+│   ├── summary_stats/  # MCIDE numerical summaries
 │   └── ...
 ├── ecdf/                # ECDF distributions (if --get-ecdf)
 │   ├── labs/
@@ -204,6 +202,7 @@ Validation Options:
   --tables TABLE [TABLE ...]
                           Specific tables to validate
   --sample                Use 1k ICU sample for faster analysis
+  --no-summary            Skip summary statistics generation (faster validation)
   --verbose, -v           Enable verbose output
 
 Configuration:

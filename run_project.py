@@ -165,7 +165,7 @@ class ProjectRunner:
         except Exception as e:
             return False, f"Error checking table statuses: {e}"
 
-    def run_validation(self, tables=None, use_sample=False, verbose=False):
+    def run_validation(self, tables=None, use_sample=False, verbose=False, no_summary=False):
         """
         Run CLIF validation using run_analysis.py.
 
@@ -177,6 +177,8 @@ class ProjectRunner:
             Use 1k ICU sample for faster analysis
         verbose : bool
             Enable verbose output
+        no_summary : bool
+            Skip summary statistics generation
 
         Returns
         -------
@@ -197,7 +199,8 @@ class ProjectRunner:
 
         # Add validation flag
         cmd.append('--validate')
-        cmd.append('--summary')
+        if not no_summary:
+            cmd.append('--summary')
 
         # Add optional flags
         if use_sample:
@@ -279,7 +282,7 @@ class ProjectRunner:
 
     def run_tableone(self):
         """
-        Run Table One generation using code/run_table_one.py.
+        Run Table One generation using the new modular structure.
 
         Returns
         -------
@@ -288,50 +291,23 @@ class ProjectRunner:
         """
         self.print_header("STEP 2: TABLE ONE GENERATION")
 
-        # Use sys.executable to ensure correct Python interpreter
-        cmd = [sys.executable, 'code/run_table_one.py']
+        # Import and use the new TableOneRunner module
+        from modules.tableone.runner import TableOneRunner
 
-        self.logger.info(f"Running: {' '.join(cmd)}")
+        self.logger.info("Running Table One generation with memory monitoring...")
 
         try:
-            # Stream output in real-time while also logging
-            process = subprocess.Popen(
-                cmd,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True,
-                bufsize=1,  # Line buffered
-                universal_newlines=True,
-                cwd=os.getcwd()
-            )
-
-            # Stream stdout in real-time
-            for line in process.stdout:
-                line = line.rstrip()
-                if line:  # Skip empty lines
-                    print(line)  # Show in terminal immediately
-                    self.logger.info(line)  # Also log to file
-
-            # Get any remaining stderr
-            stderr_output = process.stderr.read()
-            if stderr_output:
-                for line in stderr_output.strip().split('\n'):
-                    if line:
-                        print(line, file=sys.stderr)
-                        self.logger.error(line)
-
-            # Wait for process to complete
-            exit_code = process.wait()
-            success = exit_code == 0
+            # Use the new TableOneRunner directly
+            runner = TableOneRunner(self.config)
+            success = runner.run(profile_mode=False)
 
             if success:
                 self.logger.info("✅ Table One generation completed successfully")
             else:
-                self.logger.warning(f"⚠️  Table One generation completed with exit code {exit_code}")
+                self.logger.warning("⚠️  Table One generation completed with warnings")
 
             self.results['tableone'] = {
-                'success': success,
-                'exit_code': exit_code
+                'success': success
             }
 
             return success
@@ -346,7 +322,7 @@ class ProjectRunner:
 
     def run_get_ecdf(self, visualize=False):
         """
-        Run ECDF generation using code/run_get_ecdf.py.
+        Run ECDF generation using the new modular structure.
 
         Parameters
         ----------
@@ -360,54 +336,25 @@ class ProjectRunner:
         """
         self.print_header("STEP 3: GET ECDF BINS")
 
-        # Use sys.executable to ensure correct Python interpreter
-        cmd = [sys.executable, 'code/run_get_ecdf.py']
+        # Import and use the new ECDFRunner module
+        from modules.ecdf.runner import ECDFRunner
 
-        if visualize:
-            cmd.append('--visualize')
-
-        self.logger.info(f"Running: {' '.join(cmd)}")
+        self.logger.info("Running ECDF generation...")
         self.logger.info(f"Visualize: {'✓' if visualize else '✗'}")
 
         try:
-            # Stream output in real-time while also logging
-            process = subprocess.Popen(
-                cmd,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True,
-                bufsize=1,  # Line buffered
-                universal_newlines=True,
-                cwd=os.getcwd()
-            )
-
-            # Stream stdout in real-time
-            for line in process.stdout:
-                line = line.rstrip()
-                if line:  # Skip empty lines
-                    print(line)  # Show in terminal immediately
-                    self.logger.info(line)  # Also log to file
-
-            # Get any remaining stderr
-            stderr_output = process.stderr.read()
-            if stderr_output:
-                for line in stderr_output.strip().split('\n'):
-                    if line:
-                        print(line, file=sys.stderr)
-                        self.logger.error(line)
-
-            # Wait for process to complete
-            exit_code = process.wait()
-            success = exit_code == 0
+            # Use the new ECDFRunner directly
+            runner = ECDFRunner(self.config)
+            success = runner.run(visualize=visualize)
 
             if success:
                 self.logger.info("✅ ECDF generation completed successfully")
             else:
-                self.logger.warning(f"⚠️  ECDF generation completed with exit code {exit_code}")
+                self.logger.warning("⚠️  ECDF generation completed with warnings")
 
             self.results['get_ecdf'] = {
                 'success': success,
-                'exit_code': exit_code
+                'visualize': visualize
             }
 
             return success
@@ -539,7 +486,8 @@ class ProjectRunner:
             val_success, critical_tables_ok = self.run_validation(
                 tables=kwargs.get('tables'),
                 use_sample=kwargs.get('use_sample', False),
-                verbose=kwargs.get('verbose', False)
+                verbose=kwargs.get('verbose', False),
+                no_summary=kwargs.get('no_summary', False)
             )
 
             # Decide whether to proceed based on validation results
@@ -672,6 +620,8 @@ Examples:
                                   help='Specific tables to validate')
     validation_group.add_argument('--sample', action='store_true',
                                   help='Use 1k ICU sample for faster analysis')
+    validation_group.add_argument('--no-summary', action='store_true',
+                                  help='Skip summary statistics generation (only run validation)')
     validation_group.add_argument('--verbose', '-v', action='store_true',
                                   help='Enable verbose output')
 
@@ -713,6 +663,7 @@ Examples:
             get_ecdf=get_ecdf,
             tables=args.tables,
             use_sample=args.sample,
+            no_summary=args.no_summary,
             verbose=args.verbose,
             visualize=args.visualize,
             continue_on_error=args.continue_on_error,

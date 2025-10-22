@@ -614,8 +614,7 @@ class MedicationAdminContinuousAnalyzer(BaseTableAnalyzer):
         if not dose_stats.empty:
             distributions['dose_statistics'] = dose_stats
 
-        # Save auxiliary files
-        self.save_name_category_mappings()
+        # Save hospitalization metrics (but not name mappings - handled elsewhere)
         self.save_hospitalization_metrics()
 
         # Generate distribution plots
