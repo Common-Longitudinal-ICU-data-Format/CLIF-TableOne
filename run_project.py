@@ -18,6 +18,17 @@ Usage:
 
 import os
 import sys
+import io
+
+# Force UTF-8 encoding for Windows compatibility
+# This ensures emojis and Unicode characters display correctly
+if sys.platform == 'win32':
+    try:
+        sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
+        sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8')
+    except (AttributeError, TypeError):
+        # Fallback if running in an environment where stdout.buffer doesn't exist
+        pass
 import argparse
 import subprocess
 import json
@@ -72,14 +83,14 @@ class ProjectRunner:
     def load_config(self):
         """Load project configuration."""
         if not os.path.exists(self.config_path):
-            print(f"❌ Configuration file not found: {self.config_path}")
+            print(f"[ERROR] Configuration file not found: {self.config_path}")
             sys.exit(1)
 
         try:
             with open(self.config_path, 'r') as f:
                 return json.load(f)
         except Exception as e:
-            print(f"❌ Error loading configuration: {e}")
+            print(f"[ERROR] Error loading configuration: {e}")
             sys.exit(1)
 
     def print_header(self, title):
@@ -150,10 +161,10 @@ class ProjectRunner:
                     error_parts.append(f"Missing tables: {', '.join(missing_tables)}")
 
                 message = (
-                    f"❌ Critical tables do not meet minimum requirements:\n\n"
+                    f"[ERROR] Critical tables do not meet minimum requirements:\n\n"
                     f"   {'; '.join(error_parts)}\n\n"
                     f"   Table One generation requires these tables to have at least 'partial' status.\n\n"
-                    f"📄 Review the validation report for details:\n"
+                    f"[REPORT] Review the validation report for details:\n"
                     f"   output/final/reports/combined_validation_report.pdf\n\n"
                     f"   Use --continue-on-error to proceed anyway (not recommended)."
                 )
@@ -209,7 +220,7 @@ class ProjectRunner:
             cmd.append('--verbose')
 
         self.logger.info(f"Running: {' '.join(cmd)}")
-        self.logger.info(f"Sample mode: {'✓' if use_sample else '✗'}")
+        self.logger.info(f"Sample mode: {'[OK]' if use_sample else '[X]'}")
         self.logger.info(f"Tables: {', '.join(tables) if tables else 'all'}")
 
         try:
@@ -258,7 +269,7 @@ class ProjectRunner:
                 else:
                     self.logger.error(critical_tables_msg)
             else:
-                self.logger.error(f"❌ Validation failed with exit code {exit_code}")
+                self.logger.error(f"[ERROR] Validation failed with exit code {exit_code}")
                 critical_tables_ok = False
                 critical_tables_msg = "Validation failed"
 
@@ -272,7 +283,7 @@ class ProjectRunner:
             return exit_code == 0, critical_tables_ok
 
         except Exception as e:
-            self.logger.exception(f"❌ Validation failed: {e}")
+            self.logger.exception(f"[ERROR] Validation failed: {e}")
             self.results['validation'] = {
                 'success': False,
                 'error': str(e),
@@ -313,7 +324,7 @@ class ProjectRunner:
             return success
 
         except Exception as e:
-            self.logger.exception(f"❌ Table One generation failed: {e}")
+            self.logger.exception(f"[ERROR] Table One generation failed: {e}")
             self.results['tableone'] = {
                 'success': False,
                 'error': str(e)
@@ -340,7 +351,7 @@ class ProjectRunner:
         from modules.ecdf.runner import ECDFRunner
 
         self.logger.info("Running ECDF generation...")
-        self.logger.info(f"Visualize: {'✓' if visualize else '✗'}")
+        self.logger.info(f"Visualize: {'[OK]' if visualize else '[X]'}")
 
         try:
             # Use the new ECDFRunner directly
@@ -348,9 +359,9 @@ class ProjectRunner:
             success = runner.run(visualize=visualize)
 
             if success:
-                self.logger.info("✅ ECDF generation completed successfully")
+                self.logger.info("[SUCCESS] ECDF generation completed successfully")
             else:
-                self.logger.warning("⚠️  ECDF generation completed with warnings")
+                self.logger.warning("[WARNING] ECDF generation completed with warnings")
 
             self.results['get_ecdf'] = {
                 'success': success,
@@ -360,7 +371,7 @@ class ProjectRunner:
             return success
 
         except Exception as e:
-            self.logger.exception(f"❌ ECDF generation failed: {e}")
+            self.logger.exception(f"[ERROR] ECDF generation failed: {e}")
             self.results['get_ecdf'] = {
                 'success': False,
                 'error': str(e)
@@ -379,22 +390,22 @@ class ProjectRunner:
 
         # Validation results
         if self.results['validation']:
-            val_status = "✅ SUCCESS" if self.results['validation']['success'] else "❌ FAILED"
+            val_status = "[SUCCESS]" if self.results['validation']['success'] else "[FAILED]"
             print(f"Validation:        {val_status}")
 
             # Show critical tables status if relevant
             if 'critical_tables_ok' in self.results['validation']:
-                crit_status = "✅ PASS" if self.results['validation']['critical_tables_ok'] else "❌ FAIL"
+                crit_status = "[PASS]" if self.results['validation']['critical_tables_ok'] else "[FAIL]"
                 print(f"Critical Tables:   {crit_status}")
 
         # Table One results
         if self.results['tableone']:
-            tbl_status = "✅ SUCCESS" if self.results['tableone']['success'] else "❌ FAILED"
+            tbl_status = "[SUCCESS]" if self.results['tableone']['success'] else "[FAILED]"
             print(f"Table One:         {tbl_status}")
 
         # Get ECDF results
         if self.results['get_ecdf']:
-            ecdf_status = "✅ SUCCESS" if self.results['get_ecdf']['success'] else "❌ FAILED"
+            ecdf_status = "[SUCCESS]" if self.results['get_ecdf']['success'] else "[FAILED]"
             print(f"Get ECDF:          {ecdf_status}")
 
         # Overall success now only depends on validation critical tables
@@ -406,12 +417,12 @@ class ProjectRunner:
             # If validation wasn't run, consider it successful (for --tableone-only mode)
             self.results['overall_success'] = True
 
-        print(f"\nOverall Status:    {'✅ SUCCESS' if self.results['overall_success'] else '❌ FAILED'}")
+        print(f"\nOverall Status:    {'[SUCCESS]' if self.results['overall_success'] else '[FAILED]'}")
 
         # Output locations
-        print(f"\n📂 Output Locations:")
-        print(f"   📋 Workflow Log:    {self.log_file}")
-        print(f"   📋 Latest Log:      output/final/logs/workflow_execution_latest.log")
+        print(f"\n[FOLDER] Output Locations:")
+        print(f"   [LOG] Workflow Log:    {self.log_file}")
+        print(f"   [LOG] Latest Log:      output/final/logs/workflow_execution_latest.log")
         if self.results['validation']:
             print(f"   Validation Reports: output/final/reports/")
             print(f"   Combined Report:    output/final/reports/combined_validation_report.pdf")
@@ -441,11 +452,11 @@ class ProjectRunner:
             # Run streamlit in foreground so user can interact
             subprocess.run(cmd, check=True)
         except KeyboardInterrupt:
-            print("\n\n✅ Streamlit app stopped")
+            print("\n\n[SUCCESS] Streamlit app stopped")
         except FileNotFoundError:
-            print("\n❌ Error: streamlit not found. Install with: uv add streamlit")
+            print("\n[ERROR] Error: streamlit not found. Install with: uv add streamlit")
         except Exception as e:
-            print(f"\n❌ Error launching app: {e}")
+            print(f"\n[ERROR] Error launching app: {e}")
 
     def run(self, validate=True, tableone=True, get_ecdf=False, **kwargs):
         """
@@ -467,18 +478,18 @@ class ProjectRunner:
         bool
             True if all steps succeeded
         """
-        self.print_header("🏥 CLIF PROJECT RUNNER")
+        self.print_header("[HOSPITAL] CLIF PROJECT RUNNER")
 
         self.logger.info("="*80)
-        self.logger.info("🏥 CLIF PROJECT RUNNER - WORKFLOW STARTING")
+        self.logger.info("[HOSPITAL] CLIF PROJECT RUNNER - WORKFLOW STARTING")
         self.logger.info("="*80)
         self.logger.info(f"Configuration: {self.config_path}")
         self.logger.info(f"Data Directory: {self.config.get('tables_path', 'NOT SET')}")
         self.logger.info(f"Site Name: {self.config.get('site_name', 'NOT SET')}")
         self.logger.info(f"Workflow Steps:")
-        self.logger.info(f"  1. Validation: {'✓' if validate else '✗'}")
-        self.logger.info(f"  2. Table One:  {'✓' if tableone else '✗'}")
-        self.logger.info(f"  3. Get ECDF:   {'✓' if get_ecdf else '✗'}")
+        self.logger.info(f"  1. Validation: {'[OK]' if validate else '[X]'}")
+        self.logger.info(f"  2. Table One:  {'[OK]' if tableone else '[X]'}")
+        self.logger.info(f"  3. Get ECDF:   {'[OK]' if get_ecdf else '[X]'}")
         self.logger.info("="*80)
 
         # Step 1: Validation
@@ -563,7 +574,7 @@ class ProjectRunner:
         else:
             # Only happens if critical tables validation failed and no override
             print("\n" + "="*80)
-            print("❌ App Launch Blocked")
+            print("[ERROR] App Launch Blocked")
             print("="*80)
             print("\nCritical tables validation failed. Cannot launch app.")
             print("Review validation report: output/final/reports/combined_validation_report.pdf")
@@ -674,10 +685,10 @@ Examples:
         sys.exit(0 if success else 1)
 
     except KeyboardInterrupt:
-        print("\n\n⚠️  Workflow interrupted by user")
+        print("\n\n[WARNING] Workflow interrupted by user")
         sys.exit(130)
     except Exception as e:
-        print(f"\n❌ Unexpected error: {e}")
+        print(f"\n[ERROR] Unexpected error: {e}")
         if args.verbose:
             import traceback
             traceback.print_exc()

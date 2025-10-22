@@ -29,6 +29,17 @@ Usage Examples:
 
 import os
 import sys
+import io
+
+# Force UTF-8 encoding for Windows compatibility
+# This ensures emojis and Unicode characters display correctly
+if sys.platform == 'win32':
+    try:
+        sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
+        sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8')
+    except (AttributeError, TypeError):
+        # Fallback if running in an environment where stdout.buffer doesn't exist
+        pass
 import argparse
 import json
 from pathlib import Path
@@ -47,7 +58,7 @@ def load_config(config_path: str) -> dict:
         with open(config_path, 'r') as f:
             return json.load(f)
     except FileNotFoundError:
-        print(f"❌ Configuration file not found: {config_path}")
+        print(f"[ERROR] Configuration file not found: {config_path}")
         print("\nPlease ensure the config file exists and contains:")
         print("""{
     "site_name": "Your Hospital Name",
@@ -59,7 +70,7 @@ def load_config(config_path: str) -> dict:
 }""")
         sys.exit(1)
     except json.JSONDecodeError as e:
-        print(f"❌ Invalid JSON in configuration file: {e}")
+        print(f"[ERROR] Invalid JSON in configuration file: {e}")
         sys.exit(1)
 
 
@@ -204,7 +215,7 @@ Examples:
     try:
         config = load_config(args.config)
     except Exception as e:
-        print(f"❌ Error loading configuration: {e}")
+        print(f"[ERROR] Error loading configuration: {e}")
         sys.exit(1)
 
     # Override output directory if specified
@@ -218,7 +229,7 @@ Examples:
 
     data_path = config.get('tables_path', '')
     if not os.path.exists(data_path):
-        print(f"❌ Error: Data directory not found: {data_path}")
+        print(f"[ERROR] Error: Data directory not found: {data_path}")
         print("Please check your configuration and ensure the tables_path is correct.")
         sys.exit(1)
 
@@ -239,10 +250,10 @@ Examples:
             sys.exit(1)  # Complete failure
 
     except KeyboardInterrupt:
-        print("\n\n⚠️  Analysis interrupted by user")
+        print("\n\n[WARNING] Analysis interrupted by user")
         sys.exit(130)
     except Exception as e:
-        print(f"\n❌ Unexpected error: {e}")
+        print(f"\n[ERROR] Unexpected error: {e}")
         if args.verbose:
             import traceback
             traceback.print_exc()
