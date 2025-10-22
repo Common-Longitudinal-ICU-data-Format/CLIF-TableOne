@@ -1867,8 +1867,14 @@ def display_validation_results(analyzer, validation_results, existing_feedback, 
                     with st.expander(f"{status_icon} **{check_display}:** {check_result['count']} ({check_result['percentage']}%)", expanded=False):
                         st.write(f"**Definition:** {_get_quality_check_definition(check_name)}")
 
-                        # Show sample of problematic rows if available
-                        if 'examples' in check_result and check_result['examples'] is not None:
+                        # Show invalid categories if available (for categorical validation)
+                        if 'invalid_categories' in check_result and check_result['invalid_categories']:
+                            st.write("**Invalid categories found:**")
+                            # Display as a bulleted list
+                            for cat in check_result['invalid_categories']:
+                                st.write(f"- {cat}")
+                        # Otherwise show sample of problematic rows if available
+                        elif 'examples' in check_result and check_result['examples'] is not None:
                             if not check_result['examples'].empty:
                                 st.write("**Sample of problematic records:**")
                                 st.dataframe(check_result['examples'], width='stretch', hide_index=True)

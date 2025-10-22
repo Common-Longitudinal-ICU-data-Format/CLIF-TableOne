@@ -339,23 +339,25 @@ class PatientAnalyzer(BaseTableAnalyzer):
                 'examples': examples
             }
 
-        # Check for invalid sex categories
+        # Check for invalid sex categories (case-insensitive)
         if 'sex_category' in df.columns:
             valid_sex = ['Male', 'Female', 'Other', 'Unknown']
-            invalid_sex_mask = ~df['sex_category'].isin(valid_sex + [pd.NA, None])
+            # Create lowercase version for case-insensitive comparison
+            valid_sex_lower = [str(cat).lower() for cat in valid_sex]
 
-            # Get examples of invalid sex categories
-            examples = None
+            # Find invalid values (case-insensitive)
+            invalid_sex_mask = ~df['sex_category'].fillna('').astype(str).str.lower().isin(valid_sex_lower + ['', 'nan', 'none'])
+
+            invalid_categories = None
             if invalid_sex_mask.sum() > 0:
-                example_cols = ['patient_id', 'sex_category']
-                example_cols = [col for col in example_cols if col in df.columns]
-                examples = df[invalid_sex_mask][example_cols].head(10)
+                # Get unique invalid categories instead of sample records
+                invalid_categories = sorted(df[invalid_sex_mask]['sex_category'].dropna().unique().tolist())
 
             quality_checks['invalid_sex_categories'] = {
                 'count': int(invalid_sex_mask.sum()),
                 'percentage': round((invalid_sex_mask.sum() / len(df) * 100) if len(df) > 0 else 0, 2),
                 'status': 'pass' if invalid_sex_mask.sum() == 0 else 'warning',
-                'examples': examples
+                'invalid_categories': invalid_categories
             }
 
         # Check for future death dates

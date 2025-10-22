@@ -250,22 +250,25 @@ class CodeStatusAnalyzer(BaseTableAnalyzer):
                 'examples': examples
             }
 
-        # Check for invalid code status categories
+        # Check for invalid code status categories (case-insensitive)
         if 'code_status_category' in df.columns:
             valid_categories = ['DNR', 'DNAR', 'UDNR', 'DNR/DNI', 'DNAR/DNI', 'AND', 'Full', 'Presume Full', 'Other']
-            invalid_mask = ~df['code_status_category'].isin(valid_categories + [pd.NA, None])
+            # Create lowercase version for case-insensitive comparison
+            valid_categories_lower = [str(cat).lower() for cat in valid_categories]
 
-            examples = None
+            # Find invalid values (case-insensitive)
+            invalid_mask = ~df['code_status_category'].fillna('').astype(str).str.lower().isin(valid_categories_lower + ['', 'nan', 'none'])
+
+            invalid_categories = None
             if invalid_mask.sum() > 0:
-                example_cols = ['patient_id', 'code_status_category', 'start_dttm']
-                example_cols = [col for col in example_cols if col in df.columns]
-                examples = df[invalid_mask][example_cols].head(10)
+                # Get unique invalid categories instead of sample records
+                invalid_categories = sorted(df[invalid_mask]['code_status_category'].dropna().unique().tolist())
 
             quality_checks['invalid_code_status_categories'] = {
                 'count': int(invalid_mask.sum()),
                 'percentage': round((invalid_mask.sum() / len(df) * 100) if len(df) > 0 else 0, 2),
                 'status': 'pass' if invalid_mask.sum() == 0 else 'error',
-                'examples': examples
+                'invalid_categories': invalid_categories
             }
 
         return quality_checks

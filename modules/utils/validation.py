@@ -86,6 +86,7 @@ def format_clifpy_error(error: Dict[str, Any], row_count: int = 0, table_name: s
                 message += f" (and {len(invalid_values) - 3} more)"
         details['column'] = error.get('column')
         details['invalid_values'] = error.get('invalid_values', error.get('values', []))
+        details['permissible_values'] = error.get('permissible_values', [])
 
     elif error_type == 'missing_categorical_values':
         category = 'data_quality'
@@ -405,6 +406,34 @@ def format_error_for_display(error: Dict[str, Any]) -> str:
     return f"**{error['type']}**: {error['description']}"
 
 
+
+def is_case_only_difference(invalid_values: List[str], permissible_values: List[str]) -> bool:
+    """
+    Check if invalid values differ from permissible values only by case.
+    
+    Parameters:
+    -----------
+    invalid_values : list
+        List of invalid values from the error
+    permissible_values : list
+        List of permissible values from the schema
+        
+    Returns:
+    --------
+    bool
+        True if all invalid values match permissible values when case-insensitive
+    """
+    if not invalid_values or not permissible_values:
+        return False
+    
+    # Convert all to lowercase for comparison
+    permissible_lower = {str(v).lower() for v in permissible_values}
+    invalid_lower = {str(v).lower() for v in invalid_values}
+    
+    # Check if all invalid values exist in permissible values (case-insensitive)
+    return invalid_lower.issubset(permissible_lower)
+
+
 def classify_errors_by_status_impact(
     errors: Dict[str, List[Dict[str, Any]]],
     required_columns: List[str] = None,
@@ -562,9 +591,19 @@ def classify_errors_by_status_impact(
         if error_type == 'Missing Categorical Values':
             status_affecting['data_quality_issues'].append(error)
 
-        # Invalid Categories - always status-affecting (PARTIAL)
+        # Invalid Categories - check if it's only a case difference
         elif error_type == 'Invalid Categories':
-            status_affecting['data_quality_issues'].append(error)
+            # Extract invalid_values and permissible_values from error details
+            details = error.get('details', {})
+            invalid_values = details.get('invalid_values', [])
+            permissible_values = details.get('permissible_values', [])
+
+            # If it's only a case difference, make it informational
+            if is_case_only_difference(invalid_values, permissible_values):
+                informational['data_quality_issues'].append(error)
+            else:
+                # Real invalid values - status-affecting (PARTIAL)
+                status_affecting['data_quality_issues'].append(error)
 
         # Missing Values - status-affecting ONLY if 100% missing in required column
         elif error_type == 'Missing Values':

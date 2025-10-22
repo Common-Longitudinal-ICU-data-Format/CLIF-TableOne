@@ -543,22 +543,25 @@ class CRRTTherapyAnalyzer(BaseTableAnalyzer):
                 'examples': examples
             }
 
-        # Check for invalid CRRT mode categories
+        # Check for invalid CRRT mode categories (case-insensitive)
         if 'crrt_mode_category' in df.columns:
             valid_modes = ['scuf', 'cvvh', 'cvvhd', 'cvvhdf', 'avvh']
-            invalid_mask = ~df['crrt_mode_category'].isin(valid_modes + [pd.NA, None])
+            # Create lowercase version for case-insensitive comparison
+            valid_modes_lower = [str(cat).lower() for cat in valid_modes]
 
-            examples = None
+            # Find invalid values (case-insensitive)
+            invalid_mask = ~df['crrt_mode_category'].fillna('').astype(str).str.lower().isin(valid_modes_lower + ['', 'nan', 'none'])
+
+            invalid_categories = None
             if invalid_mask.sum() > 0:
-                example_cols = ['hospitalization_id', 'crrt_mode_category', 'recorded_dttm']
-                example_cols = [col for col in example_cols if col in df.columns]
-                examples = df[invalid_mask][example_cols].head(10)
+                # Get unique invalid categories instead of sample records
+                invalid_categories = sorted(df[invalid_mask]['crrt_mode_category'].dropna().unique().tolist())
 
             quality_checks['invalid_crrt_mode_categories'] = {
                 'count': int(invalid_mask.sum()),
                 'percentage': round((invalid_mask.sum() / len(df) * 100) if len(df) > 0 else 0, 2),
                 'status': 'pass' if invalid_mask.sum() == 0 else 'error',
-                'examples': examples
+                'invalid_categories': invalid_categories
             }
 
         # Check for negative flow rates (all flow rates should be >= 0)
