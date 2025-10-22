@@ -1,18 +1,6 @@
 # CLIF 2.1 Validation & Summarization Tool
 
-A comprehensive tool for validating and analyzing CLIF 2.1 data tables using clifpy. 
-
-## Features
-
-- CLIF 2.1 validation using clifpy
-- Summary statistics and quality metrics
-- MCIDE collection
-- User feedback system for validation errors
-- Persistent caching
-- Interactive visualizations
-- PDF report generation
-- Web app and CLI interfaces
-- Table One generation with cohort analysis
+A comprehensive tool for validating and analyzing CLIF 2.1 data tables using clifpy with Table One generation.
 
 ## Supported Tables
 
@@ -29,69 +17,12 @@ All 18 CLIF 2.1 tables are supported:
 **Prerequisites:**
 - Python 3.8+
 - UV package manager ([install instructions](https://docs.astral.sh/uv/))
-- CLIF 2.1 data in parquet 
+- CLIF 2.1 data in parquet format
 
 **Setup:**
 ```bash
 cd CLIF-TableOne
 uv sync
-```
-
-## Windows Users - Unicode Support
-
-This project uses Unicode characters (emojis) for better visual feedback. Windows users may encounter encoding errors. Here are several solutions:
-
-### Option 1: Use Windows Scripts (Recommended)
-We provide special scripts that automatically set UTF-8 encoding:
-
-**Using Batch files (.bat):**
-```batch
-# Run complete workflow
-run_project_windows.bat --sample --no-summary --get-ecdf
-
-# Run analysis only
-run_analysis_windows.bat --all --validate --summary
-
-# Launch Streamlit app
-app_windows.bat
-```
-
-**Using PowerShell scripts (.ps1):**
-```powershell
-# Run complete workflow
-.\run_project_windows.ps1 --sample --no-summary --get-ecdf
-
-# Run analysis only
-.\run_analysis_windows.ps1 --all --validate --summary
-
-# Launch Streamlit app
-.\app_windows.ps1
-```
-
-### Option 2: Set Environment Variable
-Set Python to use UTF-8 encoding before running:
-
-```batch
-# Command Prompt
-set PYTHONIOENCODING=utf-8
-python run_project.py
-
-# PowerShell
-$env:PYTHONIOENCODING="utf-8"
-python run_project.py
-```
-
-### Option 3: Enable System-Wide UTF-8 (Windows 10/11)
-1. Go to Settings → Time & Language → Language → Administrative language settings
-2. Click "Change system locale"
-3. Check "Beta: Use Unicode UTF-8 for worldwide language support"
-4. Restart your computer
-
-### Option 4: Python UTF-8 Mode
-Run Python with UTF-8 mode enabled:
-
-```batch
-python -X utf8 run_project.py
 ```
 
 ## Configuration
@@ -103,83 +34,48 @@ Create or update `config/config.json`:
     "site_name": "Your Hospital Name",
     "tables_path": "/path/to/clif/data",
     "filetype": "parquet",
-    "timezone": "Your timezone as America/Chicago etc.."
+    "timezone": "America/Chicago"
 }
 ```
 
-## Quick Start - Run Complete Workflow
+## Quick Start - Complete Workflow
 
-**Recommended command to run the complete analysis pipeline:**
+### Linux/MacOS
+
+Run the complete analysis pipeline with sampling (recommended for first run):
 
 ```bash
 uv run python run_project.py --sample --no-summary --get-ecdf
 ```
 
-This runs:
-1. Validation (all 18 tables with 1k ICU sample)
-2. MCIDE collection
-3. Table One generation
-4. ECDF bins computation
-5. Streamlit app launch
+This command:
+1. Validates all 18 CLIF tables using a 1k ICU sample
+2. Collects MCIDE data
+3. Generates Table One analysis
+4. Computes ECDF bins for visualizations
+5. Automatically launches the Streamlit app
 
-**Time:** ~10-15 minutes
+**Time:** ~10-15 minutes with sampling, 45-90 minutes without
 
----
+### Windows
 
-## Advanced Usage
+Windows users should use the provided scripts that handle UTF-8 encoding:
 
-### Other Workflow Options
-
-```bash
-# Full dataset (no sampling, takes 45-90 min)
-uv run python run_project.py --get-ecdf
-
-# Skip automatic app launch
-uv run python run_project.py --sample --no-summary --get-ecdf --no-launch-app
-
-# Validation only (quick data quality check)
-uv run python run_project.py --validate-only --sample --no-summary
-
-# Validation with full summaries (when you need detailed statistics)
-uv run python run_project.py --validate-only --sample
-
-# Table One only (skip validation)
-uv run python run_project.py --tableone-only
-
-# ECDF only (for EDA app setup)
-uv run python run_project.py --get-ecdf-only
-uv run python run_project.py --get-ecdf-only --visualize
-
-# Specific tables
-uv run python run_project.py --tables patient adt hospitalization
+**Using Batch files:**
+```batch
+run_project_windows.bat --sample --no-summary --get-ecdf
 ```
 
-
-**Requirements:**
-- `config/config.json` - Main CLIF configuration
-- `get-ecdfd_data/ecdf_config/outlier_config.yaml` - Outlier filtering configuration
-- `get-ecdfd_data/ecdf_config/lab_vital_config.yaml` - Binning configuration for labs/vitals
-- `get-ecdfd_data/utils.py` - Binning utility functions
-
-**Output:**
+**Using PowerShell:**
+```powershell
+.\run_project_windows.ps1 --sample --no-summary --get-ecdf
 ```
-output/final/
-├── configs/                # Configuration files
-├── ecdf/                   # ECDF parquet files
-│   ├── labs/              # One file per (category, unit)
-│   ├── vitals/            # One file per category
-│   └── respiratory_support/
-├── bins/                   # Bin parquet files
-│   ├── labs/
-│   ├── vitals/
-│   └── respiratory_support/
-├── plots/                  # HTML visualizations (with --visualize)
-└── unit_mismatches.log     # Processing log
-```
+
+If you encounter Unicode/emoji display issues, see the [Windows Troubleshooting](#windows-unicode-troubleshooting) section below.
 
 ## Web Application
 
-If you just want to launch the app:
+To launch the Streamlit app independently:
 
 ```bash
 uv run streamlit run app.py
@@ -187,39 +83,15 @@ uv run streamlit run app.py
 
 The app will open at `http://localhost:8501`
 
-
-### Workflow Steps
-
-1. **CLIF Validation** (Optional)
-   - Validates all 18 CLIF tables using clifpy
-   - Generates PDF validation reports
-   - Creates summary statistics
-   - Optional: Uses 1k ICU sample for faster processing
-
-2. **Table One Generation** (Optional)
-   - Generates comprehensive cohort analysis
-   - Creates CONSORT diagrams and visualizations
-   - Memory-optimized for large datasets
-   - Produces final CSV tables and reports
-
-3. **Get ECDF ECDF Bins** (Optional)
-   - Computes distributions for labs/vitals/respiratory data during ICU stays
-   - Generates quantile bins for EDA visualization
-   - Optional: Creates HTML plots with --visualize flag
-
-4. **Automatic App Launch**
-   - Launches Streamlit app after successful completion
-   - 3-second countdown with skip option
-
-### Output Structure
+## Output Structure
 
 ```
 output/final/
-├── reports/              # Validation PDFs
+├── reports/              # Validation PDF reports
 │   ├── patient_validation_report.pdf
 │   ├── combined_validation_report.pdf
 │   └── ...
-├── results/              # Validation CSVs
+├── results/              # Validation CSV summaries
 │   ├── patient_summary.csv
 │   └── ...
 ├── tableone/            # Table One outputs
@@ -229,147 +101,101 @@ output/final/
 │   ├── execution_report.txt
 │   ├── mcide/          # MCIDE value counts
 │   ├── summary_stats/  # MCIDE numerical summaries
-│   └── ...
-├── ecdf/                # ECDF distributions (if --get-ecdf)
+│   └── plots/          # Medication analysis plots
+├── ecdf/                # ECDF distributions
 │   ├── labs/
 │   ├── vitals/
 │   └── respiratory_support/
-├── bins/                # Quantile bins (if --get-ecdf)
+├── bins/                # Quantile bins for visualization
 │   ├── labs/
 │   ├── vitals/
 │   └── respiratory_support/
-├── plots/               # HTML visualizations (if --visualize)
-├── configs/             # Get ECDF configs (if --get-ecdf)
-└── unit_mismatches.log  # Get ECDF log (if --get-ecdf)
+└── configs/             # ECDF configuration files
 ```
 
-### All Command Options
+## Workflow
 
-```bash
-Workflow Control:
-  --validate-only          Only run validation step
-  --tableone-only          Only run table one generation step
-  --get-ecdf-only        Only run get-ecdf ECDF bins step
-  --get-ecdf             Include get-ecdf in workflow
-  --visualize              Generate HTML visualizations (for get-ecdf)
-  --continue-on-error      Continue even if previous step fails
-  --no-launch-app          Skip automatic Streamlit app launch
+### 1. Setup
+- Install prerequisites and dependencies using `uv sync`
+- Configure `config/config.json` with your site information
+- Ensure CLIF data files are in the specified `tables_path`
 
-Validation Options:
-  --tables TABLE [TABLE ...]
-                          Specific tables to validate
-  --sample                Use 1k ICU sample for faster analysis
-  --no-summary            Skip summary statistics generation (faster validation)
-  --verbose, -v           Enable verbose output
+### 2. Configuration
+- Verify paths and settings in config file
+- Choose whether to use sampling for faster initial runs
 
-Configuration:
-  --config CONFIG         Path to configuration file
+### 3. Main Command
+- Run `run_project.py` with appropriate flags: `uv run python run_project.py --sample --no-summary --get-ecdf`
+- Monitor progress in the terminal
+- Wait for automatic app launch or launch manually
+
+### 4. Using the App
+- **Validation Tab**: Review validation results for each table
+- **mCIDE Tab**: View mCIDE and summary stats if generated. 
+- **Table One Results**: Access comprehensive cohort analysis (appears after generation)
+
+### 5. Reviewing Validation Errors
+
+The feedback system allows classification of validation errors:
+
+- **Review Errors**: Enable "📋 Review Status-Affecting Errors" in the Validation tab. Scroll to the bottom of the page. 
+- **Classify Each Error**:
+  - **Accepted**: Legitimate issue requiring attention
+  - **Rejected**: Site-specific variation (provide justification)
+  - **Pending**: Not yet reviewed
+- **Save Feedback**: Click "💾 Save Feedback" to persist decisions
+- **Status Updates**: Table status automatically adjusts based on feedback
+  - Status becomes "complete" only when ALL errors are rejected
+  - Accepted or pending errors maintain original status
+
+Feedback is saved to `output/final/results/{table}_validation_response.json`.
+To recompile the combined report after providing feedback, click the Regenerate reports button on the Home page. 
+
+### 6. Table One Results
+
+After Table One generation completes:
+
+1. Click "📊 Table One Results" in the sidebar
+2. Explore analysis across tabs:
+   - **Cohort**: CONSORT diagram and cohort flow
+   - **Demographics**: Patient characteristics
+   - **Medications**: Medication usage analysis with visualizations
+   - **IMV**: Invasive mechanical ventilation metrics
+   - **SOFA & CCI**: Severity and comorbidity scores
+   - **Hospice & Outcomes**: End-of-life care and outcomes
+
+See [TABLEONE_VIEWER_GUIDE.md](TABLEONE_VIEWER_GUIDE.md) for detailed viewer documentation.
+
+## Windows Unicode Troubleshooting
+
+If you see encoding errors with emojis/Unicode characters:
+
+### Option 1: Set Environment Variables
+```batch
+# Command Prompt
+set PYTHONIOENCODING=utf-8
+python run_project.py
+
+# PowerShell
+$env:PYTHONIOENCODING="utf-8"
+python run_project.py
 ```
 
-### Workflow
+### Option 2: Enable System-Wide UTF-8
+1. Go to Settings → Time & Language → Language → Administrative language settings
+2. Click "Change system locale"
+3. Check "Beta: Use Unicode UTF-8 for worldwide language support"
+4. Restart your computer
 
-1. **Initial Setup**
-   - Configure `config/config.json` with site information
-   - Ensure CLIF data files are in the specified `tables_path`
-
-2. **Running Analysis**
-   - Select table from sidebar
-   - Choose analysis options (validation, summary)
-   - Click "🚀 Run Analysis"
-
-3. **Reviewing Validation Errors**
-   - Enable "📋 Review Status-Affecting Errors" in Validation tab
-   - For each error:
-     - **Accepted** - Valid issue requiring attention
-     - **Rejected** - Site-specific variation (provide justification)
-     - **Pending** - Not yet reviewed
-   - Click "💾 Save Feedback"
-   - Status automatically adjusts based on feedback
-
-4. **Cached Results**
-   - Results persist in session until re-run
-   - Sidebar shows status and timestamp for each table
-   - "Clear All Cache" button resets all tables
-
-5. **Table One Results Viewer**
-   - Click "📊 Table One Results" in sidebar (appears after generation)
-   - Explore tabs: Cohort, Demographics, Medications, IMV, SOFA & CCI, Hospice & Outcomes
-   - See [TABLEONE_VIEWER_GUIDE.md](TABLEONE_VIEWER_GUIDE.md) for details
-
-6. **Output Files**
-   - `{table}_validation_report.pdf` - PDF validation report
-   - `{table}_validation_response.json` - User feedback decisions
-   - `{table}_summary_validation.json` - Raw validation results
-   - `{table}_summary.csv` - Summary statistics table
-
-## Command Line Interface
-
-### Basic Usage
-
-```bash
-# Single table
-uv run python run_analysis.py --patient --validate --summary
-
-# Multiple tables
-uv run python run_analysis.py --patient --hospitalization --validate --summary
-
-# All tables
-uv run python run_analysis.py --all --validate --summary
-
-# With sample (recommended for large datasets)
-uv run python run_analysis.py --all --validate --sample
-
-# Custom configuration
-uv run python run_analysis.py --config custom/config.json --patient --validate
+### Option 3: Python UTF-8 Mode
+```batch
+python -X utf8 run_project.py
 ```
 
-### Options
+## Advanced Usage
 
-**Table Selection:**
-- `--patient`, `--hospitalization`, `--adt`, `--labs`, `--vitals`, etc.
-- `--all` - Analyze all 18 tables
+For detailed command-line options, additional workflows, and advanced configurations, see [advanced_usage.md](advanced_usage.md).
 
-**Operations:**
-- `--validate` - Run clifpy validation
-- `--summary` - Generate summary statistics
+## Support
 
-**Configuration:**
-- `--config PATH` - Config file path (default: `config/config.json`)
-- `--output-dir PATH` - Override output directory
-
-**Performance:**
-- `--sample` - Use 1k ICU sample (recommended for `--all`)
-  - Reduces runtime from 30-60 min to 5-10 min
-  - Automatically uses existing sample or creates from ADT table
-  - Core tables (patient, hospitalization, ADT) always use full data
-
-**Output Control:**
-- `--verbose` / `-v` - Detailed progress output
-- `--quiet` / `-q` - Minimal output (errors only)
-- `--no-pdf` - Skip PDF generation (JSON only)
-
-### Exit Codes
-
-- `0` - Success
-- `1` - All tables failed
-- `2` - Partial success
-- `130` - Interrupted (Ctrl+C)
-
-
-## Feedback System
-
-The user feedback system allows sites to classify validation errors based on their specific context:
-
-### How It Works
-
-1. **Error Classification**: Each validation error can be:
-   - **Accepted**: Legitimate issue requiring attention
-   - **Rejected**: Site-specific variation (with justification)
-   - **Pending**: Not yet reviewed
-
-2. **Status Recalculation**:
-   - Status becomes "complete" only when ALL errors are rejected
-   - Accepted or pending errors keep original status
-   - Provides audit trail of all decisions
-
-3. **Persistence**: Feedback saved to `{table}_validation_response.json`
+For issues or questions, please create an issue in the project repository.
