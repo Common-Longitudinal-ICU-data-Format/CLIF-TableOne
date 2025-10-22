@@ -29,6 +29,17 @@ Usage Examples:
 
 import os
 import sys
+import io
+
+# Force UTF-8 encoding for Windows compatibility
+# This ensures emojis and Unicode characters display correctly
+if sys.platform == 'win32':
+    try:
+        sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
+        sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8')
+    except (AttributeError, TypeError):
+        # Fallback if running in an environment where stdout.buffer doesn't exist
+        pass
 import argparse
 import json
 from pathlib import Path

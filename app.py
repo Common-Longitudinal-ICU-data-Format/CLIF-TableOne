@@ -6,6 +6,19 @@ This application provides an interactive interface for validating and analyzing
 CLIF 2.1 data tables using clifpy.
 """
 
+import sys
+import io
+
+# Force UTF-8 encoding for Windows compatibility
+# This ensures emojis and Unicode characters display correctly
+if sys.platform == 'win32':
+    try:
+        sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
+        sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8')
+    except (AttributeError, TypeError):
+        # Fallback if running in an environment where stdout.buffer doesn't exist
+        pass
+
 import warnings
 # Suppress Plotly and Streamlit deprecation warnings
 warnings.filterwarnings('ignore', category=DeprecationWarning, module='plotly')

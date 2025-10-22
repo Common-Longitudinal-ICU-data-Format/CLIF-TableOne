@@ -37,6 +37,63 @@ cd CLIF-TableOne
 uv sync
 ```
 
+## Windows Users - Unicode Support
+
+This project uses Unicode characters (emojis) for better visual feedback. Windows users may encounter encoding errors. Here are several solutions:
+
+### Option 1: Use Windows Scripts (Recommended)
+We provide special scripts that automatically set UTF-8 encoding:
+
+**Using Batch files (.bat):**
+```batch
+# Run complete workflow
+run_project_windows.bat --sample --no-summary --get-ecdf
+
+# Run analysis only
+run_analysis_windows.bat --all --validate --summary
+
+# Launch Streamlit app
+app_windows.bat
+```
+
+**Using PowerShell scripts (.ps1):**
+```powershell
+# Run complete workflow
+.\run_project_windows.ps1 --sample --no-summary --get-ecdf
+
+# Run analysis only
+.\run_analysis_windows.ps1 --all --validate --summary
+
+# Launch Streamlit app
+.\app_windows.ps1
+```
+
+### Option 2: Set Environment Variable
+Set Python to use UTF-8 encoding before running:
+
+```batch
+# Command Prompt
+set PYTHONIOENCODING=utf-8
+python run_project.py
+
+# PowerShell
+$env:PYTHONIOENCODING="utf-8"
+python run_project.py
+```
+
+### Option 3: Enable System-Wide UTF-8 (Windows 10/11)
+1. Go to Settings → Time & Language → Language → Administrative language settings
+2. Click "Change system locale"
+3. Check "Beta: Use Unicode UTF-8 for worldwide language support"
+4. Restart your computer
+
+### Option 4: Python UTF-8 Mode
+Run Python with UTF-8 mode enabled:
+
+```batch
+python -X utf8 run_project.py
+```
+
 ## Configuration
 
 Create or update `config/config.json`:
