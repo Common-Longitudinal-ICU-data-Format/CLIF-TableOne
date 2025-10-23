@@ -330,13 +330,47 @@ class ProjectRunner:
 
         # Import and use the new TableOneRunner module
         from modules.tableone.runner import TableOneRunner
+        from io import StringIO
 
         self.logger.info("Running Table One generation with memory monitoring...")
 
+        # Create a Tee class to write to both console and capture buffer
+        class TeeOutput:
+            """Write to multiple outputs simultaneously."""
+            def __init__(self, *outputs):
+                self.outputs = outputs
+
+            def write(self, data):
+                for output in self.outputs:
+                    output.write(data)
+                    output.flush()  # Ensure immediate output
+
+            def flush(self):
+                for output in self.outputs:
+                    output.flush()
+
         try:
-            # Use the new TableOneRunner directly
-            runner = TableOneRunner(self.config)
-            success = runner.run(profile_mode=False)
+            # Capture stdout during execution
+            stdout_capture = StringIO()
+            old_stdout = sys.stdout
+
+            try:
+                # Redirect stdout to both console and capture buffer
+                sys.stdout = TeeOutput(old_stdout, stdout_capture)
+
+                # Use the new TableOneRunner directly
+                runner = TableOneRunner(self.config)
+                success = runner.run(profile_mode=False)
+
+            finally:
+                # Restore original stdout
+                sys.stdout = old_stdout
+
+                # Log all captured output to file
+                captured_output = stdout_capture.getvalue()
+                for line in captured_output.split('\n'):
+                    if line.strip():  # Skip empty lines
+                        self.logger.info(line)
 
             if success:
                 self.logger.info("✅ Table One generation completed successfully")
@@ -375,14 +409,48 @@ class ProjectRunner:
 
         # Import and use the new ECDFRunner module
         from modules.ecdf.runner import ECDFRunner
+        from io import StringIO
 
         self.logger.info("Running ECDF generation...")
         self.logger.info(f"Visualize: {'[OK]' if visualize else '[X]'}")
 
+        # Create a Tee class to write to both console and capture buffer
+        class TeeOutput:
+            """Write to multiple outputs simultaneously."""
+            def __init__(self, *outputs):
+                self.outputs = outputs
+
+            def write(self, data):
+                for output in self.outputs:
+                    output.write(data)
+                    output.flush()  # Ensure immediate output
+
+            def flush(self):
+                for output in self.outputs:
+                    output.flush()
+
         try:
-            # Use the new ECDFRunner directly
-            runner = ECDFRunner(self.config)
-            success = runner.run(visualize=visualize)
+            # Capture stdout during execution
+            stdout_capture = StringIO()
+            old_stdout = sys.stdout
+
+            try:
+                # Redirect stdout to both console and capture buffer
+                sys.stdout = TeeOutput(old_stdout, stdout_capture)
+
+                # Use the new ECDFRunner directly
+                runner = ECDFRunner(self.config)
+                success = runner.run(visualize=visualize)
+
+            finally:
+                # Restore original stdout
+                sys.stdout = old_stdout
+
+                # Log all captured output to file
+                captured_output = stdout_capture.getvalue()
+                for line in captured_output.split('\n'):
+                    if line.strip():  # Skip empty lines
+                        self.logger.info(line)
 
             if success:
                 self.logger.info("[SUCCESS] ECDF generation completed successfully")
@@ -410,29 +478,34 @@ class ProjectRunner:
 
         elapsed_time = (datetime.now() - self.start_time).total_seconds()
 
-        print(f"Start Time: {self.start_time.strftime('%Y-%m-%d %H:%M:%S')}")
-        print(f"End Time:   {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-        print(f"Duration:   {elapsed_time:.1f} seconds ({elapsed_time/60:.1f} minutes)\n")
+        # Helper function to both print and log
+        def print_and_log(message):
+            print(message)
+            self.logger.info(message)
+
+        print_and_log(f"Start Time: {self.start_time.strftime('%Y-%m-%d %H:%M:%S')}")
+        print_and_log(f"End Time:   {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+        print_and_log(f"Duration:   {elapsed_time:.1f} seconds ({elapsed_time/60:.1f} minutes)\n")
 
         # Validation results
         if self.results['validation']:
             val_status = "[SUCCESS]" if self.results['validation']['success'] else "[FAILED]"
-            print(f"Validation:        {val_status}")
+            print_and_log(f"Validation:        {val_status}")
 
             # Show critical tables status if relevant
             if 'critical_tables_ok' in self.results['validation']:
                 crit_status = "[PASS]" if self.results['validation']['critical_tables_ok'] else "[FAIL]"
-                print(f"Critical Tables:   {crit_status}")
+                print_and_log(f"Critical Tables:   {crit_status}")
 
         # Table One results
         if self.results['tableone']:
             tbl_status = "[SUCCESS]" if self.results['tableone']['success'] else "[FAILED]"
-            print(f"Table One:         {tbl_status}")
+            print_and_log(f"Table One:         {tbl_status}")
 
         # Get ECDF results
         if self.results['get_ecdf']:
             ecdf_status = "[SUCCESS]" if self.results['get_ecdf']['success'] else "[FAILED]"
-            print(f"Get ECDF:          {ecdf_status}")
+            print_and_log(f"Get ECDF:          {ecdf_status}")
 
         # Overall success now only depends on validation critical tables
         # App should launch unless critical tables validation fails
@@ -443,20 +516,20 @@ class ProjectRunner:
             # If validation wasn't run, consider it successful (for --tableone-only mode)
             self.results['overall_success'] = True
 
-        print(f"\nOverall Status:    {'[SUCCESS]' if self.results['overall_success'] else '[FAILED]'}")
+        print_and_log(f"\nOverall Status:    {'[SUCCESS]' if self.results['overall_success'] else '[FAILED]'}")
 
         # Output locations
-        print(f"\n[FOLDER] Output Locations:")
-        print(f"   [LOG] Workflow Log:    {self.log_file}")
-        print(f"   [LOG] Latest Log:      output/final/logs/workflow_execution_latest.log")
+        print_and_log(f"\n[FOLDER] Output Locations:")
+        print_and_log(f"   [LOG] Workflow Log:    {self.log_file}")
+        print_and_log(f"   [LOG] Latest Log:      output/final/logs/workflow_execution_latest.log")
         if self.results['validation']:
-            print(f"   Validation Reports: output/final/reports/")
-            print(f"   Combined Report:    output/final/reports/combined_validation_report.pdf")
-            print(f"   Validation Results: output/final/results/")
+            print_and_log(f"   Validation Reports: output/final/reports/")
+            print_and_log(f"   Combined Report:    output/final/reports/combined_validation_report.pdf")
+            print_and_log(f"   Validation Results: output/final/results/")
         if self.results['tableone']:
-            print(f"   Table One:          output/final/tableone/")
+            print_and_log(f"   Table One:          output/final/tableone/")
         if self.results['get_ecdf']:
-            print(f"   ECDF Data:          output/final/ecdf/, output/final/bins/")
+            print_and_log(f"   ECDF Data:          output/final/ecdf/, output/final/bins/")
 
         self.logger.info("="*80)
         self.logger.info(f"Workflow execution log saved to: {self.log_file}")
@@ -692,6 +765,10 @@ Examples:
         tableone = True
         # Get ECDF only if explicitly requested
         get_ecdf = args.get_ecdf
+
+    # Auto-skip app launch if only validation was run (no data to view in app)
+    if args.validate_only:
+        args.no_launch_app = True
 
     # Initialize runner
     runner = ProjectRunner(config_path=args.config)

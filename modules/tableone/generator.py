@@ -50,6 +50,8 @@ import matplotlib.path
 import matplotlib.patches
 import matplotlib.patheffects
 import polars as pl
+import re
+from modules.sofa.calculator import ensure_local_timezone
 print("=== Environment Verification ===")
 print(f"Python executable: {sys.executable}")
 print(f"Python version: {sys.version}")
@@ -2657,6 +2659,29 @@ def main(memory_monitor=None) -> bool:
         )
         .collect()
     )
+
+    # Detect medication timestamp format to match it
+    # Access CLIFpy's loaded medication data to get timezone and time precision
+    med_df_sample = pl.from_pandas(clif.medication_admin_continuous.df.head(1))
+    admin_dttm_dtype = str(med_df_sample['admin_dttm'].dtype)
+
+    # Extract timezone from dtype string (e.g., "Datetime(time_unit='us', time_zone='America/Chicago')")
+    timezone_match = re.search(r"time_zone=['\"]([^'\"]+)['\"]", admin_dttm_dtype)
+    med_timezone = timezone_match.group(1) if timezone_match else config['timezone']
+
+    # Extract time unit from dtype string (e.g., 'us', 'ns', 'ms')
+    time_unit_match = re.search(r"time_unit=['\"]([^'\"]+)['\"]", admin_dttm_dtype)
+    med_time_unit = time_unit_match.group(1) if time_unit_match else 'us'
+
+    print(f"Detected medication timestamp format: timezone={med_timezone}, time_unit={med_time_unit}")
+
+    # Apply same timezone handling as SOFA calculator
+    weight_df_pl = ensure_local_timezone(weight_df_pl, 'recorded_dttm', med_timezone)
+
+    # Cast to same time unit precision as medications
+    weight_df_pl = weight_df_pl.with_columns([
+        pl.col('recorded_dttm').dt.cast_time_unit(med_time_unit).alias('recorded_dttm')
+    ])
 
     # Convert to Pandas for CLIF compatibility
     weight_vitals_df = weight_df_pl.to_pandas()
