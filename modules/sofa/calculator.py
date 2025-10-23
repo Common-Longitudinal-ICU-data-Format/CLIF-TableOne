@@ -436,6 +436,11 @@ def _load_labs(
     else:
         labs = pl.scan_csv(str(file_path)).select(load_columns)
 
+    # Normalize hospitalization_id to Utf8 for consistent type matching
+    labs = labs.with_columns([
+        pl.col('hospitalization_id').cast(pl.Utf8).alias('hospitalization_id')
+    ])
+
     # Filter for required categories and hospitalization_ids
     labs = labs.filter(
         pl.col('lab_category').is_in(REQUIRED_LABS) &
@@ -529,6 +534,11 @@ def _load_vitals(
     else:
         vitals = pl.scan_csv(str(file_path)).select(load_columns)
 
+    # Normalize hospitalization_id to Utf8 for consistent type matching
+    vitals = vitals.with_columns([
+        pl.col('hospitalization_id').cast(pl.Utf8).alias('hospitalization_id')
+    ])
+
     # Filter for required categories and hospitalization_ids
     vitals = vitals.filter(
         pl.col('vital_category').is_in(REQUIRED_VITALS) &
@@ -614,6 +624,11 @@ def _load_patient_assessments(
         assessments = pl.scan_parquet(str(file_path)).select(load_columns)
     else:
         assessments = pl.scan_csv(str(file_path)).select(load_columns)
+
+    # Normalize hospitalization_id to Utf8 for consistent type matching
+    assessments = assessments.with_columns([
+        pl.col('hospitalization_id').cast(pl.Utf8).alias('hospitalization_id')
+    ])
 
     # Filter for required categories and hospitalization_ids
     assessments = assessments.filter(
@@ -723,6 +738,11 @@ def _load_respiratory_support(
         resp = pl.scan_parquet(str(file_path)).select(load_columns)
     else:
         resp = pl.scan_csv(str(file_path)).select(load_columns)
+
+    # Normalize hospitalization_id to Utf8 for consistent type matching
+    resp = resp.with_columns([
+        pl.col('hospitalization_id').cast(pl.Utf8).alias('hospitalization_id')
+    ])
 
     # Filter for hospitalization_ids
     resp = resp.filter(
@@ -856,6 +876,11 @@ def _load_and_convert_medications(
     else:
         meds = pl.scan_csv(str(file_path)).select(load_columns)
 
+    # Normalize hospitalization_id to Utf8 for consistent type matching
+    meds = meds.with_columns([
+        pl.col('hospitalization_id').cast(pl.Utf8).alias('hospitalization_id')
+    ])
+
     # Filter for required medications and hospitalization_ids
     meds = meds.filter(
         pl.col('med_category').is_in(REQUIRED_MEDS) &
@@ -896,6 +921,11 @@ def _load_and_convert_medications(
             weight_data = pl.scan_parquet(str(weight_file))
         else:
             weight_data = pl.scan_csv(str(weight_file))
+
+        # Normalize hospitalization_id to Utf8 for consistent type matching
+        weight_data = weight_data.with_columns([
+            pl.col('hospitalization_id').cast(pl.Utf8).alias('hospitalization_id')
+        ])
 
         # Ensure datetime column is in local timezone BEFORE collecting
         if timezone:
@@ -1444,6 +1474,13 @@ def compute_sofa_polars(
         cohort_df_local = cohort_df_local.with_columns([
             pl.col(col).dt.cast_time_unit("us").alias(col)
         ])
+
+    # Normalize hospitalization_id to Utf8 to prevent type mismatch issues with data files
+    # (data files may have LargeUtf8 vs Utf8, causing hangs during joins/filters)
+    cohort_df_local = cohort_df_local.with_columns([
+        pl.col('hospitalization_id').cast(pl.Utf8).alias('hospitalization_id')
+    ])
+    logger.info("Normalized cohort hospitalization_id to Utf8")
 
     # Extract unique hospitalization_ids for filtering
     hospitalization_ids = cohort_df_local['hospitalization_id'].unique().to_list()
