@@ -97,6 +97,12 @@ def prepare_sofa_cohort(final_tableone_df):
     # Convert to Polars
     sofa_cohort_pl = pl.from_pandas(sofa_cohort_df)
 
+    # Normalize hospitalization_id to Utf8 for consistency with data files
+    # (prevents Utf8 vs LargeUtf8 type mismatch issues during joins)
+    sofa_cohort_pl = sofa_cohort_pl.with_columns([
+        pl.col('hospitalization_id').cast(pl.Utf8).alias('hospitalization_id')
+    ])
+
     print(f"  Cohort shape: {sofa_cohort_pl.shape}")
     print(f"  Cohort columns: {sofa_cohort_pl.columns}")
     print(f"  Unique encounter blocks: {sofa_cohort_pl['encounter_block'].n_unique()}")

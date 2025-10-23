@@ -51,30 +51,12 @@ import matplotlib.patches
 import matplotlib.patheffects
 import polars as pl
 import re
-from modules.sofa.calculator import ensure_local_timezone
-print("=== Environment Verification ===")
-print(f"Python executable: {sys.executable}")
-print(f"Python version: {sys.version}")
-print(f"clifpy version: {clifpy.__version__}")
-print(f"clifpy location: {clifpy.__file__}")
-
-print("\n=== Python Path Check ===")
-local_clifpy_path = "/Users/kavenchhikara/Desktop/CLIF/CLIFpy"
-if any(local_clifpy_path in path for path in sys.path):
-    print("⚠️  WARNING: Local CLIFpy still in path!")
-    for path in sys.path:
-        if local_clifpy_path in path:
-            print(f"   Found: {path}")
-else:
-    print("✅ Clean environment - no local CLIFpy in path")
-
-print(f"\n=== Working Directory ===")
+from modules.sofa.calculator import ensure_local_timezone, compute_sofa_polars
 
 from clifpy.clif_orchestrator import ClifOrchestrator
 from clifpy.utils import apply_outlier_handling
 from clifpy.utils.comorbidity import calculate_cci
 from clifpy.utils.stitching_encounters import stitch_encounters
-from modules.sofa.calculator import compute_sofa_polars
 from matplotlib.patches import FancyBboxPatch
 from pathlib import Path
 from scipy import stats
