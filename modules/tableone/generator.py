@@ -3551,7 +3551,8 @@ def main(memory_monitor=None) -> bool:
     # # Run batch summary
     # events_summary = count_all_clinical_events(clif)
 
-
+    os.makedirs(project_root / 'output/intermediate', exist_ok=True)
+    final_tableone_df.to_parquet(project_root / 'output/intermediate/final_tableone_df_test.parquet')
     # ==============================================================================
     # # SOFA calculation
     # ==============================================================================
