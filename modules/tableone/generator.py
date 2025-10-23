@@ -2660,6 +2660,16 @@ def main(memory_monitor=None) -> bool:
 
     # Convert to Pandas for CLIF compatibility
     weight_vitals_df = weight_df_pl.to_pandas()
+
+    # Add timezone information to match medication data (prevents DuckDB type mismatch)
+    # Handle DST transitions using clifpy's standard approach
+    if 'recorded_dttm' in weight_vitals_df.columns and weight_vitals_df['recorded_dttm'].dt.tz is None:
+        weight_vitals_df['recorded_dttm'] = weight_vitals_df['recorded_dttm'].dt.tz_localize(
+            config['timezone'],
+            ambiguous=True,              # Assume DST for ambiguous times (fall back)
+            nonexistent='shift_forward'  # Shift forward nonexistent times (spring forward)
+        )
+
     print(f"Loaded {len(weight_vitals_df):,} weight measurements for {weight_df_pl['hospitalization_id'].n_unique()} hospitalizations")
 
     # Convert units (uses clifpy orchestrator)
