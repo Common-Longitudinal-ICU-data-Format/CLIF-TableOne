@@ -1152,11 +1152,12 @@ def main(memory_monitor=None) -> bool:
         'high_support_enc': 1
     })
 
-    # Perform a full join (outer merge) of final_cohort and advanced_support_df on 'encounter_block'
+    # Perform a left join to add support flags only to existing cohort encounters
+    # (prevents adding encounters without is_procedural_ld_only values)
     final_cohort = final_cohort.merge(
         advanced_support_df,
         on='encounter_block',
-        how='outer'
+        how='left'
     )
 
     # Memory cleanup: Clear respiratory support intermediate data
@@ -1198,11 +1199,12 @@ def main(memory_monitor=None) -> bool:
         'vaso_support_enc': 1
     })
 
-    # Join vasoactives_df with final cohort on hospitalization_id
+    # Join vasoactives_df with final cohort using left merge
+    # (prevents adding encounters without is_procedural_ld_only values)
     final_cohort = final_cohort.merge(
         vasoactives_df,
         on='encounter_block',
-        how='outer'
+        how='left'
     )
 
     # Missing high_support_en means not on advanced support
