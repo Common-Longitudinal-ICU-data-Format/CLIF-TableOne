@@ -55,7 +55,9 @@ class BaseTableAnalyzer(ABC):
 
     def validate(self) -> Dict[str, Any]:
         """
-        Run clifpy validation and format results.
+        Run validation and format results.
+
+        Supports both clifpy backend and new Polars-based backend.
 
         Returns:
         --------
@@ -72,12 +74,25 @@ class BaseTableAnalyzer(ABC):
                 'data_info': {}
             }
 
-        # Run clifpy validation
-        self.table.validate()
+        # Check if using new Polars backend (SimpleNamespace) or clifpy backend
+        from types import SimpleNamespace
+
+        if isinstance(self.table, SimpleNamespace):
+            # New Polars backend: Use custom validation
+            from modules.validation import validate_dataframe
+
+            errors = validate_dataframe(self.table.df, self.table.schema)
+            is_valid = len(errors) == 0
+
+        else:
+            # Clifpy backend: Use clifpy validation
+            self.table.validate()
+            errors = self.table.errors if hasattr(self.table, 'errors') else []
+            is_valid = self.table.isvalid() if hasattr(self.table, 'isvalid') else False
 
         return {
-            'is_valid': self.table.isvalid() if hasattr(self.table, 'isvalid') else False,
-            'errors': self.format_errors(self.table.errors if hasattr(self.table, 'errors') else []),
+            'is_valid': is_valid,
+            'errors': self.format_errors(errors),
             'status': self.determine_status(),
             'data_info': self.get_data_info()
         }

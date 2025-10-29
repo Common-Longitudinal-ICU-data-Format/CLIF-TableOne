@@ -53,6 +53,11 @@ from .sampling import (
     load_sample_list,
     sample_exists
 )
+from .datetime_utils import (
+    standardize_datetime_columns,
+    ensure_datetime_precision_match,
+    standardize_datetime_for_comparison
+)
 
 __all__ = [
     # Validation
@@ -100,5 +105,9 @@ __all__ = [
     'generate_stratified_sample',
     'save_sample_list',
     'load_sample_list',
-    'sample_exists'
+    'sample_exists',
+    # Datetime utilities
+    'standardize_datetime_columns',
+    'ensure_datetime_precision_match',
+    'standardize_datetime_for_comparison'
 ]

@@ -36,11 +36,9 @@ config_mimic.json
 
 # Output directories
 /output/
-output_ucmc/
-output_mimic/
 output_*/
 clif_summary/
-
+modules/sofa/calculator_old.py
 # Development / Reference (kept as reference, not tracked)
 reference/
 code/dev_aggregate.ipynb

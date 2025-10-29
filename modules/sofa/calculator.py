@@ -12,178 +12,19 @@ from typing import Optional, List
 from pathlib import Path
 import logging
 import gc
+import sys
+from pathlib import Path
+
+# Add parent directory to path for imports
+sys.path.insert(0, str(Path(__file__).parent.parent.parent))
+
+from modules.utils.datetime_utils import (
+    standardize_datetime_columns,
+    ensure_datetime_precision_match
+)
 
 # Set up logging
 logger = logging.getLogger(__name__)
-
-
-def ensure_timezone_lazy(col: pl.Expr, target_tz: str) -> pl.Expr:
-    """
-    Ensure column is in target timezone during lazy evaluation.
-
-    This function handles timezone conversion for lazy dataframes,
-    ensuring comparisons can happen without timezone mismatch errors.
-
-    Parameters
-    ----------
-    col : pl.Expr
-        Polars column expression
-    target_tz : str
-        Target timezone (e.g., 'America/New_York', 'UTC')
-
-    Returns
-    -------
-    pl.Expr
-        Column expression with timezone conversion applied
-    """
-    # For lazy operations, attempt to convert to target timezone
-    # If already in correct timezone, this is a no-op
-    # If naive, this will localize it
-    return col.dt.convert_time_zone(target_tz)
-
-
-def ensure_local_timezone(df: pl.DataFrame, col_name: str, local_tz: str) -> pl.DataFrame:
-    """
-    Ensure column is in local timezone, handling all cases.
-
-    Cases handled:
-    1. Timezone-naive: Assumes it's in local timezone, localizes it
-    2. Already in local timezone: No change
-    3. Different timezone (including UTC): Converts to local timezone
-
-    Parameters
-    ----------
-    df : pl.DataFrame
-        DataFrame containing the column
-    col_name : str
-        Name of the datetime column
-    local_tz : str
-        Local timezone from config
-
-    Returns
-    -------
-    pl.DataFrame
-        DataFrame with column in local timezone
-    """
-    dtype_str = str(df[col_name].dtype)
-
-    # Skip if not a datetime column
-    if 'Datetime' not in dtype_str:
-        logger.warning(f"{col_name}: Not a datetime column, skipping timezone handling")
-        return df
-
-    if 'time_zone=None' in dtype_str:
-        # Naive datetime: assume it's already in local timezone, just localize
-        logger.info(f"{col_name}: Naive datetime, localizing to {local_tz}")
-        return df.with_columns([
-            pl.col(col_name).dt.replace_time_zone(local_tz).alias(col_name)
-        ])
-    elif f"time_zone='{local_tz}'" in dtype_str or f'time_zone="{local_tz}"' in dtype_str:
-        # Already in local timezone
-        logger.debug(f"{col_name}: Already in {local_tz}")
-        return df
-    else:
-        # In different timezone (including UTC), convert to local
-        logger.info(f"{col_name}: Converting from {dtype_str} to {local_tz}")
-        return df.with_columns([
-            pl.col(col_name).dt.convert_time_zone(local_tz).alias(col_name)
-        ])
-
-
-def _convert_datetime_to_timezone(df: pl.DataFrame, timezone: str) -> pl.DataFrame:
-    """
-    Convert all datetime columns in Polars DataFrame to specified timezone.
-
-    Matches clifpy behavior for timezone handling:
-    - If datetime has a timezone, converts to target timezone
-    - If datetime is naive (no timezone), assumes it's already in target timezone (localizes in place)
-
-    Parameters
-    ----------
-    df : pl.DataFrame
-        Input DataFrame
-    timezone : str
-        Target timezone (e.g., 'US/Central', 'America/Chicago')
-
-    Returns
-    -------
-    pl.DataFrame
-        DataFrame with datetime columns converted to target timezone
-    """
-    # Find all datetime columns (columns with 'dttm' in name)
-    dttm_columns = [col for col in df.columns if 'dttm' in col.lower()]
-
-    if not dttm_columns:
-        logger.debug("No datetime columns found in DataFrame")
-        return df
-
-    # Track conversion statistics
-    converted_cols = []
-    already_correct_cols = []
-    naive_cols = []
-    problem_cols = []
-
-    # Convert each datetime column
-    for col in dttm_columns:
-        dtype_str = str(df[col].dtype)
-
-        # Check if column is datetime
-        if 'Datetime' not in dtype_str:
-            problem_cols.append(col)
-            logger.warning(f"{col}: Expected datetime but found {dtype_str}")
-            continue
-
-        # Check if timezone-aware (has timezone that is not None)
-        if 'time_zone' in dtype_str and 'time_zone=None' not in dtype_str:
-            # Has timezone - check if it's already correct
-            try:
-                # Try to get current timezone from dtype string
-                # Polars dtype looks like: Datetime(time_unit='us', time_zone='UTC')
-                if f"time_zone='{timezone}'" in dtype_str or f'time_zone="{timezone}"' in dtype_str:
-                    already_correct_cols.append(col)
-                    logger.debug(f"{col}: Already in timezone {timezone}")
-                else:
-                    # Need to convert
-                    null_before = df[col].null_count()
-                    df = df.with_columns([
-                        pl.col(col).dt.convert_time_zone(timezone).alias(col)
-                    ])
-                    null_after = df[col].null_count()
-                    converted_cols.append(col)
-
-                    if null_before != null_after:
-                        logger.warning(f"{col}: Null count changed during conversion ({null_before} → {null_after})")
-                    logger.info(f"{col}: Converted to {timezone}")
-            except Exception as e:
-                problem_cols.append(col)
-                logger.warning(f"{col}: Could not convert timezone: {e}")
-        else:
-            # Naive datetime - assume it's already in target timezone (like clifpy's tz_localize)
-            try:
-                df = df.with_columns([
-                    pl.col(col).dt.replace_time_zone(timezone).alias(col)
-                ])
-                naive_cols.append(col)
-                logger.warning(f"{col}: Naive datetime localized to {timezone}. Please verify this is correct.")
-            except Exception as e:
-                problem_cols.append(col)
-                logger.warning(f"{col}: Could not localize naive datetime: {e}")
-
-    # Log summary
-    if converted_cols or naive_cols or problem_cols:
-        summary_parts = []
-        if converted_cols:
-            summary_parts.append(f"{len(converted_cols)} converted to {timezone}")
-        if already_correct_cols:
-            summary_parts.append(f"{len(already_correct_cols)} already correct")
-        if naive_cols:
-            summary_parts.append(f"{len(naive_cols)} naive dates localized")
-        if problem_cols:
-            summary_parts.append(f"{len(problem_cols)} problematic")
-
-        logger.info(f"Timezone processing complete: {', '.join(summary_parts)}")
-
-    return df
 
 
 def _create_resp_support_episodes(
@@ -448,11 +289,14 @@ def _load_labs(
         pl.col('hospitalization_id').is_in(hospitalization_ids)
     )
 
-    # Ensure datetime column is in local timezone BEFORE join (for lazy evaluation)
+    # Standardize datetime column to consistent timezone and time unit BEFORE join
     if timezone:
-        labs = labs.with_columns([
-            ensure_timezone_lazy(pl.col('lab_result_dttm'), timezone).alias('lab_result_dttm')
-        ])
+        labs = standardize_datetime_columns(
+            labs,
+            target_timezone=timezone,
+            target_time_unit='ns',
+            datetime_columns=['lab_result_dttm']
+        )
 
     # Join with cohort to apply time window filter
     labs = labs.join(
@@ -532,11 +376,14 @@ def _load_vitals(
         pl.col('hospitalization_id').is_in(hospitalization_ids)
     )
 
-    # Ensure datetime column is in local timezone BEFORE join (for lazy evaluation)
+    # Standardize datetime column to consistent timezone and time unit BEFORE join
     if timezone:
-        vitals = vitals.with_columns([
-            ensure_timezone_lazy(pl.col('recorded_dttm'), timezone).alias('recorded_dttm')
-        ])
+        vitals = standardize_datetime_columns(
+            vitals,
+            target_timezone=timezone,
+            target_time_unit='ns',
+            datetime_columns=['recorded_dttm']
+        )
 
     # Join with cohort to apply time window filter
     vitals = vitals.join(
@@ -621,11 +468,14 @@ def _load_patient_assessments(
         pl.col('hospitalization_id').is_in(hospitalization_ids)
     )
 
-    # Ensure datetime column is in local timezone BEFORE join (for lazy evaluation)
+    # Standardize datetime column to consistent timezone and time unit BEFORE join
     if timezone:
-        assessments = assessments.with_columns([
-            ensure_timezone_lazy(pl.col('recorded_dttm'), timezone).alias('recorded_dttm')
-        ])
+        assessments = standardize_datetime_columns(
+            assessments,
+            target_timezone=timezone,
+            target_time_unit='ns',
+            datetime_columns=['recorded_dttm']
+        )
 
     # Join with cohort to apply time window filter
     assessments = assessments.join(
@@ -737,11 +587,14 @@ def _load_respiratory_support(
         pl.col('hospitalization_id').is_in(hospitalization_ids)
     )
 
-    # Ensure datetime column is in local timezone BEFORE join (for lazy evaluation)
+    # Standardize datetime column to consistent timezone and time unit BEFORE join
     if timezone:
-        resp = resp.with_columns([
-            ensure_timezone_lazy(pl.col('recorded_dttm'), timezone).alias('recorded_dttm')
-        ])
+        resp = standardize_datetime_columns(
+            resp,
+            target_timezone=timezone,
+            target_time_unit='ns',
+            datetime_columns=['recorded_dttm']
+        )
 
     # Join with expanded cohort to load data from lookback period
     resp = resp.join(
@@ -886,11 +739,14 @@ def _load_and_convert_medications(
         pl.col('hospitalization_id').is_in(hospitalization_ids)
     )
 
-    # Ensure datetime column is in local timezone BEFORE join (for lazy evaluation)
+    # Standardize datetime column to consistent timezone and time unit BEFORE join
     if timezone:
-        meds = meds.with_columns([
-            ensure_timezone_lazy(pl.col('admin_dttm'), timezone).alias('admin_dttm')
-        ])
+        meds = standardize_datetime_columns(
+            meds,
+            target_timezone=timezone,
+            target_time_unit='ns',
+            datetime_columns=['admin_dttm']
+        )
 
     # Cast to consistent time unit
     meds = meds.with_columns([
@@ -931,11 +787,14 @@ def _load_and_convert_medications(
             pl.col('hospitalization_id').cast(pl.Utf8).alias('hospitalization_id')
         ])
 
-        # Ensure datetime column is in local timezone BEFORE collecting
+        # Standardize datetime column to consistent timezone and time unit BEFORE collecting
         if timezone:
-            weight_data = weight_data.with_columns([
-                ensure_timezone_lazy(pl.col('recorded_dttm'), timezone).alias('recorded_dttm')
-            ])
+            weight_data = standardize_datetime_columns(
+                weight_data,
+                target_timezone=timezone,
+                target_time_unit='ns',
+                datetime_columns=['recorded_dttm']
+            )
 
         # Cast to consistent time unit
         weight_data = weight_data.with_columns([
@@ -1475,16 +1334,14 @@ def compute_sofa_polars(
     if id_name not in cohort_df.columns:
         raise ValueError(f"id_name '{id_name}' not found in cohort_df columns")
 
-    # Ensure cohort datetime columns are in local timezone for consistent comparison
-    # Data files should be in local timezone (naive or aware)
-    logger.info(f"Ensuring cohort datetime columns are in local timezone: {timezone}")
-    cohort_df_local = cohort_df.clone()
-    for col in ['start_dttm', 'end_dttm']:
-        cohort_df_local = ensure_local_timezone(cohort_df_local, col, timezone)
-        # Also cast to microsecond precision for consistency
-        cohort_df_local = cohort_df_local.with_columns([
-            pl.col(col).dt.cast_time_unit("us").alias(col)
-        ])
+    # Standardize cohort datetime columns to consistent timezone and time unit
+    logger.info(f"Standardizing cohort datetime columns to {timezone} with nanosecond precision")
+    cohort_df_local = standardize_datetime_columns(
+        cohort_df.clone(),
+        target_timezone=timezone,
+        target_time_unit='ns',  # Use nanoseconds for consistency with data tables
+        datetime_columns=['start_dttm', 'end_dttm']
+    )
 
     # Normalize hospitalization_id to Utf8 to prevent type mismatch issues with data files
     # (data files may have LargeUtf8 vs Utf8, causing hangs during joins/filters)
