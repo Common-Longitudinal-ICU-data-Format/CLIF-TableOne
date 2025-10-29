@@ -43,14 +43,14 @@ class CLIAnalysisRunner:
 
     # Tables that support hospitalization_id filtering (can use 1k ICU sample)
     # Excludes: patient (uses patient_id), hospitalization (defines the sample),
-    # adt (used to create the sample), code_status (uses patient_id)
+    # adt (used to create the sample), code_status (uses patient_id),
+    # microbiology_susceptibility (only has organism_id, no hospitalization_id)
     SAMPLE_ELIGIBLE_TABLES = [
         'labs',
         'medication_admin_continuous',
         'medication_admin_intermittent',
         'microbiology_culture',
         'microbiology_nonculture',
-        'microbiology_susceptibility',
         'vitals',
         'patient_assessments',
         'respiratory_support',

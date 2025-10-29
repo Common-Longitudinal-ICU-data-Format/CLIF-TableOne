@@ -2216,38 +2216,37 @@ def main(memory_monitor=None) -> bool:
     print(f"   Pressure Control mode: {len(pressure_mode_data):,} records")
 
     # ============================================================================
-    # 4. Plot Median/IQR Tidal Volume for Volume Control Modes
+    # 4. Plot Median/IQR and Mean/SD Tidal Volume for Volume Control Modes
     # ============================================================================
 
-    # Calculate median and IQR tidal volume by hour for volume modes
+    # Calculate binned hour from start
     volume_mode_data['hour_bin'] = volume_mode_data['hours_from_vent_start'].round(0).astype(int)
-
     # Filter to first 168 hours (7 days)
     volume_mode_data_7d = volume_mode_data[volume_mode_data['hour_bin'] <= 168].copy()
 
-    # Group by hour and calculate stats
+    # Group by hour and calculate stats, including mean and std
     tv_stats = volume_mode_data_7d.groupby('hour_bin')['tidal_volume_set'].agg([
         ('median', 'median'),
         ('q25', lambda x: x.quantile(0.25)),
         ('q75', lambda x: x.quantile(0.75)),
+        ('mean', 'mean'),
+        ('std', 'std'),
         ('count', 'count')
     ]).reset_index()
 
     # Filter hours with at least 10 measurements
     tv_stats = tv_stats[tv_stats['count'] >= 10]
 
-    # Save CSV for Tidal Volume data
+    # Save CSV for Tidal Volume data (median/IQR/mean/SD)
     tv_csv_path = get_output_path('final', 'tableone', 'tidal_volume_volume_control_modes.csv')
     tv_stats.to_csv(tv_csv_path, index=False)
     print(f"✅ Saved CSV: {tv_csv_path}")
 
-    # Plot
+    # Plot Median/IQR
     fig, ax = plt.subplots(figsize=(14, 6))
-
     ax.plot(tv_stats['hour_bin'], tv_stats['median'], 'o-', color='#2E86AB', linewidth=2, markersize=4, label='Median')
     ax.fill_between(tv_stats['hour_bin'], tv_stats['q25'], tv_stats['q75'], 
                     alpha=0.3, color='#2E86AB', label='IQR (25th-75th percentile)')
-
     ax.set_xlabel('Hours from Ventilation Start', fontsize=12, fontweight='bold')
     ax.set_ylabel('Tidal Volume Set (mL)', fontsize=12, fontweight='bold')
     ax.set_title('Tidal Volume Over Time: Volume Control Modes\n(Assist Control-Volume Control & Pressure-Regulated Volume Control)', 
@@ -2255,42 +2254,64 @@ def main(memory_monitor=None) -> bool:
     ax.legend(fontsize=10)
     ax.grid(True, alpha=0.3)
     ax.set_xlim(0, 168)
-
     plt.tight_layout()
-    plt.savefig(get_output_path('final', 'tableone', 'tidal_volume_volume_control_modes.png'), dpi=300, bbox_inches='tight')
+    tv_png_path = get_output_path('final', 'tableone', 'tidal_volume_volume_control_modes.png')
+    plt.savefig(tv_png_path, dpi=300, bbox_inches='tight')
     plt.close()
+    print(f"\n✅ Saved: {tv_png_path}")
 
-    print(f"\n✅ Saved: ../output/final/tableone/tidal_volume_volume_control_modes.png")
+    # Plot Mean/SD
+    fig, ax = plt.subplots(figsize=(14, 6))
+    ax.plot(tv_stats['hour_bin'], tv_stats['mean'], 'o-', color='#e67e22', linewidth=2, markersize=4, label='Mean')
+    ax.fill_between(tv_stats['hour_bin'], tv_stats['mean'] - tv_stats['std'], tv_stats['mean'] + tv_stats['std'], 
+                    alpha=0.25, color='#e67e22', label='SD (±1 std)')
+    ax.set_xlabel('Hours from Ventilation Start', fontsize=12, fontweight='bold')
+    ax.set_ylabel('Tidal Volume Set (mL)', fontsize=12, fontweight='bold')
+    ax.set_title('Tidal Volume Over Time (Mean ± SD): Volume Control Modes\n(Assist Control-Volume Control & Pressure-Regulated Volume Control)', 
+                 fontsize=14, fontweight='bold', pad=15)
+    ax.legend(fontsize=10)
+    ax.grid(True, alpha=0.3)
+    ax.set_xlim(0, 168)
+    plt.tight_layout()
+    tv_mean_png_path = get_output_path('final', 'tableone', 'tidal_volume_volume_control_modes_mean_sd.png')
+    plt.savefig(tv_mean_png_path, dpi=300, bbox_inches='tight')
+    plt.close()
+    print(f"✅ Saved: {tv_mean_png_path}")
+
+    tv_mean_sd_csv_path = get_output_path('final', 'tableone', 'tidal_volume_volume_control_modes_mean_sd.csv')
+    tv_stats[['hour_bin', 'mean', 'std', 'count']].to_csv(tv_mean_sd_csv_path, index=False)
+    print(f"✅ Saved CSV: {tv_mean_sd_csv_path}")
 
     # ============================================================================
-    # 5. Plot Median/IQR Pressure Control for Pressure Control Mode
+    # 5. Plot Median/IQR and Mean/SD Pressure Control for Pressure Control Mode
     # ============================================================================
 
-    # Calculate stats for pressure control
+    # Calculate binned hour from start for pressure control mode
     pressure_mode_data['hour_bin'] = pressure_mode_data['hours_from_vent_start'].round(0).astype(int)
     pressure_mode_data_7d = pressure_mode_data[pressure_mode_data['hour_bin'] <= 168].copy()
 
+    # Group by hour and calculate stats, including mean and std
     pc_stats = pressure_mode_data_7d.groupby('hour_bin')['pressure_control_set'].agg([
         ('median', 'median'),
         ('q25', lambda x: x.quantile(0.25)),
         ('q75', lambda x: x.quantile(0.75)),
+        ('mean', 'mean'),
+        ('std', 'std'),
         ('count', 'count')
     ]).reset_index()
 
     pc_stats = pc_stats[pc_stats['count'] >= 10]
 
-    # Save CSV for Pressure Control data
+    # Save CSV for Pressure Control data (median/IQR/mean/SD)
     pc_csv_path = get_output_path('final', 'tableone', 'pressure_control_pressure_control_mode.csv')
     pc_stats.to_csv(pc_csv_path, index=False)
     print(f"✅ Saved CSV: {pc_csv_path}")
 
-    # Plot
+    # Plot Median/IQR
     fig, ax = plt.subplots(figsize=(14, 6))
-
     ax.plot(pc_stats['hour_bin'], pc_stats['median'], 'o-', color='#A23B72', linewidth=2, markersize=4, label='Median')
     ax.fill_between(pc_stats['hour_bin'], pc_stats['q25'], pc_stats['q75'], 
                     alpha=0.3, color='#A23B72', label='IQR (25th-75th percentile)')
-
     ax.set_xlabel('Hours from Ventilation Start', fontsize=12, fontweight='bold')
     ax.set_ylabel('Pressure Control Set (cmH₂O)', fontsize=12, fontweight='bold')
     ax.set_title('Pressure Control Over Time: Pressure Control Mode', 
@@ -2298,15 +2319,36 @@ def main(memory_monitor=None) -> bool:
     ax.legend(fontsize=10)
     ax.grid(True, alpha=0.3)
     ax.set_xlim(0, 168)
-
     plt.tight_layout()
-    plt.savefig(get_output_path('final', 'tableone', 'pressure_control_pressure_control_mode.png'), dpi=300, bbox_inches='tight')
+    pc_png_path = get_output_path('final', 'tableone', 'pressure_control_pressure_control_mode.png')
+    plt.savefig(pc_png_path, dpi=300, bbox_inches='tight')
     plt.close()
+    print(f"✅ Saved: {pc_png_path}")
 
-    print(f"✅ Saved: ../output/final/tableone/pressure_control_pressure_control_mode.png")
+    # Plot Mean/SD
+    fig, ax = plt.subplots(figsize=(14, 6))
+    ax.plot(pc_stats['hour_bin'], pc_stats['mean'], 'o-', color='#27ae60', linewidth=2, markersize=4, label='Mean')
+    ax.fill_between(pc_stats['hour_bin'], pc_stats['mean'] - pc_stats['std'], pc_stats['mean'] + pc_stats['std'], 
+                    alpha=0.25, color='#27ae60', label='SD (±1 std)')
+    ax.set_xlabel('Hours from Ventilation Start', fontsize=12, fontweight='bold')
+    ax.set_ylabel('Pressure Control Set (cmH₂O)', fontsize=12, fontweight='bold')
+    ax.set_title('Pressure Control Over Time (Mean ± SD): Pressure Control Mode', 
+                 fontsize=14, fontweight='bold', pad=15)
+    ax.legend(fontsize=10)
+    ax.grid(True, alpha=0.3)
+    ax.set_xlim(0, 168)
+    plt.tight_layout()
+    pc_mean_png_path = get_output_path('final', 'tableone', 'pressure_control_pressure_control_mode_mean_sd.png')
+    plt.savefig(pc_mean_png_path, dpi=300, bbox_inches='tight')
+    plt.close()
+    print(f"✅ Saved: {pc_mean_png_path}")
+
+    pc_mean_sd_csv_path = get_output_path('final', 'tableone', 'pressure_control_pressure_control_mode_mean_sd.csv')
+    pc_stats[['hour_bin', 'mean', 'std', 'count']].to_csv(pc_mean_sd_csv_path, index=False)
+    print(f"✅ Saved CSV: {pc_mean_sd_csv_path}")
 
     # ============================================================================
-    # OPTIMIZED: Ventilator Settings Table by Device and Mode Category - FIXED
+    # Ventilator Settings Table by Device and Mode Category - FIXED
     # ============================================================================
 
 

@@ -17,10 +17,14 @@ class MicrobiologySusceptibilityAnalyzer(BaseTableAnalyzer):
         """
         Load Microbiology Susceptibility table using clifpy.
 
+        Note: Susceptibility table only has organism_id (no hospitalization_id),
+        so sample_filter is not applicable. The table is loaded in full
+        regardless of sample setting, similar to the patient table.
+
         Parameters:
         -----------
         sample_filter : list, optional
-            List of hospitalization_ids to filter to (uses clifpy filters)
+            List of hospitalization_ids (not applicable to susceptibility table)
         """
         data_path = Path(self.data_dir)
         file_without_clif = data_path / f"microbiology_susceptibility.{self.filetype}"
@@ -31,34 +35,17 @@ class MicrobiologySusceptibilityAnalyzer(BaseTableAnalyzer):
             self.table = None
             return
 
-        # Clifpy saves files directly to output_directory, so pass the final/clifpy subdirectory
-
-
         clifpy_output_dir = os.path.join(self.output_dir, "final", "clifpy")
-
-
         os.makedirs(clifpy_output_dir, exist_ok=True)
 
-
-
         try:
-            # Use filters parameter ONLY when sample is provided
-            if sample_filter is not None:
-                self.table = MicrobiologySusceptibility.from_file(
-                    data_directory=self.data_dir,
-                    filetype=self.filetype,
-                    timezone=self.timezone,
-                    output_directory=clifpy_output_dir,
-                    filters={'hospitalization_id': list(sample_filter)}
-                )
-            else:
-                # Normal load without filters
-                self.table = MicrobiologySusceptibility.from_file(
-                    data_directory=self.data_dir,
-                    filetype=self.filetype,
-                    timezone=self.timezone,
-                    output_directory=clifpy_output_dir
-                )
+            # Load full table without filters (susceptibility doesn't have hospitalization_id)
+            self.table = MicrobiologySusceptibility.from_file(
+                data_directory=self.data_dir,
+                filetype=self.filetype,
+                timezone=self.timezone,
+                output_directory=clifpy_output_dir
+            )
         except Exception as e:
             print(f"⚠️  Error loading microbiology_susceptibility table: {e}")
             self.table = None
