@@ -51,7 +51,8 @@ import matplotlib.patches
 import matplotlib.patheffects
 import polars as pl
 import re
-from modules.sofa.calculator import ensure_local_timezone, compute_sofa_polars
+from modules.sofa.calculator import compute_sofa_polars
+from modules.utils.datetime_utils import standardize_datetime_columns
 
 from clifpy.clif_orchestrator import ClifOrchestrator
 from clifpy.utils import apply_outlier_handling
@@ -2747,13 +2748,13 @@ def main(memory_monitor=None) -> bool:
 
     print(f"Detected medication timestamp format: timezone={med_timezone}, time_unit={med_time_unit}")
 
-    # Apply same timezone handling as SOFA calculator
-    weight_df_pl = ensure_local_timezone(weight_df_pl, 'recorded_dttm', med_timezone)
-
-    # Cast to same time unit precision as medications
-    weight_df_pl = weight_df_pl.with_columns([
-        pl.col('recorded_dttm').dt.cast_time_unit(med_time_unit).alias('recorded_dttm')
-    ])
+    # Apply unified timezone and time unit standardization
+    weight_df_pl = standardize_datetime_columns(
+        weight_df_pl,
+        target_timezone=med_timezone,
+        target_time_unit=med_time_unit,
+        datetime_columns=['recorded_dttm']
+    )
 
     # Convert to Pandas for CLIF compatibility
     weight_vitals_df = weight_df_pl.to_pandas()
