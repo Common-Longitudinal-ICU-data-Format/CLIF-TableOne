@@ -1060,9 +1060,34 @@ def main(memory_monitor=None) -> bool:
     # strobe_counts already initialized at beginning of main()
     strobe_counts['1_icu_encounters'] = num_icu_encounters
 
+    encounter_locations = all_encounters.groupby('encounter_block').agg({
+        'death_enc': 'max',
+        'icu_enc': 'max',  # Did they ever touch ICU?
+        'location_category': lambda x: set(x.dropna().str.lower())  # Set of all locations visited
+    }).reset_index()
+
+    encounter_locations['has_procedural_or_ld'] = encounter_locations['location_category'].apply(
+            lambda locs: any(loc in {'procedural', 'l&d'} for loc in locs)
+        )
+
+    # Step 3: Flag as procedural/L&D only if: 
+    # - MUST have procedural or L&D
+    # - CANNOT have ICU (icu_enc == 0)
+    encounter_locations['is_procedural_ld_only'] = (
+        (encounter_locations['icu_enc'] == 0) &
+        (encounter_locations['has_procedural_or_ld'] == True)
+    ).astype(int)
+
+    # Join has_procedural_or_ld (and is_procedural_ld_only if desired) with all_encounters by encounter_block
+    all_encounters = all_encounters.merge(
+        encounter_locations[['encounter_block', 'is_procedural_ld_only']],
+        on='encounter_block',
+        how='left'
+    )
+
     final_cohort = all_encounters[
         all_encounters['hospitalization_id'].isin(cohort_enc_hospitalization_ids)
-    ][['encounter_block', 'icu_enc', 'death_enc', 'cohort_enc']].drop_duplicates()
+    ][['encounter_block', 'icu_enc', 'death_enc', 'cohort_enc', 'is_procedural_ld_only']].drop_duplicates()
 
 
     # ==============================================================================
@@ -1118,7 +1143,7 @@ def main(memory_monitor=None) -> bool:
         'encounter_block'
     ].unique()
     print(f"Hospitalizations with any advanced resp. device ({', '.join(device_types).upper()}): {len(advanced_support_hosp_ids):,}")
-    strobe_counts["2_advanced_resp_support_hospitalizations"] = len(advanced_support_hosp_ids)
+    # strobe_counts["2_advanced_resp_support_hospitalizations"] = len(advanced_support_hosp_ids)
 
     # Create a DataFrame with advanced_support_hosp_ids and 'high_support_en' == 1
     advanced_support_df = pd.DataFrame({
@@ -1164,7 +1189,7 @@ def main(memory_monitor=None) -> bool:
         'encounter_block'
     ].unique()
     print(f"Hospitalizations with any vasoactives. device ({', '.join(vasoactive_meds).upper()}): {len(vasoactive_hosp_ids):,}")
-    strobe_counts["3_vasoactive_hospitalizations"] = len(vasoactive_hosp_ids)
+    # strobe_counts["3_vasoactive_hospitalizations"] = len(vasoactive_hosp_ids)
 
     # Create a DataFrame with advanced_support_hosp_ids and 'high_support_en' == 1
     vasoactives_df = pd.DataFrame({
@@ -1183,6 +1208,13 @@ def main(memory_monitor=None) -> bool:
     final_cohort['vaso_support_enc'] = final_cohort['vaso_support_enc'].fillna(0).astype(int)
     # Missing high_support_en means not on advanced support
     final_cohort['high_support_enc'] = final_cohort['high_support_enc'].fillna(0).astype(int)
+
+    # Set high_support_enc and vaso_support_enc to 0 if is_procedural_ld_only is 1
+    # (procedural/L&D only encounters without ICU should not count as having support)
+    final_cohort.loc[final_cohort['is_procedural_ld_only'] == 1, 'high_support_enc'] = 0
+    final_cohort.loc[final_cohort['is_procedural_ld_only'] == 1, 'vaso_support_enc'] = 0
+    strobe_counts["2_advanced_resp_support_hospitalizations"] = (final_cohort['high_support_enc'] == 1).sum()
+    strobe_counts["3_vasoactive_hospitalizations"] = (final_cohort['vaso_support_enc'] == 1).sum()    
 
     # Memory cleanup: Clear medication initial load data
     print("Clearing medication initial load data from memory...")
@@ -1513,6 +1545,64 @@ def main(memory_monitor=None) -> bool:
         figsize=(16, 8)
     )
 
+
+    # ==============================================================================
+    # Sankey for Interventions Starting in Procedural/Other
+    # ==============================================================================
+
+    # Get first location for each encounter
+    first_location_per_encounter = adt_cohort.sort_values(['encounter_block', 'in_dttm']).groupby('encounter_block').first().reset_index()
+
+    # High support encounters starting in procedural or other
+    adv_o2_sup_proc_other = final_tableone_df[
+        (final_tableone_df['high_support_enc'] == 1) &
+        (final_tableone_df['encounter_block'].isin(
+            first_location_per_encounter[
+                first_location_per_encounter['location_category'].isin(['procedural', 'other'])
+            ]['encounter_block']
+        ))
+    ]['encounter_block'].tolist()
+
+    print(f"\nAdvanced O2 Support starting in Procedural/Other (N={len(adv_o2_sup_proc_other)})")
+
+    if len(adv_o2_sup_proc_other) > 0:
+        fig1, df1 = create_sankey_diagram(
+            adt_cohort=adt_cohort,
+            encounter_blocks=adv_o2_sup_proc_other,
+            outcome_df=outcome_df,
+            max_locations=8,
+            title="Advanced O2 Support: Starting in Procedural/Other",
+            output_file=f"{output_dir}/figures/sankey_matplotlib_high_o2_proc_other.png",
+            figsize=(16, 8)
+        )
+    else:
+        print("  ⚠️ No encounters found")
+
+
+    # Vasoactive support encounters starting in procedural or other
+    vaso_sup_proc_other = final_tableone_df[
+        (final_tableone_df['vaso_support_enc'] == 1) &
+        (final_tableone_df['encounter_block'].isin(
+            first_location_per_encounter[
+                first_location_per_encounter['location_category'].isin(['procedural', 'other'])
+            ]['encounter_block']
+        ))
+    ]['encounter_block'].tolist()
+
+    print(f"\nVasoactive Support starting in Procedural/Other (N={len(vaso_sup_proc_other)})")
+
+    if len(vaso_sup_proc_other) > 0:
+        fig1, df1 = create_sankey_diagram(
+            adt_cohort=adt_cohort,
+            encounter_blocks=vaso_sup_proc_other,
+            outcome_df=outcome_df,
+            max_locations=8,
+            title="Vasoactive Support: Starting in Procedural/Other",
+            output_file=f"{output_dir}/figures/sankey_matplotlib_vaso_proc_other.png",
+            figsize=(16, 8)
+        )
+    else:
+        print("  ⚠️ No encounters found")
 
 
     # ==============================================================================
