@@ -11,6 +11,7 @@ import polars as pl
 from typing import Optional, List
 from pathlib import Path
 import logging
+import gc
 
 # Set up logging
 logger = logging.getLogger(__name__)
@@ -400,9 +401,9 @@ def _load_labs(
     hospitalization_ids: List[str],
     cohort_df: pl.DataFrame,
     timezone: Optional[str] = None
-) -> pl.DataFrame:
+) -> pl.LazyFrame:
     """
-    Load and filter labs data.
+    Load and filter labs data (returns LazyFrame for memory efficiency).
 
     Parameters
     ----------
@@ -417,9 +418,9 @@ def _load_labs(
 
     Returns
     -------
-    pl.DataFrame
-        Filtered labs data with columns: hospitalization_id, lab_result_dttm,
-        lab_category, lab_value (numeric), and any id columns from cohort
+    pl.LazyFrame
+        Filtered labs data in long format (not pivoted) with columns:
+        id columns, lab_result_dttm, lab_category, lab_value_numeric
     """
     file_path = Path(data_directory) / f"clif_labs.{filetype}"
 
@@ -463,7 +464,7 @@ def _load_labs(
         (pl.col('lab_result_dttm') <= pl.col('end_dttm'))
     )
 
-    # Select relevant columns and pivot to wide format
+    # Select relevant columns (keep in long format for memory efficiency)
     id_cols = [col for col in cohort_df.columns if col not in ['start_dttm', 'end_dttm']]
 
     labs = labs.select([
@@ -471,26 +472,11 @@ def _load_labs(
         'lab_result_dttm',
         'lab_category',
         'lab_value_numeric'
-    ]).collect()
+    ])
 
-    # No need to convert timezone here since we already ensured it during lazy evaluation
-
-    # Add row number to handle multiple values at same timestamp
-    # This ensures each row is unique for pivoting (no aggregation needed)
-    labs = labs.with_row_count('row_id')
-
-    # Pivot labs to wide format
-    # Include row_id in index to ensure uniqueness (each lab value gets its own row)
-    labs_wide = labs.pivot(
-        values='lab_value_numeric',
-        index=[*id_cols, 'lab_result_dttm', 'row_id'],
-        columns='lab_category'
-    )
-
-    # Drop row_id after pivoting
-    labs_wide = labs_wide.drop('row_id')
-
-    return labs_wide
+    # Return LazyFrame (no collect, no pivot)
+    # Pivoting will happen later in the pipeline after all data is combined
+    return labs
 
 
 def _load_vitals(
@@ -499,9 +485,9 @@ def _load_vitals(
     hospitalization_ids: List[str],
     cohort_df: pl.DataFrame,
     timezone: Optional[str] = None
-) -> pl.DataFrame:
+) -> pl.LazyFrame:
     """
-    Load and filter vitals data.
+    Load and filter vitals data (returns LazyFrame for memory efficiency).
 
     Parameters
     ----------
@@ -516,8 +502,9 @@ def _load_vitals(
 
     Returns
     -------
-    pl.DataFrame
-        Filtered vitals data in wide format
+    pl.LazyFrame
+        Filtered vitals data in long format (not pivoted) with columns:
+        id columns, recorded_dttm, vital_category, vital_value
     """
     file_path = Path(data_directory) / f"clif_vitals.{filetype}"
 
@@ -561,7 +548,7 @@ def _load_vitals(
         (pl.col('recorded_dttm') <= pl.col('end_dttm'))
     )
 
-    # Select relevant columns
+    # Select relevant columns (keep in long format for memory efficiency)
     id_cols = [col for col in cohort_df.columns if col not in ['start_dttm', 'end_dttm']]
 
     vitals = vitals.select([
@@ -569,19 +556,11 @@ def _load_vitals(
         'recorded_dttm',
         'vital_category',
         'vital_value'
-    ]).collect()
+    ])
 
-    # No need to convert timezone here since we already ensured it during lazy evaluation
-
-    # Pivot vitals to wide format
-    vitals_wide = vitals.pivot(
-        values='vital_value',
-        index=[*id_cols, 'recorded_dttm'],
-        columns='vital_category',
-        aggregate_function='mean'
-    )
-
-    return vitals_wide
+    # Return LazyFrame (no collect, no pivot)
+    # Pivoting will happen later in the pipeline after all data is combined
+    return vitals
 
 
 def _load_patient_assessments(
@@ -590,9 +569,9 @@ def _load_patient_assessments(
     hospitalization_ids: List[str],
     cohort_df: pl.DataFrame,
     timezone: Optional[str] = None
-) -> pl.DataFrame:
+) -> pl.LazyFrame:
     """
-    Load and filter patient assessments data.
+    Load and filter patient assessments data (returns LazyFrame for memory efficiency).
 
     Parameters
     ----------
@@ -607,14 +586,20 @@ def _load_patient_assessments(
 
     Returns
     -------
-    pl.DataFrame
-        Filtered assessments data in wide format
+    pl.LazyFrame
+        Filtered assessments data in long format (not materialized)
     """
     file_path = Path(data_directory) / f"clif_patient_assessments.{filetype}"
 
     if not file_path.exists():
         logger.warning(f"Patient assessments file not found: {file_path}")
-        return pl.DataFrame()
+        # Return empty LazyFrame with expected schema
+        return pl.LazyFrame(schema={
+            'hospitalization_id': pl.Utf8,
+            'recorded_dttm': pl.Datetime,
+            'assessment_category': pl.Utf8,
+            'assessment_value': pl.Float64
+        })
 
     # Define columns to load
     load_columns = ['hospitalization_id', 'recorded_dttm', 'assessment_category', 'numerical_value', 'categorical_value']
@@ -665,19 +650,11 @@ def _load_patient_assessments(
         'recorded_dttm',
         'assessment_category',
         'assessment_value'
-    ]).collect()
+    ])
 
-    # No need to convert timezone here since we already ensured it during lazy evaluation
-
-    # Pivot assessments to wide format
-    assessments_wide = assessments.pivot(
-        values='assessment_value',
-        index=[*id_cols, 'recorded_dttm'],
-        columns='assessment_category',
-        aggregate_function='mean'
-    )
-
-    return assessments_wide
+    # Return lazy frame in long format
+    # Pivoting will happen later in the pipeline after all data is combined
+    return assessments
 
 
 def _load_respiratory_support(
@@ -687,13 +664,16 @@ def _load_respiratory_support(
     cohort_df: pl.DataFrame,
     lookback_hours: int = 24,
     timezone: Optional[str] = None
-) -> pl.DataFrame:
+) -> pl.LazyFrame:
     """
-    Load respiratory support data with lookback period for forward-filling.
+    Load respiratory support data with lookback period for forward-filling (returns LazyFrame for memory efficiency).
 
     For SOFA-97 concurrent P/F calculation, we need to forward-fill FiO2 and device
     category. This requires loading data from before the SOFA window starts to get
     the initial values for forward-filling.
+
+    Note: This function temporarily materializes data for forward-filling operations,
+    but returns a LazyFrame for downstream processing efficiency.
 
     Parameters
     ----------
@@ -712,14 +692,22 @@ def _load_respiratory_support(
 
     Returns
     -------
-    pl.DataFrame
+    pl.LazyFrame
         Respiratory support data with forward-filled FiO2 and device_category
     """
     file_path = Path(data_directory) / f"clif_respiratory_support.{filetype}"
 
     if not file_path.exists():
         logger.warning(f"Respiratory support file not found: {file_path}")
-        return pl.DataFrame()
+        # Return empty LazyFrame with expected schema
+        return pl.LazyFrame(schema={
+            'hospitalization_id': pl.Utf8,
+            'recorded_dttm': pl.Datetime,
+            'device_category': pl.Utf8,
+            'mode_category': pl.Utf8,
+            'fio2_set': pl.Float64,
+            'device_rank': pl.Int64
+        })
 
     # Define columns to load
     load_columns = ['hospitalization_id', 'recorded_dttm', 'device_category', 'mode_category',
@@ -805,7 +793,8 @@ def _load_respiratory_support(
         pl.col('device_category').replace(DEVICE_RANK_DICT, default=9).alias('device_rank')
     ])
 
-    return resp
+    # Return as LazyFrame for downstream processing
+    return resp.lazy()
 
 
 def _clean_dose_unit(unit_series: pl.Expr) -> pl.Expr:
@@ -838,10 +827,14 @@ def _load_and_convert_medications(
     hospitalization_ids: List[str],
     cohort_df: pl.DataFrame,
     vitals_df: pl.DataFrame,
-    timezone: Optional[str] = None
-) -> pl.DataFrame:
+    timezone: Optional[str] = None,
+    time_unit: str = 'us'
+) -> pl.LazyFrame:
     """
-    Load medication data and convert all doses to mcg/kg/min.
+    Load medication data and convert all doses to mcg/kg/min (returns LazyFrame for memory efficiency).
+
+    Note: This function temporarily materializes data for dose conversion operations,
+    but returns a LazyFrame for downstream processing efficiency.
 
     Parameters
     ----------
@@ -858,14 +851,20 @@ def _load_and_convert_medications(
 
     Returns
     -------
-    pl.DataFrame
-        Medication data with converted doses in mcg/kg/min
+    pl.LazyFrame
+        Medication data with converted doses in mcg/kg/min (in long format)
     """
     file_path = Path(data_directory) / f"clif_medication_admin_continuous.{filetype}"
 
     if not file_path.exists():
         logger.warning(f"Medication admin continuous file not found: {file_path}")
-        return pl.DataFrame()
+        # Return empty LazyFrame with expected schema
+        return pl.LazyFrame(schema={
+            'hospitalization_id': pl.Utf8,
+            'admin_dttm': pl.Datetime,
+            'med_category': pl.Utf8,
+            'dose_mcg_kg_min': pl.Float64
+        })
 
     # Define columns to load
     load_columns = ['hospitalization_id', 'admin_dttm', 'med_category', 'med_dose', 'med_dose_unit']
@@ -892,6 +891,11 @@ def _load_and_convert_medications(
         meds = meds.with_columns([
             ensure_timezone_lazy(pl.col('admin_dttm'), timezone).alias('admin_dttm')
         ])
+
+    # Cast to consistent time unit
+    meds = meds.with_columns([
+        pl.col('admin_dttm').dt.cast_time_unit(time_unit).alias('admin_dttm')
+    ])
 
     # Join with cohort to apply time window filter
     meds = meds.join(
@@ -933,6 +937,11 @@ def _load_and_convert_medications(
                 ensure_timezone_lazy(pl.col('recorded_dttm'), timezone).alias('recorded_dttm')
             ])
 
+        # Cast to consistent time unit
+        weight_data = weight_data.with_columns([
+            pl.col('recorded_dttm').dt.cast_time_unit(time_unit).alias('recorded_dttm')
+        ])
+
         weight_data = weight_data.filter(
             pl.col('hospitalization_id').is_in(hospitalization_ids) &
             (pl.col('vital_category') == 'weight_kg')
@@ -951,7 +960,12 @@ def _load_and_convert_medications(
             'weight_kg': []
         })
 
+    # Sort both dataframes before join_asof to satisfy sortedness requirement
+    meds = meds.sort(['hospitalization_id', 'admin_dttm'])
+    weight_data = weight_data.sort(['hospitalization_id', 'recorded_dttm'])
+
     # Join with weight using asof join (get most recent weight)
+    # Both admin_dttm and recorded_dttm are now in the same time unit
     meds = meds.join_asof(
         weight_data,
         left_on='admin_dttm',
@@ -994,7 +1008,7 @@ def _load_and_convert_medications(
         .alias('dose_mcg_kg_min')
     ])
 
-    # Select and pivot by medication category
+    # Select columns in long format
     id_cols = [col for col in cohort_df.columns if col not in ['start_dttm', 'end_dttm']]
 
     meds_select = meds.select([
@@ -1004,20 +1018,9 @@ def _load_and_convert_medications(
         'dose_mcg_kg_min'
     ])
 
-    # Pivot to wide format
-    meds_wide = meds_select.pivot(
-        values='dose_mcg_kg_min',
-        index=[*id_cols, 'admin_dttm'],
-        columns='med_category',
-        aggregate_function='mean'
-    )
-
-    # Rename columns to add _mcg_kg_min suffix
-    rename_dict = {med: f"{med}_mcg_kg_min" for med in REQUIRED_MEDS if med in meds_wide.columns}
-    if rename_dict:
-        meds_wide = meds_wide.rename(rename_dict)
-
-    return meds_wide
+    # Return as LazyFrame for downstream processing
+    # Pivoting will happen later in the pipeline after all data is combined
+    return meds_select.lazy()
 
 
 def _impute_pao2_from_spo2(df: pl.DataFrame) -> pl.DataFrame:
@@ -1113,6 +1116,10 @@ def _calculate_concurrent_pf_ratios(
         'fio2_set',
         'device_category'
     ])
+
+    # Sort both dataframes before join_asof to satisfy sortedness requirement
+    po2_df = po2_df.sort([*id_cols, 'lab_result_dttm'])
+    resp_for_join = resp_for_join.sort([*id_cols, 'recorded_dttm'])
 
     # Use join_asof to match each PO2 with most recent FiO2 within tolerance
     # Strategy 'backward' finds the most recent FiO2 before or at the PO2 time
@@ -1393,7 +1400,8 @@ def compute_sofa_polars(
     extremal_type: str = 'worst',
     fill_na_scores_with_zero: bool = True,
     remove_outliers: bool = True,
-    timezone: Optional[str] = None
+    timezone: Optional[str] = None,
+    time_unit: str = 'us'
 ) -> pl.DataFrame:
     """
     Compute SOFA scores using optimized Polars operations.
@@ -1424,6 +1432,9 @@ def compute_sofa_polars(
         If True, remove physiologically implausible values
     timezone : Optional[str]
         Timezone for datetime parsing (if needed)
+    time_unit : str, default='us'
+        Time unit for datetime columns ('ms', 'us', 'ns')
+        Ensures consistent datetime precision across all data sources
 
     Returns
     -------
@@ -1500,68 +1511,152 @@ def compute_sofa_polars(
     resp_df = _load_respiratory_support(data_directory, filetype, hospitalization_ids, cohort_df_local, lookback_hours=24, timezone=timezone)
 
     logger.info("Loading and converting medication data...")
-    meds_df = _load_and_convert_medications(data_directory, filetype, hospitalization_ids, cohort_df_local, vitals_df, timezone)
+    meds_df = _load_and_convert_medications(data_directory, filetype, hospitalization_ids, cohort_df_local, vitals_df, timezone, time_unit)
 
-    # Combine all data sources
-    logger.info("Combining all data sources...")
+    # Combine all data sources (all are LazyFrames now)
+    logger.info("Combining all data sources (lazy evaluation)...")
 
-    # Get all time columns
-    time_cols = []
-    dfs_to_combine = []
-
-    if labs_df.height > 0:
-        time_cols.append(('lab_result_dttm', labs_df))
-    if vitals_df.height > 0:
-        time_cols.append(('recorded_dttm', vitals_df))
-    if assessments_df.height > 0:
-        time_cols.append(('recorded_dttm', assessments_df))
-    if resp_df.height > 0:
-        time_cols.append(('recorded_dttm', resp_df))
-    if meds_df.height > 0:
-        time_cols.append(('admin_dttm', meds_df))
-
-    # Rename all time columns to common 'event_time' and stack vertically
+    # Prepare all data sources with their time column names
+    # Note: All inputs are now LazyFrames, so we work with them lazily
     id_cols = [col for col in cohort_df_local.columns if col not in ['start_dttm', 'end_dttm']]
 
+    # Rename time columns and prepare lazy frames
+    labs_lazy = labs_df.rename({'lab_result_dttm': 'event_time'})
+    vitals_lazy = vitals_df.rename({'recorded_dttm': 'event_time'})
+    assessments_lazy = assessments_df.rename({'recorded_dttm': 'event_time'})
+    resp_lazy = resp_df.rename({'recorded_dttm': 'event_time'})
+    meds_lazy = meds_df.rename({'admin_dttm': 'event_time'})
+
+    # Cast event_time to consistent time unit for all data sources
+    # This prevents "Datetime('ns', timezone) is incompatible with Datetime('μs', timezone)" errors
     combined_parts = []
-    for time_col, df in time_cols:
-        df_renamed = df.rename({time_col: 'event_time'})
-        # Cast event_time to microsecond precision for consistency across all data sources
-        # This prevents "Datetime('ns', timezone) is incompatible with Datetime('μs', timezone)" errors
-        # Use dt.cast_time_unit to preserve the timezone that was already set
-        df_renamed = df_renamed.with_columns([
-            pl.col('event_time').dt.cast_time_unit('us').alias('event_time')
+    for df_lazy in [labs_lazy, vitals_lazy, assessments_lazy, resp_lazy, meds_lazy]:
+        df_lazy = df_lazy.with_columns([
+            pl.col('event_time').dt.cast_time_unit(time_unit).alias('event_time')
         ])
-        combined_parts.append(df_renamed)
+        combined_parts.append(df_lazy)
 
-    if not combined_parts:
-        raise ValueError("No data loaded from any source")
-
-    # Concatenate all parts vertically (stack rows)
+    # Concatenate all parts vertically (stack rows) - still lazy
     # Use 'diagonal' to handle different column sets - missing columns filled with null
-    combined_df = pl.concat(combined_parts, how='diagonal')
+    combined_lazy = pl.concat(combined_parts, how='diagonal')
 
-    logger.info(f"Combined data shape: {combined_df.height} rows x {combined_df.width} columns")
+    # Clean up lazy frames and intermediate variables (they don't consume memory)
+    del combined_parts, labs_lazy, vitals_lazy, assessments_lazy, resp_lazy, meds_lazy
 
-    # Remove outliers if requested
+    # Apply outlier removal if requested (still lazy)
     if remove_outliers:
-        logger.info("Removing outliers...")
-        combined_df = combined_df.with_columns([
-            pl.when((pl.col('po2_arterial') >= 0) & (pl.col('po2_arterial') <= 700))
-            .then(pl.col('po2_arterial'))
-            .otherwise(None)
-            .alias('po2_arterial'),
+        logger.info("Adding outlier removal to lazy query...")
+        combined_lazy = combined_lazy.with_columns([
+            pl.when((pl.col('lab_value_numeric').is_not_null()) & (pl.col('lab_category') == 'po2_arterial') & (pl.col('lab_value_numeric') >= 0) & (pl.col('lab_value_numeric') <= 700))
+            .then(pl.col('lab_value_numeric'))
+            .when((pl.col('lab_value_numeric').is_not_null()) & (pl.col('lab_category') == 'po2_arterial'))
+            .then(None)
+            .otherwise(pl.col('lab_value_numeric'))
+            .alias('lab_value_numeric'),
 
-            pl.when((pl.col('fio2_set') >= 0.21) & (pl.col('fio2_set') <= 1))
+            pl.when((pl.col('fio2_set').is_not_null()) & (pl.col('fio2_set') >= 0.21) & (pl.col('fio2_set') <= 1))
             .then(pl.col('fio2_set'))
-            .otherwise(None)
+            .when(pl.col('fio2_set').is_not_null())
+            .then(None)
+            .otherwise(pl.col('fio2_set'))
             .alias('fio2_set'),
 
-            pl.when((pl.col('spo2') >= 50) & (pl.col('spo2') <= 100))
-            .then(pl.col('spo2'))
-            .otherwise(None)
-            .alias('spo2')
+            pl.when((pl.col('vital_value').is_not_null()) & (pl.col('vital_category') == 'spo2') & (pl.col('vital_value') >= 50) & (pl.col('vital_value') <= 100))
+            .then(pl.col('vital_value'))
+            .when((pl.col('vital_value').is_not_null()) & (pl.col('vital_category') == 'spo2'))
+            .then(None)
+            .otherwise(pl.col('vital_value'))
+            .alias('vital_value')
         ])
+
+    # ==================================================================================
+    # MEMORY OPTIMIZATION: Aggregate in long format BEFORE pivoting
+    # This reduces data from ~2.7M rows to ~11K rows before materialization
+    # ==================================================================================
+    logger.info("Aggregating extremal values in long format (lazy)...")
+
+    # Define aggregation strategy: which categories use MAX vs MIN for "worst"
+    # Worse = HIGHER for these (take MAX):
+    max_labs = ['creatinine', 'bilirubin_total']
+    max_meds = ['norepinephrine', 'epinephrine', 'dopamine', 'dobutamine']
+
+    # Worse = LOWER for these (take MIN):
+    min_labs = ['platelet_count', 'po2_arterial']
+    min_vitals = ['map', 'spo2']
+    min_assessments = ['gcs_total']
+
+    # Aggregate labs - SPLIT into separate MAX and MIN aggregations to avoid schema mismatch
+    # MAX labs (worse = higher: creatinine, bilirubin)
+    labs_max_agg = combined_lazy.filter(
+        pl.col('lab_category').is_in(max_labs)
+    ).group_by([id_name, 'lab_category']).agg([
+        pl.col('lab_value_numeric').max().alias('value')
+    ])
+
+    # MIN labs (worse = lower: platelets, PO2)
+    labs_min_agg = combined_lazy.filter(
+        pl.col('lab_category').is_in(min_labs)
+    ).group_by([id_name, 'lab_category']).agg([
+        pl.col('lab_value_numeric').min().alias('value')
+    ])
+
+    # Concatenate labs (MAX + MIN)
+    labs_agg = pl.concat([labs_max_agg, labs_min_agg], how='vertical').with_columns([
+        pl.lit('lab').alias('data_type')
+    ])
+
+    # Aggregate vitals (all MIN for worst)
+    vitals_agg = combined_lazy.filter(pl.col('vital_category').is_not_null()).group_by(
+        [id_name, 'vital_category']
+    ).agg([
+        pl.col('vital_value').min().alias('value')
+    ]).rename({'vital_category': 'lab_category'}).with_columns([
+        pl.lit('vital').alias('data_type')
+    ])
+
+    # Aggregate medications (all MAX for worst)
+    meds_agg = combined_lazy.filter(pl.col('med_category').is_not_null()).group_by(
+        [id_name, 'med_category']
+    ).agg([
+        pl.col('dose_mcg_kg_min').max().alias('value')
+    ]).rename({'med_category': 'lab_category'}).with_columns([
+        pl.lit('med').alias('data_type')
+    ])
+
+    # Aggregate assessments (MIN for GCS)
+    assess_agg = combined_lazy.filter(pl.col('assessment_category').is_not_null()).group_by(
+        [id_name, 'assessment_category']
+    ).agg([
+        pl.col('assessment_value').min().alias('value')
+    ]).rename({'assessment_category': 'lab_category'}).with_columns([
+        pl.lit('assessment').alias('data_type')
+    ])
+
+    # Concatenate all aggregated results (still lazy)
+    # Now all have consistent schema: [id_name, lab_category, value, data_type]
+    aggregated_lazy = pl.concat([labs_agg, vitals_agg, meds_agg, assess_agg], how='vertical')
+
+    # NOW collect the small aggregated result (only ~11 rows per patient)
+    logger.info("Collecting aggregated data...")
+    aggregated_df = aggregated_lazy.collect()
+    logger.info(f"Aggregated data shape: {aggregated_df.height:,} rows x {aggregated_df.width} columns")
+
+    # Pivot to wide format (now very fast since data is small)
+    logger.info("Pivoting aggregated data to wide format...")
+    combined_df = aggregated_df.pivot(
+        index=id_name,
+        on='lab_category',
+        values='value'
+    )
+
+    # Add _mcg_kg_min suffix to medication columns
+    med_cols_to_rename = {col: f"{col}_mcg_kg_min"
+                          for col in combined_df.columns
+                          if col in max_meds}
+    if med_cols_to_rename:
+        combined_df = combined_df.rename(med_cols_to_rename)
+
+    logger.info(f"Pivoted data shape: {combined_df.height:,} rows x {combined_df.width} columns")
 
     # Impute PaO2 from SpO2
     logger.info("Imputing PaO2 from SpO2...")
@@ -1569,30 +1664,61 @@ def compute_sofa_polars(
 
     # Calculate concurrent P/F ratios (SOFA-97 specification)
     logger.info("Calculating concurrent P/F ratios...")
-    # Extract labs data with PO2 (before it gets combined with other data)
-    labs_with_po2 = labs_df.filter(pl.col('po2_arterial').is_not_null())
+    # Need to collect labs and resp for P/F calculation
+    labs_df_collected = labs_df.collect()
+    resp_df_collected = resp_df.collect()
+
+    # Extract labs data with PO2 - need to pivot labs first
+    labs_with_po2 = labs_df_collected.filter(
+        (pl.col('lab_category') == 'po2_arterial') &
+        (pl.col('lab_value_numeric').is_not_null())
+    ).select([
+        id_name,
+        'lab_result_dttm',
+        pl.col('lab_value_numeric').alias('po2_arterial')
+    ] + [col for col in labs_df_collected.columns if col in cohort_df_local.columns and col not in [id_name, 'lab_result_dttm', 'lab_value_numeric', 'lab_category', 'start_dttm', 'end_dttm']])
 
     # Calculate concurrent P/F using respiratory support data (with forward-filled FiO2)
     id_cols = [col for col in cohort_df_local.columns if col not in ['start_dttm', 'end_dttm']]
     concurrent_pf_df = _calculate_concurrent_pf_ratios(
         labs_with_po2,
-        resp_df,
+        resp_df_collected,
         time_tolerance_minutes=240,  # 4 hour lookback
         id_cols=id_cols
     )
 
-    # Aggregate extremal values
-    logger.info(f"Aggregating extremal values by {id_name}...")
-    extremal_df = _aggregate_extremal_values(
-        combined_df,
-        id_name,
-        extremal_type,
-        concurrent_pf_df=concurrent_pf_df  # Pass concurrent P/F for SOFA-97
-    )
+    # Aggregate concurrent P/F: take worst (minimum) P/F per patient
+    logger.info(f"Aggregating concurrent P/F ratios by {id_name}...")
+    pf_agg = concurrent_pf_df.group_by(id_name).agg([
+        pl.col('concurrent_pf').min().alias('p_f'),
+        pl.col('po2_arterial').min().alias('po2_arterial'),  # For reference
+        pl.col('fio2_set').max().alias('fio2_set'),  # For reference
+        # Get device_category at worst P/F
+        pl.col('device_category').sort_by('concurrent_pf').first().alias('device_category')
+    ])
+
+    # Add device_rank based on device_category
+    pf_agg = pf_agg.with_columns([
+        pl.col('device_category').replace(DEVICE_RANK_DICT, default=9).alias('device_rank')
+    ])
+
+    # Merge P/F data with other aggregated values
+    combined_df = combined_df.join(pf_agg, on=id_name, how='left')
+
+    # Free memory after P/F calculation
+    logger.info("Freeing memory from intermediate DataFrames...")
+    del labs_df, vitals_df, assessments_df, resp_df, meds_df
+    del labs_df_collected, resp_df_collected, labs_with_po2, combined_lazy
+    del aggregated_df, aggregated_lazy
+    gc.collect()
+    logger.info("Memory cleanup complete")
+
+    # Data is already aggregated, skip _aggregate_extremal_values
+    logger.info(f"Data already aggregated to extremal values")
 
     # Compute SOFA scores
     logger.info("Computing SOFA scores...")
-    sofa_df = _compute_sofa_scores(extremal_df, id_name)
+    sofa_df = _compute_sofa_scores(combined_df, id_name)
 
     # Fill NA scores with zero if requested
     if fill_na_scores_with_zero:
