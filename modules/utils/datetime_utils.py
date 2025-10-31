@@ -17,6 +17,7 @@ def standardize_datetime_columns(
     target_timezone: str,
     target_time_unit: str = 'ns',
     ambiguous: str = 'earliest',
+    non_existent: str = 'null',
     datetime_columns: Optional[List[str]] = None
 ) -> Union[pl.DataFrame, pl.LazyFrame]:
     """
@@ -40,11 +41,16 @@ def standardize_datetime_columns(
         Target time unit for all datetime columns ('ms', 'us', 'ns')
         Recommended: 'ns' (nanoseconds) for maximum precision
     ambiguous : str, default='earliest'
-        How to handle ambiguous times during DST transitions:
+        How to handle ambiguous times during DST "fall back" transitions:
         - 'earliest': Use earlier occurrence (recommended)
         - 'latest': Use later occurrence
         - 'raise': Raise error
         - 'null': Set ambiguous times to null
+    non_existent : str, default='null'
+        How to handle non-existent times during DST "spring forward" transitions
+        (e.g., 2:30 AM on the day clocks move forward):
+        - 'null': Set non-existent times to null (recommended)
+        - 'raise': Raise error (for strict validation)
     datetime_columns : list of str, optional
         Specific datetime columns to convert. If None, auto-detects all datetime columns.
 
@@ -104,7 +110,8 @@ def standardize_datetime_columns(
             dtype,
             target_timezone,
             target_time_unit,
-            ambiguous
+            ambiguous,
+            non_existent
         )
 
         conversions.append(conversion_expr)
@@ -121,7 +128,8 @@ def _build_datetime_conversion_expr(
     dtype: pl.Datetime,
     target_timezone: str,
     target_time_unit: str,
-    ambiguous: str
+    ambiguous: str,
+    non_existent: str
 ) -> pl.Expr:
     """
     Build Polars expression for datetime conversion based on current state.
@@ -137,7 +145,9 @@ def _build_datetime_conversion_expr(
     target_time_unit : str
         Target time unit
     ambiguous : str
-        Ambiguous time handling strategy
+        Ambiguous time handling strategy for DST "fall back"
+    non_existent : str
+        Non-existent time handling strategy for DST "spring forward"
 
     Returns
     -------
@@ -161,7 +171,7 @@ def _build_datetime_conversion_expr(
         expr = (
             pl.col(col_name)
             .cast(pl.Datetime(target_time_unit))  # Standardize time unit first
-            .dt.replace_time_zone(target_timezone, ambiguous=ambiguous)  # Localize to target timezone
+            .dt.replace_time_zone(target_timezone, ambiguous=ambiguous, non_existent=non_existent)  # Localize to target timezone
             .alias(col_name)
         )
 
