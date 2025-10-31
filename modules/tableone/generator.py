@@ -2414,6 +2414,12 @@ def main(memory_monitor=None) -> bool:
     # Update vent_settings to only include existing columns
     vent_settings = existing_settings
 
+    # ✅ FIX: Convert ventilator settings to numeric to handle blanks/non-numeric values
+    # This prevents "ufunc 'isfinite' not supported" error when calculating statistics
+    for setting in vent_settings:
+        if setting in resp_valid.columns:
+            resp_valid[setting] = pd.to_numeric(resp_valid[setting], errors='coerce')
+
     # Count all device-mode combinations
     group_counts = resp_valid.groupby(['device_category', 'mode_category']).size()
 
