@@ -1172,58 +1172,65 @@ def main(memory_monitor=None) -> bool:
     # ==============================================================================
 
     print(f"\nLoading medication_admin_continuous table...")
-    clif.load_table(
-        'medication_admin_continuous',
-        columns=meds_required_columns,
-        filters={
-            'hospitalization_id': list(adult_hosp_ids),
-            'med_category': meds_of_interest
-        }
-    )
+    medication_available_for_vaso = False
+    try:
+        clif.load_table(
+            'medication_admin_continuous',
+            columns=meds_required_columns,
+            filters={
+                'hospitalization_id': list(adult_hosp_ids),
+                'med_category': meds_of_interest
+            }
+        )
+        medication_available_for_vaso = True
+    except (FileNotFoundError, Exception) as e:
+        print(f"⚠️ Warning: Failed to load medication_admin_continuous table: {e}")
+        print("   Proceeding without vasoactive support identification")
 
-    # Identify hospitalizations on advanced mechanical support
-    print(f"\nIdentifying hospitalizations with advanced respiratory support devices...")
-    vasoactive_meds = ['norepinephrine', 'epinephrine', 'phenylephrine', 'vasopressin','dopamine', 'angiotensin']
-    clif.medication_admin_continuous.df= pd.merge(clif.medication_admin_continuous.df, encounter_mapping, 
-                                            on='hospitalization_id', how='left')
-    vasoactive_hosp_ids = clif.medication_admin_continuous.df.loc[
-        clif.medication_admin_continuous.df['med_category'].str.lower().isin([d.lower() for d in vasoactive_meds]),
-        'encounter_block'
-    ].unique()
-    print(f"Hospitalizations with any vasoactives. device ({', '.join(vasoactive_meds).upper()}): {len(vasoactive_hosp_ids):,}")
-    # strobe_counts["3_vasoactive_hospitalizations"] = len(vasoactive_hosp_ids)
+    if medication_available_for_vaso:
+        # Identify hospitalizations on advanced mechanical support
+        print(f"\nIdentifying hospitalizations with advanced respiratory support devices...")
+        vasoactive_meds = ['norepinephrine', 'epinephrine', 'phenylephrine', 'vasopressin','dopamine', 'angiotensin']
+        clif.medication_admin_continuous.df= pd.merge(clif.medication_admin_continuous.df, encounter_mapping, 
+                                                on='hospitalization_id', how='left')
+        vasoactive_hosp_ids = clif.medication_admin_continuous.df.loc[
+            clif.medication_admin_continuous.df['med_category'].str.lower().isin([d.lower() for d in vasoactive_meds]),
+            'encounter_block'
+        ].unique()
+        print(f"Hospitalizations with any vasoactives. device ({', '.join(vasoactive_meds).upper()}): {len(vasoactive_hosp_ids):,}")
+        # strobe_counts["3_vasoactive_hospitalizations"] = len(vasoactive_hosp_ids)
 
-    # Create a DataFrame with advanced_support_hosp_ids and 'high_support_en' == 1
-    vasoactives_df = pd.DataFrame({
-        'encounter_block': vasoactive_hosp_ids,
-        'vaso_support_enc': 1
-    })
+        # Create a DataFrame with advanced_support_hosp_ids and 'high_support_en' == 1
+        vasoactives_df = pd.DataFrame({
+            'encounter_block': vasoactive_hosp_ids,
+            'vaso_support_enc': 1
+        })
 
-    # Join vasoactives_df with final cohort using left merge
-    # (prevents adding encounters without is_procedural_ld_only values)
-    final_cohort = final_cohort.merge(
-        vasoactives_df,
-        on='encounter_block',
-        how='left'
-    )
+        # Join vasoactives_df with final cohort using left merge
+        # (prevents adding encounters without is_procedural_ld_only values)
+        final_cohort = final_cohort.merge(
+            vasoactives_df,
+            on='encounter_block',
+            how='left'
+        )
 
-    # Missing high_support_en means not on advanced support
-    final_cohort['vaso_support_enc'] = final_cohort['vaso_support_enc'].fillna(0).astype(int)
-    # Missing high_support_en means not on advanced support
-    final_cohort['high_support_enc'] = final_cohort['high_support_enc'].fillna(0).astype(int)
+        # Missing high_support_en means not on advanced support
+        final_cohort['vaso_support_enc'] = final_cohort['vaso_support_enc'].fillna(0).astype(int)
+        # Missing high_support_en means not on advanced support
+        final_cohort['high_support_enc'] = final_cohort['high_support_enc'].fillna(0).astype(int)
 
-    # Set high_support_enc and vaso_support_enc to 0 if is_procedural_ld_only is 1
-    # (procedural/L&D only encounters without ICU should not count as having support)
-    final_cohort.loc[final_cohort['is_procedural_ld_only'] == 1, 'high_support_enc'] = 0
-    final_cohort.loc[final_cohort['is_procedural_ld_only'] == 1, 'vaso_support_enc'] = 0
-    strobe_counts["2_advanced_resp_support_hospitalizations"] = (final_cohort['high_support_enc'] == 1).sum()
-    strobe_counts["3_vasoactive_hospitalizations"] = (final_cohort['vaso_support_enc'] == 1).sum()    
+        # Set high_support_enc and vaso_support_enc to 0 if is_procedural_ld_only is 1
+        # (procedural/L&D only encounters without ICU should not count as having support)
+        final_cohort.loc[final_cohort['is_procedural_ld_only'] == 1, 'high_support_enc'] = 0
+        final_cohort.loc[final_cohort['is_procedural_ld_only'] == 1, 'vaso_support_enc'] = 0
+        strobe_counts["2_advanced_resp_support_hospitalizations"] = (final_cohort['high_support_enc'] == 1).sum()
+        strobe_counts["3_vasoactive_hospitalizations"] = (final_cohort['vaso_support_enc'] == 1).sum()
 
-    # Memory cleanup: Clear medication initial load data
-    print("Clearing medication initial load data from memory...")
-    del vasoactives_df, clif.medication_admin_continuous
-    gc.collect()
-    checkpoint("4. Medications Processed")
+        # Memory cleanup: Clear medication initial load data
+        print("Clearing medication initial load data from memory...")
+        del vasoactives_df, clif.medication_admin_continuous
+        gc.collect()
+        checkpoint("4. Medications Processed")
     # Missing icu_enc means not ICU
     final_cohort['icu_enc'] = final_cohort['icu_enc'].fillna(0).astype(int)
     # Define the criteria for other critically ill
@@ -1684,250 +1691,256 @@ def main(memory_monitor=None) -> bool:
     # Load Code Status
     # ----------------------------------------------------------------------------
     print(f"\nLoading code_status table...")
-    clif.load_table(
-        'code_status'
-    )
+    code_status_available = False
+    try:
+        clif.load_table(
+            'code_status'
+        )
+        code_status_available = True
+        # MCIDE collection moved to separate script: generate_mcide_and_stats.py
+        # get_value_counts_mcide(clif.code_status, 'code_status', ['code_status_name', 'code_status_category'], output_dir=mcide_dir, config=config)
+        print(f"   code_status loaded: {len(clif.code_status.df):,} rows")
+        print(f"   Unique code_status categories: {clif.code_status.df['code_status_category'].nunique()}")
+        print(f"   Unique code_status patients: {clif.code_status.df['patient_id'].nunique()}")
+    except (FileNotFoundError, Exception) as e:
+        print(f"⚠️ Warning: Failed to load code_status table: {e}")
+        print("   Proceeding without code status data")
 
-    # MCIDE collection moved to separate script: generate_mcide_and_stats.py
-    # get_value_counts_mcide(clif.code_status, 'code_status', ['code_status_name', 'code_status_category'], output_dir=mcide_dir, config=config)
-    print(f"   code_status loaded: {len(clif.code_status.df):,} rows")
-    print(f"   Unique code_status categories: {clif.code_status.df['code_status_category'].nunique()}")
-    print(f"   Unique code_status patients: {clif.code_status.df['patient_id'].nunique()}")
+    if code_status_available:
+        # Take the last code_status_category for each patient_id
+        code_status_latest = (
+            clif.code_status.df.sort_values(['patient_id', 'start_dttm'])
+            .groupby('patient_id', as_index=False)
+            .last()[['patient_id', 'code_status_category']]
+            .rename(columns={'code_status_category': 'last_code_status_category'})
+        )
 
-    # Take the last code_status_category for each patient_id
-    code_status_latest = (
-        clif.code_status.df.sort_values(['patient_id', 'start_dttm'])
-        .groupby('patient_id', as_index=False)
-        .last()[['patient_id', 'code_status_category']]
-        .rename(columns={'code_status_category': 'last_code_status_category'})
-    )
+        # Merge with final_tableone_df on patient_id
+        final_tableone_df = final_tableone_df.merge(code_status_latest, on='patient_id', how='left')
 
-    # Merge with final_tableone_df on patient_id
-    final_tableone_df = final_tableone_df.merge(code_status_latest, on='patient_id', how='left')
+        # ============================================================================
+        # Prepare Aggregated Data for Code Status Visualizations
+        # ============================================================================
 
-    # ============================================================================
-    # Prepare Aggregated Data for Code Status Visualizations
-    # ============================================================================
+        encounter_flags = ['icu_enc', 'high_support_enc', 'vaso_support_enc', 'other_critically_ill']
+        flag_labels = ['ICU Encounters', 'Advanced Respiratory Support', 'Vasoactive Support', 'Other Critically Ill']
 
-    encounter_flags = ['icu_enc', 'high_support_enc', 'vaso_support_enc', 'other_critically_ill']
-    flag_labels = ['ICU Encounters', 'Advanced Respiratory Support', 'Vasoactive Support', 'Other Critically Ill']
+        # Initialize containers
+        code_status_counts = {}
+        code_status_percentages = {}
+        missingness_info = {}
 
-    # Initialize containers
-    code_status_counts = {}
-    code_status_percentages = {}
-    missingness_info = {}
-
-    # Collect aggregated data for each encounter type
-    for flag, label in zip(encounter_flags, flag_labels):
-        subset = final_tableone_df[final_tableone_df[flag] == 1]
+        # Collect aggregated data for each encounter type
+        for flag, label in zip(encounter_flags, flag_labels):
+            subset = final_tableone_df[final_tableone_df[flag] == 1]
     
-        # Total encounters for this type
-        total_encounters = len(subset)
+            # Total encounters for this type
+            total_encounters = len(subset)
     
-        # Count missing values
-        n_missing = subset['last_code_status_category'].isna().sum()
+            # Count missing values
+            n_missing = subset['last_code_status_category'].isna().sum()
     
-        # Get value counts (including handling of NaN)
-        counts = subset['last_code_status_category'].value_counts(dropna=False)
+            # Get value counts (including handling of NaN)
+            counts = subset['last_code_status_category'].value_counts(dropna=False)
     
-        # Store counts
-        code_status_counts[label] = counts
+            # Store counts
+            code_status_counts[label] = counts
     
-        # Calculate percentages
-        percentages = (counts / total_encounters * 100).round(2)
-        code_status_percentages[label] = percentages
+            # Calculate percentages
+            percentages = (counts / total_encounters * 100).round(2)
+            code_status_percentages[label] = percentages
     
-        # Store missingness information
-        missingness_info[label] = {
-            'total_encounters': total_encounters,
-            'n_missing': n_missing,
-            'pct_missing': round(n_missing / total_encounters * 100, 2) if total_encounters > 0 else 0
-        }
+            # Store missingness information
+            missingness_info[label] = {
+                'total_encounters': total_encounters,
+                'n_missing': n_missing,
+                'pct_missing': round(n_missing / total_encounters * 100, 2) if total_encounters > 0 else 0
+            }
 
-    # ============================================================================
-    # Create DataFrames for Export
-    # ============================================================================
+        # ============================================================================
+        # Create DataFrames for Export
+        # ============================================================================
 
-    # 1. Counts DataFrame
-    df_counts = pd.DataFrame(code_status_counts).fillna(0).astype(int)
-    df_counts.index.name = 'code_status_category'
+        # 1. Counts DataFrame
+        df_counts = pd.DataFrame(code_status_counts).fillna(0).astype(int)
+        df_counts.index.name = 'code_status_category'
 
-    # Handle NaN index (if exists)
-    if df_counts.index.isna().any():
-        df_counts.index = df_counts.index.fillna('Missing')
+        # Handle NaN index (if exists)
+        if df_counts.index.isna().any():
+            df_counts.index = df_counts.index.fillna('Missing')
 
-    # 2. Percentages DataFrame
-    df_percentages = pd.DataFrame(code_status_percentages).fillna(0)
-    df_percentages.index.name = 'code_status_category'
+        # 2. Percentages DataFrame
+        df_percentages = pd.DataFrame(code_status_percentages).fillna(0)
+        df_percentages.index.name = 'code_status_category'
 
-    if df_percentages.index.isna().any():
-        df_percentages.index = df_percentages.index.fillna('Missing')
+        if df_percentages.index.isna().any():
+            df_percentages.index = df_percentages.index.fillna('Missing')
 
-    # 3. Missingness Summary DataFrame
-    df_missingness = pd.DataFrame(missingness_info).T
-    df_missingness.index.name = 'encounter_type'
+        # 3. Missingness Summary DataFrame
+        df_missingness = pd.DataFrame(missingness_info).T
+        df_missingness.index.name = 'encounter_type'
 
-    # ============================================================================
-    # Add Summary Statistics
-    # ============================================================================
+        # ============================================================================
+        # Add Summary Statistics
+        # ============================================================================
 
-    # Add row totals to counts
-    df_counts['Total'] = df_counts.sum(axis=1)
+        # Add row totals to counts
+        df_counts['Total'] = df_counts.sum(axis=1)
 
-    # Add column totals to counts
-    df_counts.loc['Total'] = df_counts.sum(axis=0)
+        # Add column totals to counts
+        df_counts.loc['Total'] = df_counts.sum(axis=0)
 
-    # Add summary to percentages (column sums should be ~100%)
-    df_percentages.loc['Total'] = df_percentages.sum(axis=0)
+        # Add summary to percentages (column sums should be ~100%)
+        df_percentages.loc['Total'] = df_percentages.sum(axis=0)
 
-    # ============================================================================
-    # Save to CSV Files
-    # ============================================================================
+        # ============================================================================
+        # Save to CSV Files
+        # ============================================================================
 
-    output_dir = get_output_path('final', 'tableone')
+        output_dir = get_output_path('final', 'tableone')
 
-    # Save counts
-    df_counts.to_csv(f'{output_dir}code_status_counts_by_encounter_type.csv')
-    print(f"✅ Saved: {output_dir}code_status_counts_by_encounter_type.csv")
+        # Save counts
+        df_counts.to_csv(f'{output_dir}code_status_counts_by_encounter_type.csv')
+        print(f"✅ Saved: {output_dir}code_status_counts_by_encounter_type.csv")
 
-    # Save percentages
-    df_percentages.to_csv(f'{output_dir}code_status_percentages_by_encounter_type.csv')
-    print(f"✅ Saved: {output_dir}code_status_percentages_by_encounter_type.csv")
+        # Save percentages
+        df_percentages.to_csv(f'{output_dir}code_status_percentages_by_encounter_type.csv')
+        print(f"✅ Saved: {output_dir}code_status_percentages_by_encounter_type.csv")
 
-    # Save missingness summary
-    df_missingness.to_csv(f'{output_dir}code_status_missingness_summary.csv')
-    print(f"✅ Saved: {output_dir}code_status_missingness_summary.csv")
+        # Save missingness summary
+        df_missingness.to_csv(f'{output_dir}code_status_missingness_summary.csv')
+        print(f"✅ Saved: {output_dir}code_status_missingness_summary.csv")
 
-    # ============================================================================
-    # Create Combined Summary File (Optional)
-    # ============================================================================
+        # ============================================================================
+        # Create Combined Summary File (Optional)
+        # ============================================================================
 
-    # Create a comprehensive summary with counts and percentages
-    combined_summary = []
+        # Create a comprehensive summary with counts and percentages
+        combined_summary = []
 
-    for col in df_counts.columns[:-1]:  # Exclude 'Total' column
-        for idx in df_counts.index[:-1]:  # Exclude 'Total' row
-            count = df_counts.loc[idx, col]
-            pct = df_percentages.loc[idx, col]
-            combined_summary.append({
-                'encounter_type': col,
-                'code_status': idx,
-                'count': count,
-                'percentage': pct
-            })
+        for col in df_counts.columns[:-1]:  # Exclude 'Total' column
+            for idx in df_counts.index[:-1]:  # Exclude 'Total' row
+                count = df_counts.loc[idx, col]
+                pct = df_percentages.loc[idx, col]
+                combined_summary.append({
+                    'encounter_type': col,
+                    'code_status': idx,
+                    'count': count,
+                    'percentage': pct
+                })
 
-    df_combined = pd.DataFrame(combined_summary)
-    df_combined.to_csv(f'{output_dir}code_status_combined_summary.csv', index=False)
-    print(f"✅ Saved: {output_dir}code_status_combined_summary.csv")
+        df_combined = pd.DataFrame(combined_summary)
+        df_combined.to_csv(f'{output_dir}code_status_combined_summary.csv', index=False)
+        print(f"✅ Saved: {output_dir}code_status_combined_summary.csv")
 
-    print("\n" + "="*80)
-    print("SAVED AGGREGATED DATA (NO PATIENT-LEVEL INFORMATION)")
-    print("="*80)
-    print(f"1. {output_dir}code_status_counts_by_encounter_type.csv")
-    print(f"2. {output_dir}code_status_percentages_by_encounter_type.csv")
-    print(f"3. {output_dir}code_status_missingness_summary.csv")
-    print(f"4. {output_dir}code_status_combined_summary.csv")
+        print("\n" + "="*80)
+        print("SAVED AGGREGATED DATA (NO PATIENT-LEVEL INFORMATION)")
+        print("="*80)
+        print(f"1. {output_dir}code_status_counts_by_encounter_type.csv")
+        print(f"2. {output_dir}code_status_percentages_by_encounter_type.csv")
+        print(f"3. {output_dir}code_status_missingness_summary.csv")
+        print(f"4. {output_dir}code_status_combined_summary.csv")
 
-    # ============================================================================
-    # Load the saved aggregated data (can be done in a separate session)
-    # ============================================================================
+        # ============================================================================
+        # Load the saved aggregated data (can be done in a separate session)
+        # ============================================================================
 
-    # Remove 'Total' rows/columns for visualization, but only if 'Total' exists
-    def drop_total_and_missing(axis_df):
-        # Remove 'Total' and 'Missing' rows/cols if they exist
-        for axis in [0, 1]:
-            if 'Total' in axis_df.axes[axis]:
-                axis_df = axis_df.drop('Total', axis=axis)
-            if 'Missing' in axis_df.axes[axis]:
-                axis_df = axis_df.drop('Missing', axis=axis)
-        return axis_df
+        # Remove 'Total' rows/columns for visualization, but only if 'Total' exists
+        def drop_total_and_missing(axis_df):
+            # Remove 'Total' and 'Missing' rows/cols if they exist
+            for axis in [0, 1]:
+                if 'Total' in axis_df.axes[axis]:
+                    axis_df = axis_df.drop('Total', axis=axis)
+                if 'Missing' in axis_df.axes[axis]:
+                    axis_df = axis_df.drop('Missing', axis=axis)
+            return axis_df
 
-    def drop_total_keep_missing(axis_df):
-        # Remove only 'Total' rows/cols, but keep 'Missing'
-        for axis in [0, 1]:
-            if 'Total' in axis_df.axes[axis]:
-                axis_df = axis_df.drop('Total', axis=axis)
-        return axis_df
+        def drop_total_keep_missing(axis_df):
+            # Remove only 'Total' rows/cols, but keep 'Missing'
+            for axis in [0, 1]:
+                if 'Total' in axis_df.axes[axis]:
+                    axis_df = axis_df.drop('Total', axis=axis)
+            return axis_df
 
-    # For counts, we'll keep the "Missing" row if present for plotting, for percentages we'll recompute without it
-    df_counts_viz = drop_total_keep_missing(df_counts)
+        # For counts, we'll keep the "Missing" row if present for plotting, for percentages we'll recompute without it
+        df_counts_viz = drop_total_keep_missing(df_counts)
 
-    # Recalculate percentages excluding 'Missing' category from denominator
-    def recalc_percentages_exclude_missing(df_counts):
-        # Only keep rows that are not 'Total' (already handled), and not 'Missing'
-        code_status_rows = [row for row in df_counts.index if row != 'Missing']
-        # For each column, divide counts by sum excluding 'Missing'
-        df_pct = df_counts.loc[code_status_rows].div(df_counts.loc[code_status_rows].sum(axis=0), axis=1) * 100
-        return df_pct
+        # Recalculate percentages excluding 'Missing' category from denominator
+        def recalc_percentages_exclude_missing(df_counts):
+            # Only keep rows that are not 'Total' (already handled), and not 'Missing'
+            code_status_rows = [row for row in df_counts.index if row != 'Missing']
+            # For each column, divide counts by sum excluding 'Missing'
+            df_pct = df_counts.loc[code_status_rows].div(df_counts.loc[code_status_rows].sum(axis=0), axis=1) * 100
+            return df_pct
 
-    df_pct_viz = recalc_percentages_exclude_missing(df_counts_viz)
+        df_pct_viz = recalc_percentages_exclude_missing(df_counts_viz)
 
-    # ============================================================================
-    # VISUALIZATION 1: Stacked Bar Chart with Missingness Indicator
-    # ============================================================================
+        # ============================================================================
+        # VISUALIZATION 1: Stacked Bar Chart with Missingness Indicator
+        # ============================================================================
 
-    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(16, 6))
+        fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(16, 6))
 
-    # Define colors (use different color for Missing)
-    status_categories = [row for row in df_counts_viz.index if row != 'Missing']
-    colors = ['#2E86AB', '#A23B72', '#F18F01', '#C73E1D']
+        # Define colors (use different color for Missing)
+        status_categories = [row for row in df_counts_viz.index if row != 'Missing']
+        colors = ['#2E86AB', '#A23B72', '#F18F01', '#C73E1D']
 
-    # If 'Missing' exists, assign it a distinct color at the end for plotting counts
-    if 'Missing' in df_counts_viz.index:
-        status_categories_full = status_categories + ['Missing']
-        colors_full = colors + ['#808080']  # Gray for missing
-    else:
-        status_categories_full = status_categories
-        colors_full = colors
+        # If 'Missing' exists, assign it a distinct color at the end for plotting counts
+        if 'Missing' in df_counts_viz.index:
+            status_categories_full = status_categories + ['Missing']
+            colors_full = colors + ['#808080']  # Gray for missing
+        else:
+            status_categories_full = status_categories
+            colors_full = colors
 
-    # Plot 1: Absolute counts (stacked bars including Missing if present)
-    df_counts_viz.T[status_categories_full].plot(
-        kind='bar',
-        stacked=True,
-        ax=ax1,
-        color=colors_full[:len(status_categories_full)],
-        edgecolor='black',
-        linewidth=0.5
-    )
-    ax1.set_title('Code Status Distribution by Encounter Type\n(Absolute Counts)', 
-                  fontsize=14, fontweight='bold', pad=20)
-    ax1.set_xlabel('Encounter Type', fontsize=12, fontweight='bold')
-    ax1.set_ylabel('Count', fontsize=12, fontweight='bold')
-    ax1.legend(title='Code Status', bbox_to_anchor=(1.05, 1), loc='upper left')
-    ax1.set_xticklabels(ax1.get_xticklabels(), rotation=45, ha='right')
+        # Plot 1: Absolute counts (stacked bars including Missing if present)
+        df_counts_viz.T[status_categories_full].plot(
+            kind='bar',
+            stacked=True,
+            ax=ax1,
+            color=colors_full[:len(status_categories_full)],
+            edgecolor='black',
+            linewidth=0.5
+        )
+        ax1.set_title('Code Status Distribution by Encounter Type\n(Absolute Counts)', 
+                      fontsize=14, fontweight='bold', pad=20)
+        ax1.set_xlabel('Encounter Type', fontsize=12, fontweight='bold')
+        ax1.set_ylabel('Count', fontsize=12, fontweight='bold')
+        ax1.legend(title='Code Status', bbox_to_anchor=(1.05, 1), loc='upper left')
+        ax1.set_xticklabels(ax1.get_xticklabels(), rotation=45, ha='right')
 
-    # Add missingness annotations
-    for i, col in enumerate(df_counts_viz.columns):
-        if col in df_missingness.index:
-            miss_pct = df_missingness.loc[col, 'pct_missing']
-            if miss_pct > 0:
-                ax1.text(
-                    i, ax1.get_ylim()[1] * 0.95, f'{miss_pct:.1f}% missing',
-                    ha='center', va='top', fontsize=9, 
-                    bbox=dict(boxstyle='round', facecolor='white', alpha=0.8)
-                )
+        # Add missingness annotations
+        for i, col in enumerate(df_counts_viz.columns):
+            if col in df_missingness.index:
+                miss_pct = df_missingness.loc[col, 'pct_missing']
+                if miss_pct > 0:
+                    ax1.text(
+                        i, ax1.get_ylim()[1] * 0.95, f'{miss_pct:.1f}% missing',
+                        ha='center', va='top', fontsize=9, 
+                        bbox=dict(boxstyle='round', facecolor='white', alpha=0.8)
+                    )
 
-    # Plot 2: Percentages (excluding Missing from numerator/denominator)
-    df_pct_viz.T[status_categories].plot(
-        kind='bar',
-        stacked=True,
-        ax=ax2,
-        color=colors[:len(status_categories)],
-        edgecolor='black',
-        linewidth=0.5
-    )
-    ax2.set_title('Code Status Distribution by Encounter Type\n(Percentages, Excl. Missing)', 
-                  fontsize=14, fontweight='bold', pad=20)
-    ax2.set_xlabel('Encounter Type', fontsize=12, fontweight='bold')
-    ax2.set_ylabel('Percentage', fontsize=12, fontweight='bold')
-    ax2.legend(title='Code Status', bbox_to_anchor=(1.05, 1), loc='upper left')
-    ax2.set_xticklabels(ax2.get_xticklabels(), rotation=45, ha='right')
-    ax2.set_ylim(0, 100)
+        # Plot 2: Percentages (excluding Missing from numerator/denominator)
+        df_pct_viz.T[status_categories].plot(
+            kind='bar',
+            stacked=True,
+            ax=ax2,
+            color=colors[:len(status_categories)],
+            edgecolor='black',
+            linewidth=0.5
+        )
+        ax2.set_title('Code Status Distribution by Encounter Type\n(Percentages, Excl. Missing)', 
+                      fontsize=14, fontweight='bold', pad=20)
+        ax2.set_xlabel('Encounter Type', fontsize=12, fontweight='bold')
+        ax2.set_ylabel('Percentage', fontsize=12, fontweight='bold')
+        ax2.legend(title='Code Status', bbox_to_anchor=(1.05, 1), loc='upper left')
+        ax2.set_xticklabels(ax2.get_xticklabels(), rotation=45, ha='right')
+        ax2.set_ylim(0, 100)
 
-    plt.tight_layout()
-    plt.savefig(f'{output_dir}/code_status_stacked_bar_with_missingness_excl_missing_cat.png',
-                dpi=300, bbox_inches='tight')
-    plt.close()
+        plt.tight_layout()
+        plt.savefig(f'{output_dir}/code_status_stacked_bar_with_missingness_excl_missing_cat.png',
+                    dpi=300, bbox_inches='tight')
+        plt.close()
 
 
 
@@ -2158,7 +2171,24 @@ def main(memory_monitor=None) -> bool:
     # Check which columns exist
     existing_settings = [col for col in vent_settings if col in resp_imv.columns]
 
-    print(f"\nSettings to calculate: {len(existing_settings)}, vent settings")
+    print(f"\nSettings to calculate: {len(existing_settings)} vent settings")
+
+    # ✅ FIX: Convert to numeric and filter out fully blank columns
+    numeric_settings = []
+    for col in existing_settings:
+        # Convert to numeric (coerce errors to NaN)
+        resp_imv[col] = pd.to_numeric(resp_imv[col], errors='coerce')
+
+        # Only include columns with at least some non-null values
+        if resp_imv[col].notna().any():
+            numeric_settings.append(col)
+        else:
+            print(f"   ⚠️ Skipping {col} (fully blank)")
+
+    print(f"   Computing statistics for {len(numeric_settings)} settings with data")
+
+    # Update existing_settings to only include columns with data
+    existing_settings = numeric_settings
 
     # ✅ SUPER OPTIMIZATION: Calculate each stat separately (pandas can optimize better)
     results = []
@@ -2383,6 +2413,12 @@ def main(memory_monitor=None) -> bool:
 
     # Update vent_settings to only include existing columns
     vent_settings = existing_settings
+
+    # ✅ FIX: Convert ventilator settings to numeric to handle blanks/non-numeric values
+    # This prevents "ufunc 'isfinite' not supported" error when calculating statistics
+    for setting in vent_settings:
+        if setting in resp_valid.columns:
+            resp_valid[setting] = pd.to_numeric(resp_valid[setting], errors='coerce')
 
     # Count all device-mode combinations
     group_counts = resp_valid.groupby(['device_category', 'mode_category']).size()
@@ -2813,6 +2849,68 @@ def main(memory_monitor=None) -> bool:
         )
 
     print(f"Loaded {len(weight_vitals_df):,} weight measurements for {weight_df_pl['hospitalization_id'].n_unique()} hospitalizations")
+
+     # ============================================================================
+    # NEW: Pre-join weights to medications in Polars (avoids DuckDB OOM)
+    # ============================================================================
+    print("\nPre-joining weights to medication data...")
+
+    # Convert medication dataframe to Polars
+    med_df_pl = pl.from_pandas(clif.medication_admin_continuous.df)
+
+    # Standardize medication timestamps to match weight timestamps
+    med_df_pl = standardize_datetime_columns(
+        med_df_pl,
+        target_timezone=med_timezone,
+        target_time_unit=med_time_unit,
+        datetime_columns=['admin_dttm']
+    )
+
+    print(f"Medication dataframe: {len(med_df_pl):,} rows")
+
+    # Prepare weight data for join (rename columns for clarity)
+    weight_for_join = weight_df_pl.select([
+        'hospitalization_id',
+        pl.col('recorded_dttm').alias('weight_recorded_dttm'),
+        pl.col('vital_value').alias('weight_kg')
+    ])
+
+    # Perform join using join_asof for efficient time-based matching
+    # This matches each medication to the most recent weight BEFORE the admin time
+    med_with_weights = med_df_pl.join_asof(
+        weight_for_join,
+        by='hospitalization_id',
+        left_on='admin_dttm',
+        right_on='weight_recorded_dttm',
+        strategy='backward'  # Find most recent weight <= admin_dttm
+    )
+
+    # Check how many medications got weights
+    weights_matched = med_with_weights.filter(pl.col('weight_kg').is_not_null()).shape[0]
+    print(f"Matched weights for {weights_matched:,} / {len(med_with_weights):,} medication administrations ({weights_matched/len(med_with_weights)*100:.1f}%)")
+
+    # Convert back to Pandas
+    med_with_weights_pd = med_with_weights.to_pandas()
+
+    # Add timezone information back (Polars may strip it during conversion)
+    if 'admin_dttm' in med_with_weights_pd.columns and med_with_weights_pd['admin_dttm'].dt.tz is None:
+        med_with_weights_pd['admin_dttm'] = med_with_weights_pd['admin_dttm'].dt.tz_localize(
+            config['timezone'],
+            ambiguous=True,
+            nonexistent='shift_forward'
+        )
+
+    if 'weight_recorded_dttm' in med_with_weights_pd.columns and med_with_weights_pd['weight_recorded_dttm'].dt.tz is None:
+        med_with_weights_pd['weight_recorded_dttm'] = med_with_weights_pd['weight_recorded_dttm'].dt.tz_localize(
+            config['timezone'],
+            ambiguous=True,
+            nonexistent='shift_forward'
+        )
+
+    # Update the medication dataframe in the CLIF object
+    clif.medication_admin_continuous.df = med_with_weights_pd
+
+    print(f"✓ Weights pre-joined to medications (weight_kg column added)")
 
     # Convert units (uses clifpy orchestrator)
     clif.convert_dose_units_for_continuous_meds(
