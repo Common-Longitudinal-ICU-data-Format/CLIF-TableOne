@@ -2383,6 +2383,9 @@ def main(memory_monitor=None) -> bool:
     # Ventilator Settings Table by Device and Mode Category - FIXED
     # ============================================================================
 
+    # ✅ OPTIMIZATION: Capture total obs count BEFORE modifications
+    # This avoids needing to reference resp_stitched later for value extraction
+    total_resp_obs = len(resp_stitched)
 
     # Ventilator settings of interest
     vent_settings = [
@@ -2399,7 +2402,9 @@ def main(memory_monitor=None) -> bool:
 
     # ✅ OPTIMIZATION: Use groupby instead of nested loops (10-50x faster!)
     # Use full respiratory support data - ALL device and mode combinations
-    resp_valid = resp_stitched.copy()
+    # Note: Direct reference (no copy) since we captured total_resp_obs upfront
+    # and resp_stitched won't be accessed for values again
+    resp_valid = resp_stitched
 
     # Check which columns actually exist in the data (graceful handling for missing columns)
     existing_settings = [col for col in vent_settings if col in resp_valid.columns]
@@ -2535,7 +2540,7 @@ def main(memory_monitor=None) -> bool:
     print(f"\n✅ Saved: ../output/final/tableone/ventilator_settings_counts_by_device_mode.csv")
 
     # Save total observations count for table reconstruction
-    total_resp_obs = len(resp_valid)  # Total respiratory support observations
+    # Note: Using total_resp_obs captured at line 2388 (before any modifications)
     total_obs_df = pd.DataFrame({
         'metric': ['total_respiratory_support_observations'],
         'value': [total_resp_obs]
@@ -2629,8 +2634,8 @@ def main(memory_monitor=None) -> bool:
         from .ventilator_table import plot_ventilator_table
 
         # Generate the table with the full respiratory support dataset count
+        # Note: Using total_resp_obs captured at line 2388 (full respiratory support dataset)
         save_path = get_output_path('final', 'tableone', 'ventilator_settings_table.png')
-        total_resp_obs = len(resp_stitched)  # Use full respiratory support dataset for the table
         fig = plot_ventilator_table(save_path=save_path, total_observations=total_resp_obs)
         print(f"✅ Ventilator settings table image generated successfully")
 
@@ -2789,13 +2794,33 @@ def main(memory_monitor=None) -> bool:
     print("="*80)
 
     # Define preferred units for vasopressors
+    # preferred_units = {
+    #     'norepinephrine': 'mcg/kg/min',
+    #     'epinephrine': 'mcg/kg/min',
+    #     'phenylephrine': 'mcg/kg/min',
+    #     'vasopressin': 'mcg/kg/min',
+    #     'dopamine': 'mcg/kg/min'
+    # }
     preferred_units = {
-        'norepinephrine': 'mcg/kg/min',
-        'epinephrine': 'mcg/kg/min',
-        'phenylephrine': 'mcg/kg/min',
-        'vasopressin': 'mcg/kg/min',
-        'dopamine': 'mcg/kg/min'
-    }
+    # Vasopressors (weight-based for clinical relevance and SOFA compatibility)
+    'norepinephrine': 'mcg/kg/min',
+    'epinephrine': 'mcg/kg/min',
+    'phenylephrine': 'mcg/kg/min',    # Following vasopressor pattern
+    'vasopressin': 'mcg/kg/min',      # Following vasopressor pattern
+    'dopamine': 'mcg/kg/min',
+
+    # Sedatives
+    'propofol': 'mcg/kg/min',         # Found in tests, weight-based preferred
+    'midazolam': 'mg/hr',             # Found in multiple examples
+    'lorazepam': 'mg/hr',             # Following benzodiazepine pattern (like midazolam)
+    'dexmedetomidine': 'mcg/kg/min',  # Typically weight-based in practice
+    'fentanyl': 'mcg/hr',             # Found in multiple examples
+
+    # Paralytics (weight-based following clinical practice)
+    'vecuronium': 'mcg/kg/min',       # Standard for neuromuscular blockers
+    'rocuronium': 'mcg/kg/min',       # Standard for neuromuscular blockers
+    'cisatracurium': 'mcg/kg/min',    # Standard for neuromuscular blockers
+        }
 
     print(f"Converting {len(preferred_units)} vasopressors to mcg/kg/min...")
 
@@ -2909,25 +2934,36 @@ def main(memory_monitor=None) -> bool:
         )
 
     # Update the medication dataframe in the CLIF object
-    clif.medication_admin_continuous.df = med_with_weights_pd
-    del med_with_weights_pd
+    clif.medication_admin_continuous.df = None
+    # del med_with_weights_pd
     gc.collect()
-    print(f"✓ Weights pre-joined to medications (weight_kg column added)")
-
+    print(f"✓ Weights pre-joined to medications (weight_kg column  added)")
+    # empty_vitals = pd.DataFrame({
+    #   'hospitalization_id': [],
+    #   'recorded_dttm': pd.to_datetime([]),
+    #   'vital_category': [],
+    #   'vital_value': []
+    # })
     # Convert units (uses clifpy orchestrator)
-    clif.convert_dose_units_for_continuous_meds(
-        preferred_units=preferred_units,
-        vitals_df=None,  
-        override=True,
-        save_to_table=True,
-        hospitalization_ids=final_hosp_ids
-    )
+    # clif.convert_dose_units_for_continuous_meds(
+    #     preferred_units=preferred_units,
+    #     vitals_df=None,  
+    #     override=True,
+    #     save_to_table=True,
+    #     hospitalization_ids=final_hosp_ids
+    # )
+    from clifpy.utils.unit_converter import convert_dose_units_by_med_category
+    meds_converted, summary_df = convert_dose_units_by_med_category(
+            med_df=med_with_weights_pd,
+            preferred_units=preferred_units,
+            override=True
+        )
 
     # Get converted data
-    meds_converted = clif.medication_admin_continuous.df_converted.copy()
+    # meds_converted = clif.medication_admin_continuous.df_converted.copy()
 
     # Check conversion results
-    conversion_counts = clif.medication_admin_continuous.conversion_counts
+    conversion_counts = summary_df
 
     print("\n=== Conversion Summary ===")
     success_count = conversion_counts[conversion_counts['_convert_status'] == 'success']['count'].sum()

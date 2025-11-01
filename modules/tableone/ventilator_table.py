@@ -299,8 +299,8 @@ def plot_ventilator_table(save_path=None, total_observations=None):
                  f'Not all settings are applicable to all ventilator modes. Dash (-) indicates no data available.')
 
     # Position note text at bottom
-    plt.figtext(0.5, 0.01, note_text,
-                ha='center', va='bottom', fontsize=9, style='italic', wrap=True)
+    # plt.figtext(0.5, 0.01, note_text,
+    #             ha='center', va='bottom', fontsize=9, style='italic', wrap=True)
 
     # Determine save path using the helper
     if save_path is None:
