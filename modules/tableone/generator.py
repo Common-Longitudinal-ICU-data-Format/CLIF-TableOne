@@ -2850,9 +2850,6 @@ def main(memory_monitor=None) -> bool:
 
     print(f"Loaded {len(weight_vitals_df):,} weight measurements for {weight_df_pl['hospitalization_id'].n_unique()} hospitalizations")
 
-     # ============================================================================
-    # NEW: Pre-join weights to medications in Polars (avoids DuckDB OOM)
-    # ============================================================================
     print("\nPre-joining weights to medication data...")
 
     # Convert medication dataframe to Polars
@@ -3066,9 +3063,6 @@ def main(memory_monitor=None) -> bool:
     print("\n" + "="*80)
     print("✅ MEDICATION PROCESSING COMPLETE")
     print("="*80)
-
-    check = clif.medication_admin_continuous.df_converted.copy()
-
 
     # # Merge on encounter_block
     # meds_merged = meds_df.merge(
@@ -3395,8 +3389,8 @@ def main(memory_monitor=None) -> bool:
     #                                         on='hospitalization_id', how='left')
 
 
-    print("Applying outlier handling to Labs data...")
-    print("=" * 50)
+    # print("Applying outlier handling to Labs data...")
+    # print("=" * 50)
     # MCIDE collection moved to separate script: generate_mcide_and_stats.py
     # This avoids loading large tables into memory
     # MCIDE and summary statistics moved to separate script (generate_mcide_and_stats.py)
