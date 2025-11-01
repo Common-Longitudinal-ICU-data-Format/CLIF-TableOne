@@ -2817,7 +2817,8 @@ def main(memory_monitor=None) -> bool:
     # Access CLIFpy's loaded medication data to get timezone and time precision
     med_df_sample = pl.from_pandas(clif.medication_admin_continuous.df.head(1))
     admin_dttm_dtype = str(med_df_sample['admin_dttm'].dtype)
-
+    del med_df_sample
+    gc.collect()
     # Extract timezone from dtype string (e.g., "Datetime(time_unit='us', time_zone='America/Chicago')")
     timezone_match = re.search(r"time_zone=['\"]([^'\"]+)['\"]", admin_dttm_dtype)
     med_timezone = timezone_match.group(1) if timezone_match else config['timezone']
@@ -2849,7 +2850,8 @@ def main(memory_monitor=None) -> bool:
         )
 
     print(f"Loaded {len(weight_vitals_df):,} weight measurements for {weight_df_pl['hospitalization_id'].n_unique()} hospitalizations")
-
+    del weight_vitals_df
+    gc.collect()
     print("\nPre-joining weights to medication data...")
 
     # Convert medication dataframe to Polars
@@ -2881,14 +2883,16 @@ def main(memory_monitor=None) -> bool:
         right_on='weight_recorded_dttm',
         strategy='backward'  # Find most recent weight <= admin_dttm
     )
-
+    del med_df_pl, weight_for_join, weight_df_pl
+    gc.collect()
     # Check how many medications got weights
     weights_matched = med_with_weights.filter(pl.col('weight_kg').is_not_null()).shape[0]
     print(f"Matched weights for {weights_matched:,} / {len(med_with_weights):,} medication administrations ({weights_matched/len(med_with_weights)*100:.1f}%)")
 
     # Convert back to Pandas
     med_with_weights_pd = med_with_weights.to_pandas()
-
+    del med_with_weights
+    gc.collect()
     # Add timezone information back (Polars may strip it during conversion)
     if 'admin_dttm' in med_with_weights_pd.columns and med_with_weights_pd['admin_dttm'].dt.tz is None:
         med_with_weights_pd['admin_dttm'] = med_with_weights_pd['admin_dttm'].dt.tz_localize(
@@ -2906,13 +2910,14 @@ def main(memory_monitor=None) -> bool:
 
     # Update the medication dataframe in the CLIF object
     clif.medication_admin_continuous.df = med_with_weights_pd
-
+    del med_with_weights_pd
+    gc.collect()
     print(f"✓ Weights pre-joined to medications (weight_kg column added)")
 
     # Convert units (uses clifpy orchestrator)
     clif.convert_dose_units_for_continuous_meds(
         preferred_units=preferred_units,
-        vitals_df=weight_vitals_df,  # Pass pre-loaded weight data
+        vitals_df=None,  
         override=True,
         save_to_table=True,
         hospitalization_ids=final_hosp_ids
@@ -2935,9 +2940,6 @@ def main(memory_monitor=None) -> bool:
         print(f"\n⚠️ Found {len(failed_conversions)} conversion issues:")
         print(failed_conversions[['med_category', '_clean_unit', '_convert_status', 'count']].to_string(index=False))
 
-    # Clean up weight data to free memory
-    del weight_vitals_df, weight_df_pl
-    gc.collect()
     print("✓ Cleaned up weight data from memory")
 
     # ============================================================================
@@ -3225,40 +3227,40 @@ def main(memory_monitor=None) -> bool:
     print("\n✅ All medication plots (plotly) created and saved as HTML!")
 
 
-    # Define medication groups
-    med_groups = {
-        'vasoactive': ['norepinephrine', 'epinephrine', 'phenylephrine', 'vasopressin', 'dopamine'],
-        'sedative': ['propofol', 'midazolam', 'lorazepam', 'dexmedetomidine', 'fentanyl'],
-        'paralytic': ['vecuronium', 'rocuronium', 'cisatracurium', 'pancuronium']
-    }
+    # # Define medication groups
+    # med_groups = {
+    #     'vasoactive': ['norepinephrine', 'epinephrine', 'phenylephrine', 'vasopressin', 'dopamine'],
+    #     'sedative': ['propofol', 'midazolam', 'lorazepam', 'dexmedetomidine', 'fentanyl'],
+    #     'paralytic': ['vecuronium', 'rocuronium', 'cisatracurium', 'pancuronium']
+    # }
 
-    # Lower-cased mapping for safety
-    med_to_group = {med: group for group, meds in med_groups.items() for med in meds}
-    all_meds = [med for meds in med_groups.values() for med in meds]
+    # # Lower-cased mapping for safety
+    # med_to_group = {med: group for group, meds in med_groups.items() for med in meds}
+    # all_meds = [med for meds in med_groups.values() for med in meds]
 
-    # Merge and preprocess (same as before)
-    meds_merged = meds_df.merge(
-        final_tableone_df[['encounter_block', 'first_icu_in_dttm']],
-        on='encounter_block',
-        how='inner'
-    )
+    # # Merge and preprocess (same as before)
+    # meds_merged = meds_df.merge(
+    #     final_tableone_df[['encounter_block', 'first_icu_in_dttm']],
+    #     on='encounter_block',
+    #     how='inner'
+    # )
 
-    meds_merged['hours_from_icu'] = (
-        pd.to_datetime(meds_merged['admin_dttm']) - pd.to_datetime(meds_merged['first_icu_in_dttm'])
-    ).dt.total_seconds() / 3600
+    # meds_merged['hours_from_icu'] = (
+    #     pd.to_datetime(meds_merged['admin_dttm']) - pd.to_datetime(meds_merged['first_icu_in_dttm'])
+    # ).dt.total_seconds() / 3600
 
-    meds_merged['med_lower'] = meds_merged['med_category'].str.lower()
-    finite_mask = np.isfinite(meds_merged['hours_from_icu'])
-    meds_merged['hour_bin'] = np.nan
-    meds_merged.loc[finite_mask, 'hour_bin'] = np.floor(meds_merged.loc[finite_mask, 'hours_from_icu'])
-    meds_merged['hour_bin'] = meds_merged['hour_bin'].astype('Int64')
+    # meds_merged['med_lower'] = meds_merged['med_category'].str.lower()
+    # finite_mask = np.isfinite(meds_merged['hours_from_icu'])
+    # meds_merged['hour_bin'] = np.nan
+    # meds_merged.loc[finite_mask, 'hour_bin'] = np.floor(meds_merged.loc[finite_mask, 'hours_from_icu'])
+    # meds_merged['hour_bin'] = meds_merged['hour_bin'].astype('Int64')
 
-    meds_7d = meds_merged[
-        (meds_merged['med_lower'].isin(all_meds)) &
-        (meds_merged['hour_bin'].notna()) &
-        (meds_merged['hour_bin'] >= 0) &
-        (meds_merged['hour_bin'] <= 167)
-    ].copy()
+    # meds_7d = meds_merged[
+    #     (meds_merged['med_lower'].isin(all_meds)) &
+    #     (meds_merged['hour_bin'].notna()) &
+    #     (meds_merged['hour_bin'] >= 0) &
+    #     (meds_merged['hour_bin'] <= 167)
+    # ].copy()
 
     # =======================
     # Line plot: median dose by hour since ICU admission (per med group)
