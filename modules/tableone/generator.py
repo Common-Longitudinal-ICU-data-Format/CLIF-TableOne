@@ -2912,58 +2912,31 @@ def main(memory_monitor=None) -> bool:
     gc.collect()
     # Check how many medications got weights
     weights_matched = med_with_weights.filter(pl.col('weight_kg').is_not_null()).shape[0]
-    print(f"Matched weights for {weights_matched:,} / {len(med_with_weights):,} medication administrations ({weights_matched/len(med_with_weights)*100:.1f}%)")
+    total_meds = len(med_with_weights)
+    print(f"Matched weights for {weights_matched:,} / {total_meds:,} medication administrations ({weights_matched/total_meds*100:.1f}%)")
 
-    # Convert back to Pandas
+    print(f"✓ Weights pre-joined to medications (weight_kg column added)")
+
+    # Convert units using CLIFpy (for now - Polars converter has dtype issues)
+    print("\nConverting medication dose units...")
+
+    # Convert back to Pandas for CLIFpy compatibility
     med_with_weights_pd = med_with_weights.to_pandas()
     del med_with_weights
     gc.collect()
-    # Add timezone information back (Polars may strip it during conversion)
-    if 'admin_dttm' in med_with_weights_pd.columns and med_with_weights_pd['admin_dttm'].dt.tz is None:
-        med_with_weights_pd['admin_dttm'] = med_with_weights_pd['admin_dttm'].dt.tz_localize(
-            config['timezone'],
-            ambiguous=True,
-            nonexistent='shift_forward'
-        )
 
-    if 'weight_recorded_dttm' in med_with_weights_pd.columns and med_with_weights_pd['weight_recorded_dttm'].dt.tz is None:
-        med_with_weights_pd['weight_recorded_dttm'] = med_with_weights_pd['weight_recorded_dttm'].dt.tz_localize(
-            config['timezone'],
-            ambiguous=True,
-            nonexistent='shift_forward'
-        )
+    from clifpy.utils.unit_converter import convert_dose_units_by_med_category as clifpy_convert
+    meds_converted, summary_df = clifpy_convert(
+        med_df=med_with_weights_pd,
+        preferred_units=preferred_units,
+        override=True
+    )
 
-    # Update the medication dataframe in the CLIF object
-    clif.medication_admin_continuous.df = None
-    # del med_with_weights_pd
+    # Create simplified summary for reporting
+    conversion_counts = summary_df.groupby('_convert_status').size().reset_index(name='count')
+    del med_with_weights_pd, summary_df
     gc.collect()
-    print(f"✓ Weights pre-joined to medications (weight_kg column  added)")
-    # empty_vitals = pd.DataFrame({
-    #   'hospitalization_id': [],
-    #   'recorded_dttm': pd.to_datetime([]),
-    #   'vital_category': [],
-    #   'vital_value': []
-    # })
-    # Convert units (uses clifpy orchestrator)
-    # clif.convert_dose_units_for_continuous_meds(
-    #     preferred_units=preferred_units,
-    #     vitals_df=None,  
-    #     override=True,
-    #     save_to_table=True,
-    #     hospitalization_ids=final_hosp_ids
-    # )
-    from clifpy.utils.unit_converter import convert_dose_units_by_med_category
-    meds_converted, summary_df = convert_dose_units_by_med_category(
-            med_df=med_with_weights_pd,
-            preferred_units=preferred_units,
-            override=True
-        )
-
-    # Get converted data
-    # meds_converted = clif.medication_admin_continuous.df_converted.copy()
-
-    # Check conversion results
-    conversion_counts = summary_df
+    print(f"✓ Converted {len(meds_converted):,} medication records")
 
     print("\n=== Conversion Summary ===")
     success_count = conversion_counts[conversion_counts['_convert_status'] == 'success']['count'].sum()
@@ -2974,9 +2947,9 @@ def main(memory_monitor=None) -> bool:
     failed_conversions = conversion_counts[conversion_counts['_convert_status'] != 'success']
     if len(failed_conversions) > 0:
         print(f"\n⚠️ Found {len(failed_conversions)} conversion issues:")
-        print(failed_conversions[['med_category', '_clean_unit', '_convert_status', 'count']].to_string(index=False))
+        print(failed_conversions.to_string(index=False))
 
-    print("✓ Cleaned up weight data from memory")
+    print("✓ Medication unit conversion complete")
 
     # ============================================================================
     # 3. Calculate Median and IQR for Vasopressors (Optimized)
@@ -3004,8 +2977,8 @@ def main(memory_monitor=None) -> bool:
     for vaso in existing_vasos:
         vaso_subset = vaso_df[vaso_df['med_category'] == vaso]
 
-        # Calculate median, Q1, Q3 (vectorized)
-        dose_stats = vaso_subset.groupby('encounter_block')['med_dose'].agg([
+        # Calculate median, Q1, Q3 on CONVERTED doses (vectorized)
+        dose_stats = vaso_subset.groupby('encounter_block')['med_dose_converted'].agg([
             ('median', 'median'),
             ('q1', lambda x: x.quantile(0.25)),
             ('q3', lambda x: x.quantile(0.75))
@@ -3995,6 +3968,11 @@ def main(memory_monitor=None) -> bool:
     # Join sofa_scores with final_tableone_df on 'encounter_block'
     # Note: sofa_scores doesn't have death_enc anymore, so no conflict
     final_tableone_df = final_tableone_df.merge(sofa_scores, on='encounter_block', how='left')
+
+    # CRITICAL: Force immediate garbage collection to release old final_tableone_df copy
+    # The merge operation creates a new dataframe, and without immediate cleanup,
+    # the old one remains in memory creating a 5-6 GB duplicate (memory regression issue)
+    gc.collect()
 
     # AGGRESSIVE MEMORY CLEANUP: Clear all SOFA-related data
     print("\n" + "="*80)

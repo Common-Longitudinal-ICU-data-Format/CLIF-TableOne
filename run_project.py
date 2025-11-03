@@ -224,58 +224,28 @@ class ProjectRunner:
         self.logger.info(f"Tables: {', '.join(tables) if tables else 'all'}")
 
         try:
-            # Use different approach for Windows vs Unix-like systems
-            if sys.platform == 'win32':
-                # On Windows, use communicate() to avoid deadlocks
-                process = subprocess.Popen(
-                    cmd,
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.STDOUT,  # Merge stderr into stdout
-                    text=True,
-                    universal_newlines=True
-                )
+            # Unified subprocess handling for all platforms (Windows, Linux, Mac)
+            # Merge stderr into stdout to prevent pipe deadlocks
+            # Use UTF-8 encoding to handle emojis and Unicode characters
+            process = subprocess.Popen(
+                cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,  # Merge stderr into stdout (prevents deadlock)
+                text=True,
+                encoding='utf-8',  # Explicit UTF-8 for cross-platform emoji support
+                bufsize=1,  # Line buffered
+                universal_newlines=True
+            )
 
-                # Read output in chunks to show progress
-                while True:
-                    output = process.stdout.readline()
-                    if output == '' and process.poll() is not None:
-                        break
-                    if output:
-                        line = output.rstrip()
-                        if line:  # Skip empty lines
-                            print(line)  # Show in terminal immediately
-                            self.logger.info(line)  # Also log to file
+            # Stream output in real-time
+            for line in process.stdout:
+                line = line.rstrip()
+                if line:  # Skip empty lines
+                    print(line)  # Show in terminal immediately
+                    self.logger.info(line)  # Also log to file
 
-                # Get exit code
-                exit_code = process.poll()
-            else:
-                # Original Unix/Linux/MacOS approach
-                process = subprocess.Popen(
-                    cmd,
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.PIPE,
-                    text=True,
-                    bufsize=1,  # Line buffered
-                    universal_newlines=True
-                )
-
-                # Stream stdout in real-time
-                for line in process.stdout:
-                    line = line.rstrip()
-                    if line:  # Skip empty lines
-                        print(line)  # Show in terminal immediately
-                        self.logger.info(line)  # Also log to file
-
-                # Get any remaining stderr
-                stderr_output = process.stderr.read()
-                if stderr_output:
-                    for line in stderr_output.strip().split('\n'):
-                        if line:
-                            print(line, file=sys.stderr)
-                            self.logger.error(line)
-
-                # Wait for process to complete
-                exit_code = process.wait()
+            # Wait for process to complete
+            exit_code = process.wait()
 
             if exit_code == 0:
                 print("\n[SUCCESS] Validation completed successfully")

@@ -40,11 +40,10 @@ Create or update `config/config.json`:
 
 ## Quick Start - Complete Workflow
 
-### Linux/MacOS
-
 Run the complete analysis pipeline with sampling (recommended for first run):
 
 ```bash
+# Works on Linux, MacOS, and Windows
 uv run python run_project.py --sample --no-summary --get-ecdf
 ```
 
@@ -57,21 +56,15 @@ This command:
 
 **Time:** ~10-15 minutes with sampling, 45-90 minutes without
 
-### Windows
+### Windows Users: Optional Batch File
 
-Windows users should use the provided scripts that handle UTF-8 encoding:
+For convenience, Windows users can also use the provided batch file:
 
-**Using Batch files:**
 ```batch
 run_project_windows.bat --sample --no-summary --get-ecdf
 ```
 
-**Using PowerShell:**
-```powershell
-.\run_project_windows.ps1 --sample --no-summary --get-ecdf
-```
-
-If you encounter Unicode/emoji display issues, see the [Windows Troubleshooting](#windows-unicode-troubleshooting) section below.
+The batch file is optional - it just pre-sets UTF-8 encoding environment variables, but the Python script now handles UTF-8 automatically.
 
 ## Web Application
 
@@ -166,31 +159,14 @@ After Table One generation completes:
 
 See [TABLEONE_VIEWER_GUIDE.md](TABLEONE_VIEWER_GUIDE.md) for detailed viewer documentation.
 
-## Windows Unicode Troubleshooting
+## Windows Notes
 
-If you see encoding errors with emojis/Unicode characters:
+### UTF-8 Support
+UTF-8 encoding is now built into the script. Emojis and Unicode characters should work automatically.
 
-### Option 1: Set Environment Variables
-```batch
-# Command Prompt
-set PYTHONIOENCODING=utf-8
-python run_project.py
-
-# PowerShell
-$env:PYTHONIOENCODING="utf-8"
-python run_project.py
-```
-
-### Option 2: Enable System-Wide UTF-8
-1. Go to Settings → Time & Language → Language → Administrative language settings
-2. Click "Change system locale"
-3. Check "Beta: Use Unicode UTF-8 for worldwide language support"
-4. Restart your computer
-
-### Option 3: Python UTF-8 Mode
-```batch
-python -X utf8 run_project.py
-```
+If you still encounter encoding issues with very old Windows configurations:
+- Use the provided batch file: `run_project_windows.bat`
+- Or set environment variable: `set PYTHONIOENCODING=utf-8`
 
 ## Advanced Usage
 

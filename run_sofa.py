@@ -27,7 +27,7 @@ from modules.sofa.calculator import compute_sofa_polars
 
 def load_config():
     """Load configuration from config.json."""
-    config_path = Path("config.json")
+    config_path = Path("config/config.json")
     if not config_path.exists():
         raise FileNotFoundError(
             "config.json not found. Please ensure it exists in the project root."
