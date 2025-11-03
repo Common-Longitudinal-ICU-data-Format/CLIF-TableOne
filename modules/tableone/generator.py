@@ -3020,6 +3020,8 @@ def main(memory_monitor=None) -> bool:
         on='encounter_block',
         how='left'
     )
+    # Critical: Force garbage collection immediately after merge to release old copy
+    gc.collect()
 
     # Fill NaN with 0 for medication flags (encounters without that medication)
     flag_cols = [col for col in med_flags.columns if col.endswith('_flag') and col != 'encounter_block']
@@ -3035,7 +3037,9 @@ def main(memory_monitor=None) -> bool:
             on='encounter_block',
             how='left'
         )
-    
+        # Critical: Force garbage collection immediately after merge to release old copy
+        gc.collect()
+
         vaso_stat_cols = [col for col in vaso_stats.columns if col != 'encounter_block']
         print(f"✅ Added {len(vaso_stat_cols)} vasopressor dose statistic columns")
 
@@ -3127,6 +3131,12 @@ def main(memory_monitor=None) -> bool:
         (meds_merged['hour_bin'] >= 0) &
         (meds_merged['hour_bin'] <= 167)
     ]
+
+    # CRITICAL: Delete large intermediate dataframes to free ~3.4 GB of memory
+    # meds_converted (5.9M rows) and meds_merged (with ICU time calculations) are no longer needed
+    # All required data is now in meds_7d (filtered to 7-day window)
+    del meds_converted, meds_merged
+    gc.collect()
 
     total_icu_encounters = final_tableone_df[final_tableone_df['icu_enc'] == 1]['encounter_block'].nunique()
 
@@ -3375,7 +3385,8 @@ def main(memory_monitor=None) -> bool:
 
     # Memory cleanup: Clear medication processing data
     print("Clearing medication processing data from memory...")
-    del meds_df, meds_converted, vaso_df, vaso_stats, med_flags, meds_7d, summary_df
+    del meds_df, vaso_df, vaso_stats, med_flags, meds_7d, summary_df
+    # Note: meds_converted and meds_merged were already deleted at line 3138 after meds_7d extraction
     plt.close('all')
     gc.collect()
     checkpoint("8. Medication Analysis Complete")
