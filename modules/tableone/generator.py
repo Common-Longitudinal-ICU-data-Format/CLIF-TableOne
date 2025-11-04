@@ -3475,24 +3475,24 @@ def main(memory_monitor=None) -> bool:
     # # Patient Assessments
     # ==============================================================================
 
-    print(f"\nLoading patient_assessments table...")
-    try:
-        clif.load_table(
-            'patient_assessments',
-            filters={
-                'hospitalization_id': final_hosp_ids
-            }
-        )
-        clif.patient_assessments.df = pd.merge(
-            clif.patient_assessments.df,
-            encounter_mapping,
-            on='hospitalization_id',
-            how='left'
-        )
-        # MCIDE collection moved to separate script: generate_mcide_and_stats.py
-        # get_value_counts_mcide(clif.patient_assessments, 'patient_assessments', ['assessment_name', 'assessment_category', 'assessment_group'], output_dir=mcide_dir, config=config)
-    except FileNotFoundError as e:
-        print(f"Warning: Failed to load the ECMO table: {e}. Proceeding without Patient Assessments data.")
+    # print(f"\nLoading patient_assessments table...")
+    # try:
+    #     clif.load_table(
+    #         'patient_assessments',
+    #         filters={
+    #             'hospitalization_id': final_hosp_ids
+    #         }
+    #     )
+    #     clif.patient_assessments.df = pd.merge(
+    #         clif.patient_assessments.df,
+    #         encounter_mapping,
+    #         on='hospitalization_id',
+    #         how='left'
+    #     )
+    #     # MCIDE collection moved to separate script: generate_mcide_and_stats.py
+    #     # get_value_counts_mcide(clif.patient_assessments, 'patient_assessments', ['assessment_name', 'assessment_category', 'assessment_group'], output_dir=mcide_dir, config=config)
+    # except FileNotFoundError as e:
+    #     print(f"Warning: Failed to load the ECMO table: {e}. Proceeding without Patient Assessments data.")
 
 
     # ==============================================================================
@@ -3658,195 +3658,146 @@ def main(memory_monitor=None) -> bool:
     print(f"Cohort shape: {sofa_cohort_pl.shape}")
     print(f"Cohort columns: {sofa_cohort_pl.columns}")
 
-    # Compute SOFA scores using Polars
-    print("\n" + "="*60)
-    print("Computing SOFA scores with Polars...")
-    print("="*60 + "\n")
+    # SKIP SOFA SCORES FOR LITE VERSION
+    # print("\n" + "="*60)
+    # print("Computing SOFA scores with Polars...")
+    # print("="*60 + "\n")
+    #
+    # sofa_scores_pl = compute_sofa_polars(
+    #     data_directory=config['tables_path'],
+    #     cohort_df=sofa_cohort_pl,
+    #     filetype=config['file_type'],
+    #     id_name='encounter_block',
+    #     extremal_type='worst',
+    #     fill_na_scores_with_zero=True,
+    #     remove_outliers=True,
+    #     timezone=config['timezone']
+    # )
+    #
+    # # Convert back to Pandas for compatibility with rest of code
+    # sofa_scores = sofa_scores_pl.to_pandas()
+    #
+    # print(f"\n✅ SOFA computation complete!")
+    # print(f"Result shape: {sofa_scores.shape}")
+    # print(f"\nFirst few rows:")
+    # print(sofa_scores.head())
 
-    sofa_scores_pl = compute_sofa_polars(
-        data_directory=config['tables_path'],
-        cohort_df=sofa_cohort_pl,
-        filetype=config['file_type'],
-        id_name='encounter_block',
-        extremal_type='worst',
-        fill_na_scores_with_zero=True,
-        remove_outliers=True,
-        timezone=config['timezone']
-    )
+    # CREATE EMPTY SOFA SCORES FOR LITE VERSION (just encounter_block column to avoid merge errors)
+    sofa_scores = pd.DataFrame({'encounter_block': final_tableone_df['encounter_block'].unique()})
 
-    # Convert back to Pandas for compatibility with rest of code
-    sofa_scores = sofa_scores_pl.to_pandas()
-
-    print(f"\n✅ SOFA computation complete!")
-    print(f"Result shape: {sofa_scores.shape}")
-    print(f"\nFirst few rows:")
-    print(sofa_scores.head())
-
-    # Note: death_enc will come from final_tableone_df when we merge later
-    # For now, get death_enc temporarily for mortality calculations
-    sofa_scores_with_death = sofa_scores.merge(
-        final_tableone_df[['encounter_block', 'death_enc']],
-        how='left',
-        on='encounter_block'
-    )
-
-    #  Prepare the data
-    # Group by SOFA score and calculate mortality rate and counts
-    sofa_mortality = sofa_scores_with_death.groupby('sofa_total').agg({
-        'death_enc': ['mean', 'count']
-    }).reset_index()
-
-    sofa_mortality.columns = ['sofa_score', 'mortality_rate', 'count']
-    sofa_mortality['mortality_rate'] = sofa_mortality['mortality_rate'] * 100  # Convert to percentage
-
-    # Step 2: Calculate confidence intervals (optional, for error bars)
-    # Using Wilson score interval for binomial proportions
-    def wilson_ci(successes, n, confidence=0.95):
-        z = stats.norm.ppf((1 + confidence) / 2)
-        p_hat = successes / n
-        denominator = 1 + z**2 / n
-        center = (p_hat + z**2 / (2*n)) / denominator
-        margin = z * np.sqrt((p_hat * (1 - p_hat) + z**2 / (4*n)) / n) / denominator
-        return center * 100, margin * 100
-
-    # Calculate number of deaths per score
-    sofa_mortality['deaths'] = (sofa_mortality['mortality_rate'] / 100) * sofa_mortality['count']
-
-    # Calculate confidence intervals
-    ci_data = [wilson_ci(deaths, n) if n > 0 else (0, 0) 
-               for deaths, n in zip(sofa_mortality['deaths'], sofa_mortality['count'])]
-    sofa_mortality['ci_center'] = [x[0] for x in ci_data]
-    sofa_mortality['ci_margin'] = [x[1] for x in ci_data]
-
-    # Step 3: Create the plot
-    fig, ax = plt.subplots(figsize=(14, 6))
-
-    # Create bar chart
-    bars = ax.bar(sofa_mortality['sofa_score'], 
-                  sofa_mortality['mortality_rate'],
-                  color='#7FA8B8',  # Steel blue color similar to the image
-                  edgecolor='black',
-                  linewidth=0.5,
-                  alpha=0.9)
-
-    # Add error bars
-    ax.errorbar(sofa_mortality['sofa_score'], 
-                sofa_mortality['mortality_rate'],
-                yerr=sofa_mortality['ci_margin'],
-                fmt='none',
-                ecolor='black',
-                capsize=3,
-                capthick=1,
-                alpha=0.7)
-
-    # Customize the plot
-    ax.set_xlabel('SOFA Score', fontsize=12, fontweight='bold')
-    ax.set_ylabel('Mortality, %', fontsize=12, fontweight='bold')
-    ax.set_title('Mortality by SOFA Score (First 24hr of ICU admission)', fontsize=14, fontweight='bold', pad=20)
-
-    # Set y-axis limits
-    ax.set_ylim(0, 100)
-
-    # Add grid for readability
-    ax.yaxis.grid(True, linestyle='-', alpha=0.3, color='gray')
-    ax.set_axisbelow(True)
-
-    # Set x-axis ticks to show all SOFA scores
-    ax.set_xticks(range(int(sofa_mortality['sofa_score'].min()), 
-                        int(sofa_mortality['sofa_score'].max()) + 1))
-
-    # Add count labels below x-axis
-    counts_text = '\n'.join([
-        'No. of patients per score',
-        '  '.join([f'{int(count)}' for count in sofa_mortality['count']])
-    ])
-
-    # Create a second table-like annotation below the plot
-    fig.text(0.1, -0.05, 'No. of patients per score', 
-             ha='left', fontsize=10, weight='bold')
-
-    # Add individual counts
-    x_positions = np.linspace(0.15, 0.9, len(sofa_mortality))
-    for i, (score, count) in enumerate(zip(sofa_mortality['sofa_score'], sofa_mortality['count'])):
-        if i < len(x_positions):
-            fig.text(x_positions[i], -0.08, f'{int(count)}', 
-                    ha='center', fontsize=8)
-
-    plt.tight_layout()
-    plt.subplots_adjust(bottom=0.15)  # Make room for patient counts
-
-    # Save the figure
-    plt.savefig(get_output_path('final', 'tableone', 'sofa_mortality_histogram.png'),
-                dpi=300, bbox_inches='tight', facecolor='white')
-    plt.close()
-
-
-    # Step 5: Prepare data for CSV export
-    # Calculate lower and upper confidence interval bounds
-    sofa_mortality['ci_lower'] = sofa_mortality['mortality_rate'] - sofa_mortality['ci_margin']
-    sofa_mortality['ci_upper'] = sofa_mortality['mortality_rate'] + sofa_mortality['ci_margin']
-
-    # Ensure CI bounds are within valid range [0, 100]
-    sofa_mortality['ci_lower'] = sofa_mortality['ci_lower'].clip(lower=0)
-    sofa_mortality['ci_upper'] = sofa_mortality['ci_upper'].clip(upper=100)
-    sofa_mortality['total_encounters'] = sofa_scores['encounter_block'].nunique()
-    # Create export dataframe with all relevant columns
-    sofa_export = sofa_mortality[[
-        'sofa_score', 
-        'total_encounters',
-        'count',
-        'deaths',
-        'mortality_rate', 
-        'ci_lower',
-        'ci_upper',
-        'ci_margin'
-    ]].copy()
-
-    # Rename columns for clarity
-    sofa_export.columns = [
-        'sofa_score',
-        'total_encounters',
-        'n_encounters',
-        'n_deaths',
-        'mortality_rate_percent',
-        'ci_lower_95',
-        'ci_upper_95',
-        'ci_margin_95'
-    ]
-
-    # Round numeric columns for readability
-    sofa_export['n_encounters'] = sofa_export['n_encounters'].astype(int)
-    sofa_export['total_encounters'] = sofa_export['total_encounters'].astype(int)
-    sofa_export['n_deaths'] = sofa_export['n_deaths'].round(0).astype(int)
-    sofa_export['mortality_rate_percent'] = sofa_export['mortality_rate_percent'].round(2)
-    sofa_export['ci_lower_95'] = sofa_export['ci_lower_95'].round(2)
-    sofa_export['ci_upper_95'] = sofa_export['ci_upper_95'].round(2)
-    sofa_export['ci_margin_95'] = sofa_export['ci_margin_95'].round(2)
-
-    # Save to CSV
-    output_path = get_output_path('final', 'tableone', 'sofa_mortality_summary.csv')
-    sofa_export.to_csv(output_path, index=False)
-
-    print(f"\n=== SOFA Mortality Summary Saved ===")
-    print(f"File saved to: {output_path}")
+    # SKIP MORTALITY CALCULATIONS FOR LITE VERSION
+    # sofa_scores_with_death = sofa_scores.merge(
+    #     final_tableone_df[['encounter_block', 'death_enc']],
+    #     how='left',
+    #     on='encounter_block'
+    # )
+    #
+    # sofa_mortality = sofa_scores_with_death.groupby('sofa_total').agg({
+    #     'death_enc': ['mean', 'count']
+    # }).reset_index()
+    #
+    # sofa_mortality.columns = ['sofa_score', 'mortality_rate', 'count']
+    # sofa_mortality['mortality_rate'] = sofa_mortality['mortality_rate'] * 100
+    #
+    # def wilson_ci(successes, n, confidence=0.95):
+    #     z = stats.norm.ppf((1 + confidence) / 2)
+    #     p_hat = successes / n
+    #     denominator = 1 + z**2 / n
+    #     center = (p_hat + z**2 / (2*n)) / denominator
+    #     margin = z * np.sqrt((p_hat * (1 - p_hat) + z**2 / (4*n)) / n) / denominator
+    #     return center * 100, margin * 100
+    #
+    # sofa_mortality['deaths'] = (sofa_mortality['mortality_rate'] / 100) * sofa_mortality['count']
+    # ci_data = [wilson_ci(deaths, n) if n > 0 else (0, 0)
+    #            for deaths, n in zip(sofa_mortality['deaths'], sofa_mortality['count'])]
+    # sofa_mortality['ci_center'] = [x[0] for x in ci_data]
+    # sofa_mortality['ci_margin'] = [x[1] for x in ci_data]
+    #
+    # fig, ax = plt.subplots(figsize=(14, 6))
+    # bars = ax.bar(sofa_mortality['sofa_score'],
+    #               sofa_mortality['mortality_rate'],
+    #               color='#7FA8B8',
+    #               edgecolor='black',
+    #               linewidth=0.5,
+    #               alpha=0.9)
+    # ax.errorbar(sofa_mortality['sofa_score'],
+    #             sofa_mortality['mortality_rate'],
+    #             yerr=sofa_mortality['ci_margin'],
+    #             fmt='none',
+    #             ecolor='black',
+    #             capsize=3,
+    #             capthick=1,
+    #             alpha=0.7)
+    # ax.set_xlabel('SOFA Score', fontsize=12, fontweight='bold')
+    # ax.set_ylabel('Mortality, %', fontsize=12, fontweight='bold')
+    # ax.set_title('Mortality by SOFA Score (First 24hr of ICU admission)', fontsize=14, fontweight='bold', pad=20)
+    # ax.set_ylim(0, 100)
+    # ax.yaxis.grid(True, linestyle='-', alpha=0.3, color='gray')
+    # ax.set_axisbelow(True)
+    # ax.set_xticks(range(int(sofa_mortality['sofa_score'].min()),
+    #                     int(sofa_mortality['sofa_score'].max()) + 1))
+    # counts_text = '\n'.join([
+    #     'No. of patients per score',
+    #     '  '.join([f'{int(count)}' for count in sofa_mortality['count']])
+    # ])
+    # fig.text(0.1, -0.05, 'No. of patients per score',
+    #          ha='left', fontsize=10, weight='bold')
+    # x_positions = np.linspace(0.15, 0.9, len(sofa_mortality))
+    # for i, (score, count) in enumerate(zip(sofa_mortality['sofa_score'], sofa_mortality['count'])):
+    #     if i < len(x_positions):
+    #         fig.text(x_positions[i], -0.08, f'{int(count)}',
+    #                 ha='center', fontsize=8)
+    # plt.tight_layout()
+    # plt.subplots_adjust(bottom=0.15)
+    # plt.savefig(get_output_path('final', 'tableone', 'sofa_mortality_histogram.png'),
+    #             dpi=300, bbox_inches='tight', facecolor='white')
+    # plt.close()
+    #
+    # sofa_mortality['ci_lower'] = sofa_mortality['mortality_rate'] - sofa_mortality['ci_margin']
+    # sofa_mortality['ci_upper'] = sofa_mortality['mortality_rate'] + sofa_mortality['ci_margin']
+    # sofa_mortality['ci_lower'] = sofa_mortality['ci_lower'].clip(lower=0)
+    # sofa_mortality['ci_upper'] = sofa_mortality['ci_upper'].clip(upper=100)
+    # sofa_mortality['total_encounters'] = sofa_scores['encounter_block'].nunique()
+    # sofa_export = sofa_mortality[[
+    #     'sofa_score',
+    #     'total_encounters',
+    #     'count',
+    #     'deaths',
+    #     'mortality_rate',
+    #     'ci_lower',
+    #     'ci_upper',
+    #     'ci_margin'
+    # ]].copy()
+    # sofa_export.columns = [
+    #     'sofa_score',
+    #     'total_encounters',
+    #     'n_encounters',
+    #     'n_deaths',
+    #     'mortality_rate_percent',
+    #     'ci_lower_95',
+    #     'ci_upper_95',
+    #     'ci_margin_95'
+    # ]
+    # sofa_export['n_encounters'] = sofa_export['n_encounters'].astype(int)
+    # sofa_export['total_encounters'] = sofa_export['total_encounters'].astype(int)
+    # sofa_export['n_deaths'] = sofa_export['n_deaths'].round(0).astype(int)
+    # sofa_export['mortality_rate_percent'] = sofa_export['mortality_rate_percent'].round(2)
+    # sofa_export['ci_lower_95'] = sofa_export['ci_lower_95'].round(2)
+    # sofa_export['ci_upper_95'] = sofa_export['ci_upper_95'].round(2)
+    # sofa_export['ci_margin_95'] = sofa_export['ci_margin_95'].round(2)
+    # output_path = get_output_path('final', 'tableone', 'sofa_mortality_summary.csv')
+    # sofa_export.to_csv(output_path, index=False)
+    # print(f"\n=== SOFA Mortality Summary Saved ===")
+    # print(f"File saved to: {output_path}")
 
     # Join sofa_scores with final_tableone_df on 'encounter_block'
     # Note: sofa_scores doesn't have death_enc anymore, so no conflict
     final_tableone_df = final_tableone_df.merge(sofa_scores, on='encounter_block', how='left')
 
-    # AGGRESSIVE MEMORY CLEANUP: Clear all SOFA-related data
+    # SKIP MEMORY CLEANUP FOR LITE VERSION (no SOFA data to cleanup)
     print("\n" + "="*80)
-    print("AGGRESSIVE MEMORY CLEANUP AFTER SOFA COMPUTATION")
+    print("SOFA SKIPPED FOR LITE VERSION - No cleanup needed")
     print("="*80)
-    print("Clearing SOFA computation data from memory...")
-
-    # Delete SOFA computation variables
-    del sofa_scores, sofa_mortality, sofa_export, sofa_cohort_df, sofa_cohort_ids, sofa_cohort_pl, sofa_scores_pl
-    del ci_data
-
-    # Force garbage collection
-    gc.collect()
-    print("✅ SOFA data cleared from memory")
     print("="*80 + "\n")
 
     checkpoint("11. SOFA Computation Complete + Cleanup")

@@ -60,3 +60,5 @@ __pycache__
 .claude
 Intersections_4.txt
 Venn_4.png
+all_site_data/
+modules/tableone/consortium_figures.py
