@@ -56,6 +56,7 @@ def _create_resp_support_episodes(
     # Sort by patient and time
     resp_df = resp_df.sort([id_col, 'recorded_dttm'])
 
+    logger.info("IN WATERFALL IMV detection...")
     # === HEURISTIC 1: IMV detection from mode_category ===
     # Fill in missing device_category if mode_category suggests IMV
     # Patterns: assist control-volume control, SIMV, pressure control
@@ -71,7 +72,7 @@ def _create_resp_support_episodes(
         .otherwise(pl.col('device_category'))
         .alias('device_category')
     ])
-
+    logger.info("IN WATERFALL nippv detection...")
     # === HEURISTIC 2: NIPPV detection from mode_category ===
     # Pattern: pressure support (but not CPAP)
     resp_df = resp_df.with_columns([
@@ -98,6 +99,7 @@ def _create_resp_support_episodes(
         .alias('fio2_set')
     ])
 
+    logger.info("IN WATERFALL fio2 heuristics...")
     # === HEURISTIC 4: FiO2 imputation from nasal cannula flow ===
     # Impute FiO2 based on LPM for nasal cannula using clinical conversion table
     # Standard conversion: 1L → 24%, 2L → 28%, 3L → 32%, 4L → 36%, 5L → 40%,
@@ -124,7 +126,7 @@ def _create_resp_support_episodes(
             .when(pl.col('_lpm_rounded') == 10).then(pl.lit(0.60))
             .otherwise(None)
         )
-
+        logger.info("IN WATERFALL imputation of fio2...")
         # Apply imputation for nasal cannula rows with missing FiO2
         resp_df = resp_df.with_columns([
             pl.when(
@@ -139,6 +141,7 @@ def _create_resp_support_episodes(
             .alias('fio2_set')
         ])
 
+        logger.info("IN WATERFALL imputation of nasal cannula...")
         # Log imputation statistics
         nasal_cannula_imputed = (
             (resp_df['device_category'].str.to_lowercase() == 'nasal cannula') &
@@ -154,11 +157,14 @@ def _create_resp_support_episodes(
         # Clean up temporary column
         resp_df = resp_df.drop('_lpm_rounded')
 
+    logger.info("IN WATERFALL forward fill...")
     # === Forward-fill device_category and mode_category ===
     resp_df = resp_df.with_columns([
         pl.col('device_category').forward_fill().over(id_col).alias('device_category'),
         pl.col('mode_category').forward_fill().over(id_col).alias('mode_category')
     ])
+
+    logger.info("IN WATERFALL heirarchical episode IDs...")
 
     # === Create hierarchical episode IDs ===
 
@@ -176,7 +182,8 @@ def _create_resp_support_episodes(
     resp_df = resp_df.with_columns([
         pl.col('_device_cat_change').cum_sum().over(id_col).alias('device_cat_id')
     ])
-
+    
+    logger.info("IN WATERFALL mode_cat_id level 2...")
     # Level 2: mode_cat_id - changes when mode_category changes (nested within device_cat_id)
     resp_df = resp_df.with_columns([
         pl.when(
@@ -198,7 +205,7 @@ def _create_resp_support_episodes(
 
     return resp_df
 
-
+    
 # SOFA required categories by table
 REQUIRED_LABS = ['creatinine', 'platelet_count', 'po2_arterial', 'bilirubin_total']
 REQUIRED_VITALS = ['map', 'spo2', 'weight_kg']
@@ -418,24 +425,10 @@ def _load_patient_assessments(
     timezone: Optional[str] = None
 ) -> pl.LazyFrame:
     """
-    Load and filter patient assessments data (returns LazyFrame for memory efficiency).
-
-    Parameters
-    ----------
-    data_directory : str
-        Path to data directory
-    filetype : str
-        File type (parquet, csv)
-    hospitalization_ids : List[str]
-        List of hospitalization IDs to filter
-    cohort_df : pl.DataFrame
-        Cohort with time windows
-
-    Returns
-    -------
-    pl.LazyFrame
-        Filtered assessments data in long format (not materialized)
+    Load and filter patient assessments data using pandas for Windows stability.
     """
+    import pandas as pd
+    
     file_path = Path(data_directory) / f"clif_patient_assessments.{filetype}"
 
     if not file_path.exists():
@@ -449,63 +442,82 @@ def _load_patient_assessments(
         })
 
     # Define columns to load
-    load_columns = ['hospitalization_id', 'recorded_dttm', 'assessment_category', 'numerical_value', 'categorical_value']
+    load_columns = ['hospitalization_id', 'recorded_dttm', 'assessment_category', 
+                    'numerical_value', 'categorical_value']
 
-    # Load assessments with filters
+    logger.info("Loading patient assessments with pandas...")
+    
+    # Load with pandas instead of polars
     if filetype == 'parquet':
-        assessments = pl.scan_parquet(str(file_path)).select(load_columns)
+        assessments_pd = pd.read_parquet(file_path, columns=load_columns)
     else:
-        assessments = pl.scan_csv(str(file_path)).select(load_columns)
-
-    # Normalize hospitalization_id to Utf8 for consistent type matching
-    assessments = assessments.with_columns([
-        pl.col('hospitalization_id').cast(pl.Utf8).alias('hospitalization_id')
-    ])
-
+        assessments_pd = pd.read_csv(file_path, usecols=load_columns)
+    
+    logger.info(f"✓ Loaded {len(assessments_pd)} assessment rows with pandas")
+    
+    # Convert hospitalization_id to string
+    assessments_pd['hospitalization_id'] = assessments_pd['hospitalization_id'].astype(str)
+    
     # Filter for required categories and hospitalization_ids
-    assessments = assessments.filter(
-        pl.col('assessment_category').is_in(REQUIRED_ASSESSMENTS) &
-        pl.col('hospitalization_id').is_in(hospitalization_ids)
-    )
-
-    # Standardize datetime column to consistent timezone and time unit BEFORE join
+    assessments_pd = assessments_pd[
+        assessments_pd['assessment_category'].isin(REQUIRED_ASSESSMENTS) &
+        assessments_pd['hospitalization_id'].isin(hospitalization_ids)
+    ]
+    logger.info(f"✓ Filtered to {len(assessments_pd)} rows for target hospitalizations")
+    
+    # Convert datetime and timezone with pandas
     if timezone:
-        assessments = standardize_datetime_columns(
-            assessments,
-            target_timezone=timezone,
-            target_time_unit='ns',
-            datetime_columns=['recorded_dttm']
-        )
-
-    # Join with cohort to apply time window filter
-    assessments = assessments.join(
-        cohort_df.lazy(),
+        logger.info("Converting timezone with pandas...")
+        assessments_pd['recorded_dttm'] = pd.to_datetime(assessments_pd['recorded_dttm'])
+        if assessments_pd['recorded_dttm'].dt.tz is None:
+            assessments_pd['recorded_dttm'] = assessments_pd['recorded_dttm'].dt.tz_localize('UTC')
+        assessments_pd['recorded_dttm'] = assessments_pd['recorded_dttm'].dt.tz_convert(timezone)
+        logger.info("✓ Timezone conversion complete")
+    
+    # Join with cohort using pandas
+    logger.info("Performing pandas merge...")
+    cohort_pd = cohort_df.to_pandas()
+    assessments_pd = assessments_pd.merge(
+        cohort_pd,
         on='hospitalization_id',
         how='inner'
-    ).filter(
-        (pl.col('recorded_dttm') >= pl.col('start_dttm')) &
-        (pl.col('recorded_dttm') <= pl.col('end_dttm'))
     )
-
+    logger.info(f"✓ Merge complete: {len(assessments_pd)} rows")
+    
+    # Apply date filter
+    logger.info("Applying date filters...")
+    assessments_pd = assessments_pd[
+        (assessments_pd['recorded_dttm'] >= assessments_pd['start_dttm']) &
+        (assessments_pd['recorded_dttm'] <= assessments_pd['end_dttm'])
+    ]
+    logger.info(f"✓ Filtered to {len(assessments_pd)} rows within time windows")
+    
+    # Coalesce numerical and categorical values with pandas
+    logger.info("Coalescing numerical and categorical values...")
+    assessments_pd['assessment_value'] = assessments_pd['numerical_value'].fillna(
+        assessments_pd['categorical_value'].astype(float)
+    )
+    
     # Select relevant columns
     id_cols = [col for col in cohort_df.columns if col not in ['start_dttm', 'end_dttm']]
-
-    # Coalesce numerical and categorical values
-    assessments = assessments.with_columns([
-        pl.coalesce([pl.col('numerical_value'), pl.col('categorical_value').cast(pl.Float64)]).alias('assessment_value')
-    ])
-
-    assessments = assessments.select([
-        *id_cols,
-        'recorded_dttm',
-        'assessment_category',
-        'assessment_value'
-    ])
-
-    # Return lazy frame in long format
-    # Pivoting will happen later in the pipeline after all data is combined
-    return assessments
-
+    assessments_pd = assessments_pd[[*id_cols, 'recorded_dttm', 'assessment_category', 'assessment_value']]
+    
+    # Convert to polars
+    logger.info("Converting to polars...")
+    assessments = pl.from_pandas(assessments_pd)
+    
+    # IMPORTANT: Re-standardize datetime columns after conversion
+    assessments = standardize_datetime_columns(
+        assessments,
+        target_timezone=timezone,
+        target_time_unit='ns',  # Match the rest of your pipeline
+        datetime_columns=['recorded_dttm']
+    )
+    
+    logger.info("✓ Conversion to polars complete")
+    
+    # Return as lazy for downstream processing
+    return assessments.lazy()
 
 def _load_respiratory_support(
     data_directory: str,
@@ -515,41 +527,14 @@ def _load_respiratory_support(
     lookback_hours: int = 24,
     timezone: Optional[str] = None
 ) -> pl.LazyFrame:
-    """
-    Load respiratory support data with lookback period for forward-filling (returns LazyFrame for memory efficiency).
-
-    For SOFA-97 concurrent P/F calculation, we need to forward-fill FiO2 and device
-    category. This requires loading data from before the SOFA window starts to get
-    the initial values for forward-filling.
-
-    Note: This function temporarily materializes data for forward-filling operations,
-    but returns a LazyFrame for downstream processing efficiency.
-
-    Parameters
-    ----------
-    data_directory : str
-        Path to data directory
-    filetype : str
-        File type (parquet, csv)
-    hospitalization_ids : List[str]
-        List of hospitalization IDs to filter
-    cohort_df : pl.DataFrame
-        Cohort with time windows (start_dttm, end_dttm)
-    lookback_hours : int
-        Hours to look back before SOFA window for forward-filling (default: 24)
-    timezone : Optional[str]
-        Target timezone for conversion
-
-    Returns
-    -------
-    pl.LazyFrame
-        Respiratory support data with forward-filled FiO2 and device_category
-    """
+    """Load respiratory support data using pandas for Windows stability."""
+    
+    import pandas as pd
+    
     file_path = Path(data_directory) / f"clif_respiratory_support.{filetype}"
 
     if not file_path.exists():
         logger.warning(f"Respiratory support file not found: {file_path}")
-        # Return empty LazyFrame with expected schema
         return pl.LazyFrame(schema={
             'hospitalization_id': pl.Utf8,
             'recorded_dttm': pl.Datetime,
@@ -563,68 +548,79 @@ def _load_respiratory_support(
     load_columns = ['hospitalization_id', 'recorded_dttm', 'device_category', 'mode_category',
                     'fio2_set', 'lpm_set', 'tidal_volume_set', 'resp_rate_set']
 
-    # Create expanded cohort with lookback period
+    logger.info("Loading respiratory support with pandas...")
+    
+    # Load with pandas instead of polars
+    if filetype == 'parquet':
+        resp_pd = pd.read_parquet(file_path, columns=load_columns)
+    else:
+        resp_pd = pd.read_csv(file_path, usecols=load_columns)
+    
+    logger.info(f"✓ Loaded {len(resp_pd)} rows with pandas")
+    
+    # Convert hospitalization_id to string
+    resp_pd['hospitalization_id'] = resp_pd['hospitalization_id'].astype(str)
+    
+    # Filter for hospitalization_ids
+    resp_pd = resp_pd[resp_pd['hospitalization_id'].isin(hospitalization_ids)]
+    logger.info(f"✓ Filtered to {len(resp_pd)} rows for target hospitalizations")
+    
+    # Convert datetime
+    if timezone:
+        logger.info("Converting timezone with pandas...")
+        resp_pd['recorded_dttm'] = pd.to_datetime(resp_pd['recorded_dttm'])
+        if resp_pd['recorded_dttm'].dt.tz is None:
+            resp_pd['recorded_dttm'] = resp_pd['recorded_dttm'].dt.tz_localize('UTC')
+        resp_pd['recorded_dttm'] = resp_pd['recorded_dttm'].dt.tz_convert(timezone)
+        logger.info("✓ Timezone conversion complete")
+    
+    # Create expanded cohort with lookback
     from datetime import timedelta
     lookback_delta = timedelta(hours=lookback_hours)
-    cohort_expanded = cohort_df.with_columns([
-        (pl.col('start_dttm') - pl.lit(lookback_delta)).alias('start_dttm_lookback'),
-        pl.col('end_dttm').alias('end_dttm_original')
-    ])
-
-    # Load respiratory support with filters
-    if filetype == 'parquet':
-        resp = pl.scan_parquet(str(file_path)).select(load_columns)
-    else:
-        resp = pl.scan_csv(str(file_path)).select(load_columns)
-
-    # Normalize hospitalization_id to Utf8 for consistent type matching
-    resp = resp.with_columns([
-        pl.col('hospitalization_id').cast(pl.Utf8).alias('hospitalization_id')
-    ])
-
-    # Filter for hospitalization_ids
-    resp = resp.filter(
-        pl.col('hospitalization_id').is_in(hospitalization_ids)
-    )
-
-    # Standardize datetime column to consistent timezone and time unit BEFORE join
-    if timezone:
-        resp = standardize_datetime_columns(
-            resp,
-            target_timezone=timezone,
-            target_time_unit='ns',
-            datetime_columns=['recorded_dttm']
-        )
-
-    # Join with expanded cohort to load data from lookback period
-    resp = resp.join(
-        cohort_expanded.lazy(),
+    
+    cohort_pd = cohort_df.to_pandas()
+    cohort_pd['start_dttm_lookback'] = cohort_pd['start_dttm'] - lookback_delta
+    cohort_pd['end_dttm_original'] = cohort_pd['end_dttm']
+    
+    # Join with pandas
+    logger.info("Performing pandas merge...")
+    resp_pd = resp_pd.merge(
+        cohort_pd,
         on='hospitalization_id',
         how='inner'
-    ).filter(
-        (pl.col('recorded_dttm') >= pl.col('start_dttm_lookback')) &
-        (pl.col('recorded_dttm') <= pl.col('end_dttm_original'))
+    )
+    logger.info(f"✓ Merge complete: {len(resp_pd)} rows")
+    
+    # Apply date filter
+    logger.info("Applying date filters...")
+    resp_pd = resp_pd[
+        (resp_pd['recorded_dttm'] >= resp_pd['start_dttm_lookback']) &
+        (resp_pd['recorded_dttm'] <= resp_pd['end_dttm_original'])
+    ]
+    logger.info(f"✓ Filtered to {len(resp_pd)} rows within time windows")
+    
+    # Select columns
+    id_cols = [col for col in cohort_df.columns if col not in ['start_dttm', 'end_dttm']]
+    resp_pd = resp_pd[[*id_cols, 'recorded_dttm', 'device_category', 'mode_category', 
+                       'fio2_set', 'start_dttm', 'end_dttm']]
+    
+    # Convert to polars for the rest of processing
+    logger.info("Converting to polars for episode processing...")
+    resp = pl.from_pandas(resp_pd)
+    resp = standardize_datetime_columns(
+        resp,
+        target_timezone=timezone,
+        target_time_unit='ns',  # Match the rest of your pipeline
+        datetime_columns=['recorded_dttm']
     )
 
-    # Select relevant columns
-    id_cols = [col for col in cohort_df.columns if col not in ['start_dttm', 'end_dttm']]
-
-    resp = resp.select([
-        *id_cols,
-        'recorded_dttm',
-        'device_category',
-        'mode_category',
-        'fio2_set',
-        'start_dttm',  # Keep original window for filtering later
-        'end_dttm'
-    ]).collect()
-
-    # No need to convert timezone here since we already ensured it during lazy evaluation
-
+    logger.info("✓ Conversion to polars complete")
+    
+    # Rest of the function continues with polars...
     # Create respiratory support episodes for forward-filling
-    # This applies waterfall heuristics and creates hierarchical episode IDs
     resp = _create_resp_support_episodes(resp, id_col='hospitalization_id')
 
+    logger.info("Made it through waterfall doing forward fill...")
     # Forward-fill FiO2 within mode_cat_id episodes (most granular level)
     # device_category and mode_category are already forward-filled in _create_resp_support_episodes
     resp = resp.sort(['hospitalization_id', 'recorded_dttm'])
@@ -632,6 +628,7 @@ def _load_respiratory_support(
         pl.col('fio2_set').forward_fill().over(['hospitalization_id', 'mode_cat_id']).alias('fio2_set')
     ])
 
+    logger.info("SOFA window filter...")
     # Now filter to the original SOFA window (but keep forward-filled values)
     resp = resp.filter(
         (pl.col('recorded_dttm') >= pl.col('start_dttm')) &
@@ -645,7 +642,7 @@ def _load_respiratory_support(
     resp = resp.with_columns([
         pl.col('device_category').replace(DEVICE_RANK_DICT, default=9).alias('device_rank')
     ])
-
+    logger.info("Made it to return resp.lazy at the end...")
     # Return as LazyFrame for downstream processing
     return resp.lazy()
 
@@ -681,37 +678,16 @@ def _load_and_convert_medications(
     cohort_df: pl.DataFrame,
     vitals_df: pl.DataFrame,
     timezone: Optional[str] = None,
-    time_unit: str = 'us'
+    time_unit: str = 'ns'
 ) -> pl.LazyFrame:
-    """
-    Load medication data and convert all doses to mcg/kg/min (returns LazyFrame for memory efficiency).
-
-    Note: This function temporarily materializes data for dose conversion operations,
-    but returns a LazyFrame for downstream processing efficiency.
-
-    Parameters
-    ----------
-    data_directory : str
-        Path to data directory
-    filetype : str
-        File type (parquet, csv)
-    hospitalization_ids : List[str]
-        List of hospitalization IDs to filter
-    cohort_df : pl.DataFrame
-        Cohort with time windows
-    vitals_df : pl.DataFrame
-        Vitals data containing weight_kg
-
-    Returns
-    -------
-    pl.LazyFrame
-        Medication data with converted doses in mcg/kg/min (in long format)
-    """
+    """Load medication data using pandas for Windows stability."""
+    
+    import pandas as pd
+    
     file_path = Path(data_directory) / f"clif_medication_admin_continuous.{filetype}"
 
     if not file_path.exists():
         logger.warning(f"Medication admin continuous file not found: {file_path}")
-        # Return empty LazyFrame with expected schema
         return pl.LazyFrame(schema={
             'hospitalization_id': pl.Utf8,
             'admin_dttm': pl.Datetime,
@@ -722,95 +698,94 @@ def _load_and_convert_medications(
     # Define columns to load
     load_columns = ['hospitalization_id', 'admin_dttm', 'med_category', 'med_dose', 'med_dose_unit']
 
-    # Load medications with filters
+    logger.info("Loading medications with pandas...")
+    
+    # Load with pandas
     if filetype == 'parquet':
-        meds = pl.scan_parquet(str(file_path)).select(load_columns)
+        meds_pd = pd.read_parquet(file_path, columns=load_columns)
     else:
-        meds = pl.scan_csv(str(file_path)).select(load_columns)
-
-    # Normalize hospitalization_id to Utf8 for consistent type matching
-    meds = meds.with_columns([
-        pl.col('hospitalization_id').cast(pl.Utf8).alias('hospitalization_id')
-    ])
-
-    # Filter for required medications and hospitalization_ids
-    meds = meds.filter(
-        pl.col('med_category').is_in(REQUIRED_MEDS) &
-        pl.col('hospitalization_id').is_in(hospitalization_ids)
-    )
-
-    # Standardize datetime column to consistent timezone and time unit BEFORE join
+        meds_pd = pd.read_csv(file_path, usecols=load_columns)
+    
+    logger.info(f"✓ Loaded {len(meds_pd)} medication rows")
+    
+    # Convert types
+    meds_pd['hospitalization_id'] = meds_pd['hospitalization_id'].astype(str)
+    
+    # Filter for required meds and hospitalizations
+    meds_pd = meds_pd[
+        meds_pd['med_category'].isin(REQUIRED_MEDS) &
+        meds_pd['hospitalization_id'].isin(hospitalization_ids)
+    ]
+    logger.info(f"✓ Filtered to {len(meds_pd)} rows")
+    
+    # Convert datetime and timezone
     if timezone:
-        meds = standardize_datetime_columns(
-            meds,
-            target_timezone=timezone,
-            target_time_unit='ns',
-            datetime_columns=['admin_dttm']
-        )
-
-    # Cast to consistent time unit
-    meds = meds.with_columns([
-        pl.col('admin_dttm').dt.cast_time_unit(time_unit).alias('admin_dttm')
-    ])
-
-    # Join with cohort to apply time window filter
-    meds = meds.join(
-        cohort_df.lazy(),
-        on='hospitalization_id',
-        how='inner'
-    ).filter(
-        (pl.col('admin_dttm') >= pl.col('start_dttm')) &
-        (pl.col('admin_dttm') <= pl.col('end_dttm'))
+        logger.info("Converting timezone with pandas...")
+        meds_pd['admin_dttm'] = pd.to_datetime(meds_pd['admin_dttm'])
+        if meds_pd['admin_dttm'].dt.tz is None:
+            meds_pd['admin_dttm'] = meds_pd['admin_dttm'].dt.tz_localize('UTC')
+        meds_pd['admin_dttm'] = meds_pd['admin_dttm'].dt.tz_convert(timezone)
+    
+    # Join with cohort for time window filtering
+    logger.info("Joining with cohort...")
+    cohort_pd = cohort_df.to_pandas()
+    meds_pd = meds_pd.merge(cohort_pd, on='hospitalization_id', how='inner')
+    
+    # Apply time window filter
+    meds_pd = meds_pd[
+        (meds_pd['admin_dttm'] >= meds_pd['start_dttm']) &
+        (meds_pd['admin_dttm'] <= meds_pd['end_dttm'])
+    ]
+    logger.info(f"✓ After time filter: {len(meds_pd)} rows")
+    
+    # Convert to polars for dose conversion operations
+    logger.info("Converting to polars for dose conversion...")
+    meds = pl.from_pandas(meds_pd)
+    # In _load_and_convert_medications, after: meds = pl.from_pandas(meds_pd)
+    meds = standardize_datetime_columns(
+        meds,
+        target_timezone=timezone,
+        target_time_unit='ns',  # Match the rest of your pipeline
+        datetime_columns=['admin_dttm']
     )
-
-    meds = meds.collect()
-
-    # No need to convert timezone here since we already ensured it during lazy evaluation
-
     # Clean dose units
     meds = meds.with_columns([
         _clean_dose_unit(pl.col('med_dose_unit')).alias('dose_unit_clean')
     ])
-
-    # Get weight data - use most recent weight before medication time
-    # Note: Load weight separately since it may be outside the SOFA time window
-    # but we still need it for unit conversion
+    
+    # Load weight data with pandas
+    logger.info("Loading weight data with pandas...")
     weight_file = Path(data_directory) / f"clif_vitals.{filetype}"
     if weight_file.exists():
         if filetype == 'parquet':
-            weight_data = pl.scan_parquet(str(weight_file))
+            weight_pd = pd.read_parquet(weight_file)
         else:
-            weight_data = pl.scan_csv(str(weight_file))
-
-        # Normalize hospitalization_id to Utf8 for consistent type matching
-        weight_data = weight_data.with_columns([
-            pl.col('hospitalization_id').cast(pl.Utf8).alias('hospitalization_id')
-        ])
-
-        # Standardize datetime column to consistent timezone and time unit BEFORE collecting
+            weight_pd = pd.read_csv(weight_file)
+        
+        weight_pd['hospitalization_id'] = weight_pd['hospitalization_id'].astype(str)
+        weight_pd = weight_pd[
+            weight_pd['hospitalization_id'].isin(hospitalization_ids) &
+            (weight_pd['vital_category'] == 'weight_kg')
+        ][['hospitalization_id', 'recorded_dttm', 'vital_value']].copy()
+        
+        weight_pd.rename(columns={'vital_value': 'weight_kg'}, inplace=True)
+        weight_pd['recorded_dttm'] = pd.to_datetime(weight_pd['recorded_dttm'])
+        
         if timezone:
-            weight_data = standardize_datetime_columns(
-                weight_data,
-                target_timezone=timezone,
-                target_time_unit='ns',
-                datetime_columns=['recorded_dttm']
-            )
+            if weight_pd['recorded_dttm'].dt.tz is None:
+                weight_pd['recorded_dttm'] = weight_pd['recorded_dttm'].dt.tz_localize('UTC')
+            weight_pd['recorded_dttm'] = weight_pd['recorded_dttm'].dt.tz_convert(timezone)
+        
+        logger.info(f"✓ Loaded {len(weight_pd)} weight records")
+        weight_data = pl.from_pandas(weight_pd)
 
-        # Cast to consistent time unit
-        weight_data = weight_data.with_columns([
-            pl.col('recorded_dttm').dt.cast_time_unit(time_unit).alias('recorded_dttm')
-        ])
-
-        weight_data = weight_data.filter(
-            pl.col('hospitalization_id').is_in(hospitalization_ids) &
-            (pl.col('vital_category') == 'weight_kg')
-        ).select([
-            'hospitalization_id',
-            'recorded_dttm',
-            pl.col('vital_value').alias('weight_kg')
-        ]).collect()
-
-        # No need to convert timezone here since we already ensured it during lazy evaluation
+        # ADD THIS: Standardize weight_data datetime columns
+        weight_data = standardize_datetime_columns(
+            weight_data,
+            target_timezone=timezone,
+            target_time_unit='ns',  # Match meds time unit
+            datetime_columns=['recorded_dttm']
+        )
     else:
         logger.warning(f"Weight data file not found: {weight_file}")
         weight_data = pl.DataFrame({
@@ -818,13 +793,13 @@ def _load_and_convert_medications(
             'recorded_dttm': [],
             'weight_kg': []
         })
-
-    # Sort both dataframes before join_asof to satisfy sortedness requirement
+    
+    # Sort for join_asof
     meds = meds.sort(['hospitalization_id', 'admin_dttm'])
     weight_data = weight_data.sort(['hospitalization_id', 'recorded_dttm'])
-
-    # Join with weight using asof join (get most recent weight)
-    # Both admin_dttm and recorded_dttm are now in the same time unit
+    
+    # Join with weight
+    logger.info("Joining with weight data...")
     meds = meds.join_asof(
         weight_data,
         left_on='admin_dttm',
@@ -832,9 +807,8 @@ def _load_and_convert_medications(
         by='hospitalization_id',
         strategy='backward'
     )
-
+    
     # Convert doses to mcg/kg/min
-    # Apply mass conversions
     meds = meds.with_columns([
         pl.when(pl.col('dose_unit_clean').str.contains(r'^mg'))
         .then(pl.col('med_dose') * 1000)
@@ -845,40 +819,33 @@ def _load_and_convert_medications(
         .otherwise(pl.col('med_dose'))
         .alias('dose_converted')
     ])
-
-    # Apply time conversions (/hr to /min)
+    
     meds = meds.with_columns([
         pl.when(pl.col('dose_unit_clean').str.contains(r'/hr$'))
         .then(pl.col('dose_converted') / 60)
         .otherwise(pl.col('dose_converted'))
         .alias('dose_converted')
     ])
-
-    # Apply weight conversions
-    # If unit already contains /kg or /lb, it's already weight-normalized - keep as-is
-    # If unit does NOT contain weight, we need to normalize by dividing by weight
-    # But since most vasopressors are already in /kg units, we just keep the value
+    
     meds = meds.with_columns([
         pl.when(pl.col('dose_unit_clean').str.contains(r'/kg'))
-        .then(pl.col('dose_converted'))  # Already in per-kg units, keep as-is
+        .then(pl.col('dose_converted'))
         .when(pl.col('dose_unit_clean').str.contains(r'/lb'))
-        .then(pl.col('dose_converted') * 2.20462)  # Convert /lb to /kg
-        .otherwise(pl.col('dose_converted') / pl.col('weight_kg'))  # Not weight-normalized, divide by weight
+        .then(pl.col('dose_converted') * 2.20462)
+        .otherwise(pl.col('dose_converted') / pl.col('weight_kg'))
         .alias('dose_mcg_kg_min')
     ])
-
-    # Select columns in long format
+    
+    # Select columns
     id_cols = [col for col in cohort_df.columns if col not in ['start_dttm', 'end_dttm']]
-
     meds_select = meds.select([
         *id_cols,
         'admin_dttm',
         'med_category',
         'dose_mcg_kg_min'
     ])
-
-    # Return as LazyFrame for downstream processing
-    # Pivoting will happen later in the pipeline after all data is combined
+    
+    logger.info("✓ Medication conversion complete")
     return meds_select.lazy()
 
 
@@ -1370,40 +1337,71 @@ def compute_sofa_polars(
     logger.info("Loading and converting medication data...")
     meds_df = _load_and_convert_medications(data_directory, filetype, hospitalization_ids, cohort_df_local, vitals_df, timezone, time_unit)
 
-    # Combine all data sources (all are LazyFrames now)
-    logger.info("Combining all data sources (lazy evaluation)...")
-
-    # Prepare all data sources with their time column names
-    # Note: All inputs are now LazyFrames, so we work with them lazily
-    id_cols = [col for col in cohort_df_local.columns if col not in ['start_dttm', 'end_dttm']]
-
-    # Rename time columns and prepare lazy frames
-    labs_lazy = labs_df.rename({'lab_result_dttm': 'event_time'})
-    vitals_lazy = vitals_df.rename({'recorded_dttm': 'event_time'})
-    assessments_lazy = assessments_df.rename({'recorded_dttm': 'event_time'})
-    resp_lazy = resp_df.rename({'recorded_dttm': 'event_time'})
-    meds_lazy = meds_df.rename({'admin_dttm': 'event_time'})
-
-    # Cast event_time to consistent time unit for all data sources
-    # This prevents "Datetime('ns', timezone) is incompatible with Datetime('μs', timezone)" errors
-    combined_parts = []
-    for df_lazy in [labs_lazy, vitals_lazy, assessments_lazy, resp_lazy, meds_lazy]:
-        df_lazy = df_lazy.with_columns([
-            pl.col('event_time').dt.cast_time_unit(time_unit).alias('event_time')
-        ])
-        combined_parts.append(df_lazy)
-
-    # Concatenate all parts vertically (stack rows) - still lazy
-    # Use 'diagonal' to handle different column sets - missing columns filled with null
-    combined_lazy = pl.concat(combined_parts, how='diagonal')
-
-    # Clean up lazy frames and intermediate variables (they don't consume memory)
-    del combined_parts, labs_lazy, vitals_lazy, assessments_lazy, resp_lazy, meds_lazy
-
-    # Apply outlier removal if requested (still lazy)
+    # ==================================================================================
+    # CRITICAL: Collect each data source BEFORE combining to avoid Windows crash
+    # ==================================================================================
+    logger.info("Collecting individual data sources before combining...")
+    
+    logger.info("Collecting labs...")
+    labs_collected = labs_df.collect()
+    logger.info(f"✓ Labs: {len(labs_collected)} rows")
+    
+    logger.info("Collecting vitals...")
+    vitals_collected = vitals_df.collect()
+    logger.info(f"✓ Vitals: {len(vitals_collected)} rows")
+    
+    logger.info("Collecting assessments...")
+    assessments_collected = assessments_df.collect()
+    logger.info(f"✓ Assessments: {len(assessments_collected)} rows")
+    
+    logger.info("Collecting respiratory...")
+    resp_collected = resp_df.collect()
+    logger.info(f"✓ Respiratory: {len(resp_collected)} rows")
+    
+    logger.info("Collecting medications...")
+    meds_collected = meds_df.collect()
+    logger.info(f"✓ Medications: {len(meds_collected)} rows")
+    
+    # Prepare collected data with renamed and standardized time columns
+    logger.info("Preparing data for combination...")
+    labs_collected = labs_collected.rename({'lab_result_dttm': 'event_time'}).with_columns([
+        pl.col('event_time').dt.cast_time_unit(time_unit)
+    ])
+    
+    vitals_collected = vitals_collected.rename({'recorded_dttm': 'event_time'}).with_columns([
+        pl.col('event_time').dt.cast_time_unit(time_unit)
+    ])
+    
+    assessments_collected = assessments_collected.rename({'recorded_dttm': 'event_time'}).with_columns([
+        pl.col('event_time').dt.cast_time_unit(time_unit)
+    ])
+    
+    resp_collected = resp_collected.rename({'recorded_dttm': 'event_time'}).with_columns([
+        pl.col('event_time').dt.cast_time_unit(time_unit)
+    ])
+    
+    meds_collected = meds_collected.rename({'admin_dttm': 'event_time'}).with_columns([
+        pl.col('event_time').dt.cast_time_unit(time_unit)
+    ])
+    
+    # Combine COLLECTED DataFrames (not lazy)
+    logger.info("Combining collected data sources...")
+    combined_collected = pl.concat([
+        labs_collected,
+        vitals_collected,
+        assessments_collected,
+        resp_collected,
+        meds_collected
+    ], how='diagonal')
+    logger.info(f"✓ Combined data: {len(combined_collected)} rows")
+    
+    # Clean up individual collected frames
+    del labs_collected, vitals_collected, assessments_collected, resp_collected, meds_collected
+    
+    # Apply outlier removal on the COLLECTED DataFrame
     if remove_outliers:
-        logger.info("Adding outlier removal to lazy query...")
-        combined_lazy = combined_lazy.with_columns([
+        logger.info("Applying outlier removal...")
+        combined_collected = combined_collected.with_columns([
             pl.when((pl.col('lab_value_numeric').is_not_null()) & (pl.col('lab_category') == 'po2_arterial') & (pl.col('lab_value_numeric') >= 0) & (pl.col('lab_value_numeric') <= 700))
             .then(pl.col('lab_value_numeric'))
             .when((pl.col('lab_value_numeric').is_not_null()) & (pl.col('lab_category') == 'po2_arterial'))
@@ -1425,12 +1423,19 @@ def compute_sofa_polars(
             .otherwise(pl.col('vital_value'))
             .alias('vital_value')
         ])
+        logger.info("✓ Outlier removal complete")
+    
 
     # ==================================================================================
     # MEMORY OPTIMIZATION: Aggregate in long format BEFORE pivoting
     # This reduces data from ~2.7M rows to ~11K rows before materialization
     # ==================================================================================
-    logger.info("Aggregating extremal values in long format (lazy)...")
+    logger.info("Aggregating extremal values in long format...")
+
+    # # CRITICAL: Collect combined_lazy FIRST to avoid Windows crash
+    # logger.info("Collecting combined data before aggregation...")
+    # combined_collected = combined_lazy.collect()
+    # logger.info(f"✓ Collected {len(combined_collected)} rows")
 
     # Define aggregation strategy: which categories use MAX vs MIN for "worst"
     # Worse = HIGHER for these (take MAX):
@@ -1442,16 +1447,16 @@ def compute_sofa_polars(
     min_vitals = ['map', 'spo2']
     min_assessments = ['gcs_total']
 
-    # Aggregate labs - SPLIT into separate MAX and MIN aggregations to avoid schema mismatch
-    # MAX labs (worse = higher: creatinine, bilirubin)
-    labs_max_agg = combined_lazy.filter(
+    # Now aggregate on the COLLECTED DataFrame (not lazy)
+    logger.info("Aggregating labs (max)...")
+    labs_max_agg = combined_collected.filter(
         pl.col('lab_category').is_in(max_labs)
     ).group_by([id_name, 'lab_category']).agg([
         pl.col('lab_value_numeric').max().alias('value')
     ])
 
-    # MIN labs (worse = lower: platelets, PO2)
-    labs_min_agg = combined_lazy.filter(
+    logger.info("Aggregating labs (min)...")
+    labs_min_agg = combined_collected.filter(
         pl.col('lab_category').is_in(min_labs)
     ).group_by([id_name, 'lab_category']).agg([
         pl.col('lab_value_numeric').min().alias('value')
@@ -1462,8 +1467,8 @@ def compute_sofa_polars(
         pl.lit('lab').alias('data_type')
     ])
 
-    # Aggregate vitals (all MIN for worst)
-    vitals_agg = combined_lazy.filter(pl.col('vital_category').is_not_null()).group_by(
+    logger.info("Aggregating vitals...")
+    vitals_agg = combined_collected.filter(pl.col('vital_category').is_not_null()).group_by(
         [id_name, 'vital_category']
     ).agg([
         pl.col('vital_value').min().alias('value')
@@ -1471,8 +1476,8 @@ def compute_sofa_polars(
         pl.lit('vital').alias('data_type')
     ])
 
-    # Aggregate medications (all MAX for worst)
-    meds_agg = combined_lazy.filter(pl.col('med_category').is_not_null()).group_by(
+    logger.info("Aggregating medications...")
+    meds_agg = combined_collected.filter(pl.col('med_category').is_not_null()).group_by(
         [id_name, 'med_category']
     ).agg([
         pl.col('dose_mcg_kg_min').max().alias('value')
@@ -1480,8 +1485,8 @@ def compute_sofa_polars(
         pl.lit('med').alias('data_type')
     ])
 
-    # Aggregate assessments (MIN for GCS)
-    assess_agg = combined_lazy.filter(pl.col('assessment_category').is_not_null()).group_by(
+    logger.info("Aggregating assessments...")
+    assess_agg = combined_collected.filter(pl.col('assessment_category').is_not_null()).group_by(
         [id_name, 'assessment_category']
     ).agg([
         pl.col('assessment_value').min().alias('value')
@@ -1489,13 +1494,9 @@ def compute_sofa_polars(
         pl.lit('assessment').alias('data_type')
     ])
 
-    # Concatenate all aggregated results (still lazy)
-    # Now all have consistent schema: [id_name, lab_category, value, data_type]
-    aggregated_lazy = pl.concat([labs_agg, vitals_agg, meds_agg, assess_agg], how='vertical')
-
-    # NOW collect the small aggregated result (only ~11 rows per patient)
-    logger.info("Collecting aggregated data...")
-    aggregated_df = aggregated_lazy.collect()
+    # Concatenate all aggregated results
+    logger.info("Combining all aggregations...")
+    aggregated_df = pl.concat([labs_agg, vitals_agg, meds_agg, assess_agg], how='vertical')
     logger.info(f"Aggregated data shape: {aggregated_df.height:,} rows x {aggregated_df.width} columns")
 
     # Pivot to wide format (now very fast since data is small)
@@ -1565,8 +1566,8 @@ def compute_sofa_polars(
     # Free memory after P/F calculation
     logger.info("Freeing memory from intermediate DataFrames...")
     del labs_df, vitals_df, assessments_df, resp_df, meds_df
-    del labs_df_collected, resp_df_collected, labs_with_po2, combined_lazy
-    del aggregated_df, aggregated_lazy
+    del labs_df_collected, resp_df_collected, labs_with_po2 #combined_lazy
+    del aggregated_df #aggregated_lazy
     gc.collect()
     logger.info("Memory cleanup complete")
 

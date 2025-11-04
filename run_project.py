@@ -232,6 +232,8 @@ class ProjectRunner:
                     stdout=subprocess.PIPE,
                     stderr=subprocess.STDOUT,  # Merge stderr into stdout
                     text=True,
+                    encoding='utf-8',
+                    errors='replace',
                     universal_newlines=True
                 )
 

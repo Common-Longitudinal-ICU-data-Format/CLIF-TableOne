@@ -945,7 +945,7 @@ def main(memory_monitor=None) -> bool:
         adult_encounters = adult_encounters[
             (adult_encounters['age_at_admission'] >= 18) &
             (adult_encounters['age_at_admission'].notna()) #&
-            # (adult_encounters['admission_dttm'].dt.year >= 2018) &
+            # (adult_encounters['admission_dttm'].dt.year >= 2024) &
             # (adult_encounters['admission_dttm'].dt.year <= 2024)
         ]
 
