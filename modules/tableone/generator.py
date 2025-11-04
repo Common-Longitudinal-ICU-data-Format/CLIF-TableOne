@@ -190,7 +190,6 @@ def main(memory_monitor=None) -> bool:
         'pressure_control_set',
         'pressure_support_set',
         'flow_rate_set',           # Added for ventilator settings table
-        'inspiratory_time_set',     # Added for ventilator settings table
         'peak_inspiratory_pressure_set',
         'peak_inspiratory_pressure_obs',
         'plateau_pressure_obs',
@@ -1116,7 +1115,7 @@ def main(memory_monitor=None) -> bool:
 
         # Core columns that should always exist
         core_rst_columns = [col for col in rst_required_columns
-                           if col not in ['flow_rate_set', 'inspiratory_time_set']]
+                           if col not in ['flow_rate_set']]
 
         clif.load_table('respiratory_support',
                                columns=core_rst_columns,
@@ -2152,7 +2151,7 @@ def main(memory_monitor=None) -> bool:
     vent_settings = [
         'fio2_set', 'lpm_set', 'tidal_volume_set', 'resp_rate_set',
         'pressure_control_set', 'pressure_support_set', 'peep_set',
-        'flow_rate_set', 'inspiratory_time_set'
+        'flow_rate_set'
     ]
 
     # Check which columns exist
@@ -2363,8 +2362,7 @@ def main(memory_monitor=None) -> bool:
         'pressure_control_set',
         'peep_set',
         'pressure_support_set',
-        'flow_rate_set',
-        'inspiratory_time_set'
+        'flow_rate_set'
     ]
 
     # ✅ OPTIMIZATION: Use groupby instead of nested loops (10-50x faster!)
@@ -2426,8 +2424,7 @@ def main(memory_monitor=None) -> bool:
         'pressure_control_set': 'Pressure Control Set',
         'peep_set': 'PEEP Set',
         'pressure_support_set': 'Pressure Support Set',
-        'flow_rate_set': 'Flow Rate Set',
-        'inspiratory_time_set': 'Inspiratory Time Set'
+        'flow_rate_set': 'Flow Rate Set'
     }
 
     # Only add columns that exist in settings_summary
@@ -2476,8 +2473,7 @@ def main(memory_monitor=None) -> bool:
         'pressure_control_set': 'Pressure Control Set (N)',
         'peep_set': 'PEEP Set (N)',
         'pressure_support_set': 'Pressure Support Set (N)',
-        'flow_rate_set': 'Flow Rate Set (N)',
-        'inspiratory_time_set': 'Inspiratory Time Set (N)'
+        'flow_rate_set': 'Flow Rate Set (N)'
     }
 
     # Only add columns that exist in counts_summary
