@@ -61,3 +61,6 @@ __pycache__
 Intersections_4.txt
 Venn_4.png
 all_site_data
+# og sofa calculation, replaced with windows optimized version
+modules/sofa/calculator_og.py 
+consortium_figures.py

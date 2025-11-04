@@ -3503,24 +3503,24 @@ def main(memory_monitor=None) -> bool:
     # # Patient Assessments
     # ==============================================================================
 
-    print(f"\nLoading patient_assessments table...")
-    try:
-        clif.load_table(
-            'patient_assessments',
-            filters={
-                'hospitalization_id': final_hosp_ids
-            }
-        )
-        clif.patient_assessments.df = pd.merge(
-            clif.patient_assessments.df,
-            encounter_mapping,
-            on='hospitalization_id',
-            how='left'
-        )
-        # MCIDE collection moved to separate script: generate_mcide_and_stats.py
-        # get_value_counts_mcide(clif.patient_assessments, 'patient_assessments', ['assessment_name', 'assessment_category', 'assessment_group'], output_dir=mcide_dir, config=config)
-    except FileNotFoundError as e:
-        print(f"Warning: Failed to load the ECMO table: {e}. Proceeding without Patient Assessments data.")
+    # print(f"\nLoading patient_assessments table...")
+    # try:
+    #     clif.load_table(
+    #         'patient_assessments',
+    #         filters={
+    #             'hospitalization_id': final_hosp_ids
+    #         }
+    #     )
+    #     clif.patient_assessments.df = pd.merge(
+    #         clif.patient_assessments.df,
+    #         encounter_mapping,
+    #         on='hospitalization_id',
+    #         how='left'
+    #     )
+    #     # MCIDE collection moved to separate script: generate_mcide_and_stats.py
+    #     # get_value_counts_mcide(clif.patient_assessments, 'patient_assessments', ['assessment_name', 'assessment_category', 'assessment_group'], output_dir=mcide_dir, config=config)
+    # except FileNotFoundError as e:
+    #     print(f"Warning: Failed to load the ECMO table: {e}. Proceeding without Patient Assessments data.")
 
 
     # ==============================================================================
