@@ -413,9 +413,17 @@ def process_category(
 
     # Filter to selected category (and unit for labs)
     if table_type == 'labs' and unit:
+        if isinstance(unit, list):
+            unit_filter = pl.col('reference_unit').is_in(unit)
+            if '(no units)' in unit:
+                unit_filter = unit_filter | pl.col('reference_unit').is_null()
+        else:
+            unit_filter = pl.col('reference_unit') == unit
+            if '(no units)' in unit:
+                unit_filter = unit_filter | pl.col('reference_unit').is_null()
         data_category = data_lazy.filter(
             (pl.col(category_col) == category) &
-            (pl.col('reference_unit') == unit)
+            unit_filter
         ).select([
             'hospitalization_id',
             datetime_col,
@@ -429,6 +437,23 @@ def process_category(
             datetime_col,
             value_col
         ])
+    # if table_type == 'labs' and unit:
+    #     data_category = data_lazy.filter(
+    #         (pl.col(category_col) == category) &
+    #         (pl.col('reference_unit') == unit)
+    #     ).select([
+    #         'hospitalization_id',
+    #         datetime_col,
+    #         value_col
+    #     ])
+    # else:
+    #     data_category = data_lazy.filter(
+    #         pl.col(category_col) == category
+    #     ).select([
+    #         'hospitalization_id',
+    #         datetime_col,
+    #         value_col
+    #     ])
 
     # Join with ICU time windows
     data_icu = data_category.join(
@@ -785,12 +810,12 @@ def main():
             log_entries.append(f"[SKIP] {category} ({unit}): Category not in outlier_config.yaml")
             continue
 
-        # Check if unit matches config's reference_unit
-        config_unit = labs_config[category].get('reference_unit')
-        if unit != config_unit:
+        # Check if unit matches config's reference_unit (config stores as list)
+        config_units = labs_config[category].get('reference_unit', [])
+        if unit not in config_units:
             log_entries.append(
                 f"[UNIT MISMATCH] {category}: Found unit '{unit}' in data, "
-                f"but config expects '{config_unit}'"
+                f"but config expects one of {config_units}"
             )
             continue
 

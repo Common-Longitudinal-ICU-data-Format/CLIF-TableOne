@@ -3,7 +3,8 @@
 
 labs:
   pco2_arterial:
-    reference_unit: "mmHg"
+    reference_unit:
+      - "mmHg"
     normal_range:
       lower: 35
       upper: 45
@@ -16,7 +17,8 @@ labs:
       above_normal: 5
 
   pco2_venous:
-    reference_unit: "mmHg"
+    reference_unit:
+      - "mmHg"
     normal_range:
       lower: 40
       upper: 52
@@ -29,7 +31,8 @@ labs:
       above_normal: 5
 
   ph_arterial:
-    reference_unit: "(no units)"
+    reference_unit:
+      - "(no units)"
     normal_range:
       lower: 7.35
       upper: 7.45
@@ -42,7 +45,8 @@ labs:
       above_normal: 5
 
   ph_venous:
-    reference_unit: "(no units)"
+    reference_unit:
+      - "(no units)"
     normal_range:
       lower: 7.31
       upper: 7.41
@@ -68,7 +72,8 @@ labs:
       above_normal: 5
 
   so2_arterial:
-    reference_unit: "%"
+    reference_unit:
+      - "%"
     normal_range:
       lower: 90
       upper: 100
@@ -81,7 +86,8 @@ labs:
       above_normal: 5
 
   so2_central_venous:
-    reference_unit: "%"
+    reference_unit:
+      - "%"
     normal_range:
       lower: 60
       upper: 75
@@ -94,7 +100,8 @@ labs:
       above_normal: 5
 
   so2_mixed_venous:
-    reference_unit: "%"
+    reference_unit:
+      - "%"
     normal_range:
       lower: 60
       upper: 75
@@ -107,7 +114,8 @@ labs:
       above_normal: 5
 
   sodium:
-    reference_unit: "mmol/L"
+    reference_unit:
+      - "mmol/L"
     normal_range:
       lower: 135
       upper: 145
@@ -120,7 +128,8 @@ labs:
       above_normal: 5
 
   bicarbonate:
-    reference_unit: "mmol/L"
+    reference_unit:
+      - "mmol/L"
     normal_range:
       lower: 22
       upper: 28
@@ -133,7 +142,8 @@ labs:
       above_normal: 5
 
   bun:
-    reference_unit: "mg/dL"
+    reference_unit:
+      - "mg/dL"
     normal_range:
       lower: 8
       upper: 23
@@ -146,7 +156,8 @@ labs:
       above_normal: 5
 
   calcium_total:
-    reference_unit: "mg/dL"
+    reference_unit:
+      - "mg/dL"
     normal_range:
       lower: 8.2
       upper: 10.2
@@ -159,7 +170,8 @@ labs:
       above_normal: 5
 
   chloride:
-    reference_unit: "mmol/L"
+    reference_unit:
+      - "mmol/L"
     normal_range:
       lower: 96
       upper: 106
@@ -172,7 +184,8 @@ labs:
       above_normal: 5
 
   creatinine:
-    reference_unit: "mg/dL"
+    reference_unit:
+      - "mg/dL"
     normal_range:
       lower: 0.6
       upper: 1.2
@@ -185,7 +198,8 @@ labs:
       above_normal: 5
 
   glucose_serum:
-    reference_unit: "mg/dL"
+    reference_unit:
+      - "mg/dL"
     normal_range:
       lower: 70
       upper: 110
@@ -198,7 +212,8 @@ labs:
       above_normal: 5
 
   magnesium:
-    reference_unit: "mg/dL"
+    reference_unit:
+      - "mg/dL"
     normal_range:
       lower: 1.3
       upper: 2.1
@@ -211,7 +226,8 @@ labs:
       above_normal: 5
 
   phosphate:
-    reference_unit: "mg/dL"
+    reference_unit:
+      - "mg/dL"
     normal_range:
       lower: 2.3
       upper: 4.7
@@ -224,7 +240,8 @@ labs:
       above_normal: 5
 
   potassium:
-    reference_unit: "mmol/L"
+    reference_unit:
+      - "mmol/L"
     normal_range:
       lower: 3.5
       upper: 5
@@ -237,7 +254,9 @@ labs:
       above_normal: 5
 
   basophils_absolute:
-    reference_unit: "10^3/µL"
+    reference_unit:
+      - "10^3/μL"
+      - "10^3/uL"
     normal_range:
       lower: 0
       upper: 0.2
@@ -250,7 +269,9 @@ labs:
       above_normal: 5
 
   eosinophils_absolute:
-    reference_unit: "10^3/µL"
+    reference_unit:
+      - "10^3/μL"
+      - "10^3/uL"
     normal_range:
       lower: 0
       upper: 0.5
@@ -263,7 +284,8 @@ labs:
       above_normal: 5
 
   hemoglobin:
-    reference_unit: "g/dL"
+    reference_unit:
+      - "g/dL"
     normal_range:
       lower: 12
       upper: 18
@@ -276,7 +298,9 @@ labs:
       above_normal: 5
 
   monocytes_absolute:
-    reference_unit: "10^3/µL"
+    reference_unit:
+      - "10^3/μL"
+      - "10^3/uL"
     normal_range:
       lower: 0.2
       upper: 0.8
@@ -289,7 +313,9 @@ labs:
       above_normal: 5
 
   neutrophils_absolute:
-    reference_unit: "10^3/µL"
+    reference_unit:
+      - "10^3/μL"
+      - "10^3/uL"
     normal_range:
       lower: 2
       upper: 7.5
@@ -302,7 +328,9 @@ labs:
       above_normal: 5
 
   platelet_count:
-    reference_unit: "10^3/µL"
+    reference_unit:
+      - "10^3/μL"
+      - "10^3/uL"
     normal_range:
       lower: 150
       upper: 350
@@ -315,7 +343,9 @@ labs:
       above_normal: 5
 
   wbc:
-    reference_unit: "10^3/µL"
+    reference_unit:
+      - "10^3/μL"
+      - "10^3/uL"
     normal_range:
       lower: 4.5
       upper: 11
@@ -328,7 +358,8 @@ labs:
       above_normal: 5
 
   inr:
-    reference_unit: "(no units)"
+    reference_unit:
+      - "(no units)"
     normal_range:
       lower: 0.9
       upper: 1.1
@@ -341,7 +372,8 @@ labs:
       above_normal: 5
 
   ptt:
-    reference_unit: "sec"
+    reference_unit:
+      - "sec"
     normal_range:
       lower: 25
       upper: 40
@@ -354,7 +386,8 @@ labs:
       above_normal: 5
 
   albumin:
-    reference_unit: "g/dL"
+    reference_unit:
+      - "g/dL"
     normal_range:
       lower: 3.5
       upper: 5
@@ -367,7 +400,10 @@ labs:
       above_normal: 1
 
   alkaline_phosphatase:
-    reference_unit: "U/L"
+    reference_unit:
+      - "U/L"
+      - "iU/L"
+      - "[iU]/L"
     normal_range:
       lower: 30
       upper: 120
@@ -380,7 +416,10 @@ labs:
       above_normal: 5
 
   alt:
-    reference_unit: "U/L"
+    reference_unit:
+      - "U/L"
+      - "iU/L"
+      - "[iU]/L"
     normal_range:
       lower: 10
       upper: 40
@@ -393,7 +432,10 @@ labs:
       above_normal: 5
 
   ast:
-    reference_unit: "U/L"
+    reference_unit:
+      - "U/L"
+      - "iU/L"
+      - "[iU]/L"
     normal_range:
       lower: 10
       upper: 30
@@ -406,7 +448,8 @@ labs:
       above_normal: 5
 
   bilirubin_conjugated:
-    reference_unit: "mg/dL"
+    reference_unit:
+      - "mg/dL"
     normal_range:
       lower: 0.1
       upper: 0.3
@@ -419,7 +462,8 @@ labs:
       above_normal: 5
 
   bilirubin_total:
-    reference_unit: "mg/dL"
+    reference_unit:
+      - "mg/dL"
     normal_range:
       lower: 0.3
       upper: 1.2
@@ -432,7 +476,8 @@ labs:
       above_normal: 5
 
   bilirubin_unconjugated:
-    reference_unit: "mg/dL"
+    reference_unit:
+      - "mg/dL"
     normal_range:
       lower: 0.2
       upper: 0.9
@@ -445,7 +490,8 @@ labs:
       above_normal: 5
 
   total_protein:
-    reference_unit: "g/dL"
+    reference_unit:
+      - "g/dL"
     normal_range:
       lower: 6
       upper: 8.3
@@ -458,7 +504,8 @@ labs:
       above_normal: 5
 
   calcium_ionized:
-    reference_unit: "mg/dL"
+    reference_unit:
+      - "mg/dL"
     normal_range:
       lower: 4.6
       upper: 5.1
@@ -471,7 +518,8 @@ labs:
       above_normal: 5
 
   crp:
-    reference_unit: "mg/L"
+    reference_unit:
+      - "mg/L"
     normal_range:
       lower: 0.08
       upper: 3.1
@@ -484,7 +532,8 @@ labs:
       above_normal: 5
 
   esr:
-    reference_unit: "mm/hour"
+    reference_unit:
+      - "mm/hour"
     normal_range:
       lower: 0
       upper: 20
@@ -497,7 +546,8 @@ labs:
       above_normal: 5
 
   ferritin:
-    reference_unit: "ng/mL"
+    reference_unit:
+      - "ng/mL"
     normal_range:
       lower: 15
       upper: 200
@@ -510,7 +560,8 @@ labs:
       above_normal: 5
 
   glucose_fingerstick:
-    reference_unit: "mg/dL"
+    reference_unit:
+      - "mg/dL"
     normal_range:
       lower: 70
       upper: 110
@@ -523,7 +574,8 @@ labs:
       above_normal: 5
 
   lactate:
-    reference_unit: "mmol/L"
+    reference_unit:
+      - "mmol/L"
     normal_range:
       lower: 0.5
       upper: 2
@@ -536,7 +588,10 @@ labs:
       above_normal: 5
 
   ldh:
-    reference_unit: "U/L"
+    reference_unit:
+      - "U/L"
+      - "iU/L"
+      - "[iU]/L"
     normal_range:
       lower: 100
       upper: 200
@@ -549,7 +604,8 @@ labs:
       above_normal: 5
 
   procalcitonin:
-    reference_unit: "ng/mL"
+    reference_unit:
+      - "ng/mL"
     normal_range:
       lower: 0
       upper: 0.05
@@ -562,7 +618,8 @@ labs:
       above_normal: 5
 
   troponin_i:
-    reference_unit: "ng/L"
+    reference_unit:
+      - "ng/L"
     normal_range:
       lower: 0
       upper: 40
@@ -575,7 +632,8 @@ labs:
       above_normal: 5
 
   troponin_t:
-    reference_unit: "ng/L"
+    reference_unit:
+      - "ng/L"
     normal_range:
       lower: 0
       upper: 14
