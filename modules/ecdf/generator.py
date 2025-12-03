@@ -162,10 +162,14 @@ def discover_lab_category_units(
     # Collect with streaming
     category_units_df = category_units.collect(streaming=True)
 
-    # Filter out null values
+    # Filter out null lab_category only - keep null reference_unit (will be matched with "(no units)")
     category_units_df = category_units_df.filter(
-        pl.col('lab_category').is_not_null() &
-        pl.col('reference_unit').is_not_null()
+        pl.col('lab_category').is_not_null()
+    )
+
+    # Replace null reference_unit with "(no units)" sentinel value
+    category_units_df = category_units_df.with_columns(
+        pl.col('reference_unit').fill_null('(no units)')
     )
 
     print(f"✓ Found {len(category_units_df):,} unique (category, unit) combinations")
@@ -518,7 +522,14 @@ def process_category(
     os.makedirs(ecdf_dir, exist_ok=True)
 
     if table_type == 'labs' and unit:
-        unit_safe = sanitize_unit_for_filename(unit)
+        # Handle list of units - use first non-empty unit for filename
+        if isinstance(unit, list):
+            # Filter out "(no units)" and empty strings for filename, use first real unit
+            real_units = [u for u in unit if u and u != '(no units)']
+            unit_for_filename = real_units[0] if real_units else 'no_units'
+        else:
+            unit_for_filename = unit if unit != '(no units)' else 'no_units'
+        unit_safe = sanitize_unit_for_filename(unit_for_filename)
         filename = f'{category}_{unit_safe}.parquet'
     else:
         filename = f'{category}.parquet'
@@ -794,11 +805,16 @@ def main():
     labs_outlier = outlier_config['tables']['labs']['lab_value_numeric']
 
     labs_stats = []
+    processed_categories = set()  # Track processed categories to avoid duplicates
 
     # Iterate through discovered category-unit combinations
     for row in lab_category_units.iter_rows(named=True):
         category = row['lab_category']
         unit = row['reference_unit']
+
+        # Skip if we already processed this category
+        if category in processed_categories:
+            continue
 
         # Check if category exists in config
         if category not in labs_config:
@@ -812,6 +828,9 @@ def main():
 
         # Check if unit matches config's reference_unit (config stores as list)
         config_units = labs_config[category].get('reference_unit', [])
+        # Handle both list and string config formats
+        if isinstance(config_units, str):
+            config_units = [config_units]
         if unit not in config_units:
             log_entries.append(
                 f"[UNIT MISMATCH] {category}: Found unit '{unit}' in data, "
@@ -819,12 +838,17 @@ def main():
             )
             continue
 
+        # Mark as processed before attempting
+        processed_categories.add(category)
+
         # Process this category-unit combination
+        # Pass the full config_units list so process_category can match all valid units
+        # (including NULL handling when "(no units)" is in the list)
         try:
             stats = process_category(
                 table_type='labs',
                 category=category,
-                unit=unit,
+                unit=config_units,
                 icu_windows=icu_windows,
                 tables_path=clif_config['tables_path'],
                 file_type=clif_config['file_type'],
@@ -835,13 +859,13 @@ def main():
             )
             labs_stats.append(stats)
 
-            print(f"  ✓ {category} ({unit}): {stats['clean_count']:,} values → "
+            print(f"  ✓ {category} ({config_units}): {stats['clean_count']:,} values → "
                   f"ECDF: {stats['ecdf_distinct_pairs']:,} pairs, "
                   f"Bins: {stats['num_bins']}")
 
         except Exception as e:
-            print(f"  ❌ Error processing {category} ({unit}): {e}")
-            log_entries.append(f"[ERROR] {category} ({unit}): {str(e)}")
+            print(f"  ❌ Error processing {category} ({config_units}): {e}")
+            log_entries.append(f"[ERROR] {category} ({config_units}): {str(e)}")
 
     print()
 
