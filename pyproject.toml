@@ -12,6 +12,7 @@ dependencies = [
     "pandas>=2.3.3",
     "plotly>=6.3.1",
     "polars>=1.34.0",
+    "pynvml>=13.0.1",
     "pytz>=2025.2",
     "reportlab>=4.4.4",
     "scipy>=1.16.2",

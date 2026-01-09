@@ -72,6 +72,7 @@ import colorsys
 import csv
 import gc
 import json
+import shutil
 import matplotlib.patches
 import matplotlib.path
 import matplotlib.patheffects
@@ -1407,11 +1408,18 @@ def main(memory_monitor=None) -> bool:
 
     # Create 4-way Venn diagram
     fig = plt.figure(figsize=(12, 10))
-    venny4py(sets=sets_dict, dpi=300)
+    venny4py(sets=sets_dict, out=get_output_path('final', 'tableone', 'figures', 'Venn_4'), dpi=300)
     plt.suptitle('4-way Venn Diagram', fontsize=16, y=0.98)
     plt.savefig(get_output_path('final', 'tableone', 'venn_all_4_groups.png'), dpi=300, bbox_inches='tight')
     plt.close('all')
     print("✅ Saved: ../output/final/tableone/venn_all_4_groups.png")
+
+    # Move Intersections_4.txt to intermediate folder
+    intersections_src = get_output_path('final', 'tableone', 'figures', 'Intersections_4.txt')
+    intersections_dst = get_output_path('intermediate', 'Intersections_4.txt')
+    if Path(intersections_src).exists():
+        shutil.move(intersections_src, intersections_dst)
+        print(f"✅ Moved: Intersections_4.txt to ../output/intermediate/")
 
     # Create the diagram
     create_consort_diagram(strobe_counts, mortality_rates)
