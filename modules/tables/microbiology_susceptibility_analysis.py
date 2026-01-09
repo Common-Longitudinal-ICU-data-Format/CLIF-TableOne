@@ -13,18 +13,9 @@ class MicrobiologySusceptibilityAnalyzer(BaseTableAnalyzer):
     def get_table_name(self) -> str:
         return 'microbiology_susceptibility'
 
-    def load_table(self, sample_filter=None):
+    def load_table(self):
         """
         Load Microbiology Susceptibility table using clifpy.
-
-        Note: Susceptibility table only has organism_id (no hospitalization_id),
-        so sample_filter is not applicable. The table is loaded in full
-        regardless of sample setting, similar to the patient table.
-
-        Parameters:
-        -----------
-        sample_filter : list, optional
-            List of hospitalization_ids (not applicable to susceptibility table)
         """
         data_path = Path(self.data_dir)
         file_without_clif = data_path / f"microbiology_susceptibility.{self.filetype}"
@@ -39,7 +30,6 @@ class MicrobiologySusceptibilityAnalyzer(BaseTableAnalyzer):
         os.makedirs(clifpy_output_dir, exist_ok=True)
 
         try:
-            # Load full table without filters (susceptibility doesn't have hospitalization_id)
             self.table = MicrobiologySusceptibility.from_file(
                 data_directory=self.data_dir,
                 filetype=self.filetype,

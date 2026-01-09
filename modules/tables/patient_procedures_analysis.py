@@ -13,14 +13,9 @@ class PatientProceduresAnalyzer(BaseTableAnalyzer):
     def get_table_name(self) -> str:
         return 'patient_procedures'
 
-    def load_table(self, sample_filter=None):
+    def load_table(self):
         """
         Load Patient Procedures table using clifpy.
-
-        Parameters:
-        -----------
-        sample_filter : list, optional
-            List of hospitalization_ids to filter to (uses clifpy filters)
         """
         data_path = Path(self.data_dir)
         file_without_clif = data_path / f"patient_procedures.{self.filetype}"
@@ -31,34 +26,16 @@ class PatientProceduresAnalyzer(BaseTableAnalyzer):
             self.table = None
             return
 
-        # Clifpy saves files directly to output_directory, so pass the final/clifpy subdirectory
-
-
         clifpy_output_dir = os.path.join(self.output_dir, "final", "clifpy")
-
-
         os.makedirs(clifpy_output_dir, exist_ok=True)
 
-
-
         try:
-            # Use filters parameter ONLY when sample is provided
-            if sample_filter is not None:
-                self.table = PatientProcedures.from_file(
-                    data_directory=self.data_dir,
-                    filetype=self.filetype,
-                    timezone=self.timezone,
-                    output_directory=clifpy_output_dir,
-                    filters={'hospitalization_id': list(sample_filter)}
-                )
-            else:
-                # Normal load without filters
-                self.table = PatientProcedures.from_file(
-                    data_directory=self.data_dir,
-                    filetype=self.filetype,
-                    timezone=self.timezone,
-                    output_directory=clifpy_output_dir
-                )
+            self.table = PatientProcedures.from_file(
+                data_directory=self.data_dir,
+                filetype=self.filetype,
+                timezone=self.timezone,
+                output_directory=clifpy_output_dir
+            )
         except Exception as e:
             print(f"⚠️  Error loading patient_procedures table: {e}")
             self.table = None

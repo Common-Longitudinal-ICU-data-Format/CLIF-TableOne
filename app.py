@@ -496,22 +496,6 @@ def show_home_page(config: dict, available_tables: list):
             help="Generate table-specific summary CSVs (demographics, hospitalizations, CRRT distributions, etc.)"
         )
 
-        # Use 1k ICU Sample checkbox (RECOMMENDED - default checked)
-        use_sample_bulk = st.checkbox(
-            "⚡ Use 1k ICU Sample (RECOMMENDED)",
-            value=True,
-            help="Analyze using only 1k ICU hospitalizations (stratified by year). Much faster for large datasets. Sample will be created automatically from ADT table if needed.",
-            key="bulk_sample_check"
-        )
-
-        # Time estimates based on sample setting
-        if use_sample_bulk:
-            st.success("✅ **Estimated time: 5-10 minutes** (with 1k sample)")
-            st.caption("⚡ Sample mode: Only sample-eligible tables will use the 1k sample. Core tables (patient, hospitalization, ADT) will use full data.")
-        else:
-            st.warning("⚠️ **Estimated time: 30-60 minutes** (full dataset - may be longer for very large datasets)")
-            st.caption("🐌 Full data mode: Analyzing complete dataset for all tables. Consider using 1k sample for faster results.")
-
         st.caption("📋 Always includes: Validation + Individual PDFs + Combined Report")
         if generate_aggregates:
             st.caption("📊 Will also generate: Summary Statistics (JSON) + Table-specific summary CSVs + CRRT distributions + Visualization data")
@@ -521,7 +505,6 @@ def show_home_page(config: dict, available_tables: list):
     with col2:
         if st.button("🚀 Analyze All Tables", type="primary", width='stretch'):
             st.session_state.analyze_all_tables = True
-            st.session_state.bulk_sample = use_sample_bulk
             st.session_state.generate_aggregates = generate_aggregates
             st.rerun()
 
@@ -530,7 +513,6 @@ def show_home_page(config: dict, available_tables: list):
         analyze_all_tables(
             config,
             available_tables,
-            st.session_state.get('bulk_sample', False),
             st.session_state.get('generate_aggregates', False)
         )
         st.session_state.analyze_all_tables = False
@@ -655,32 +637,6 @@ def main():
             force_reanalyze = False
             if is_table_cached(selected_table):
                 force_reanalyze = st.checkbox("🔄 Re-analyze table", value=False)
-
-            # Sample option for eligible tables
-            SAMPLE_ELIGIBLE_TABLES = [
-                'labs', 'medication_admin_continuous', 'medication_admin_intermittent',
-                'microbiology_nonculture', 'microbiology_susceptibility',
-                'patient_assessments', 'patient_procedures', 'position',
-                'respiratory_support', 'vitals'
-            ]
-
-            # Show sample option ONLY for eligible tables
-            if selected_table in SAMPLE_ELIGIBLE_TABLES:
-                from modules.utils.sampling import sample_exists
-
-                # Check if sample file exists
-                if sample_exists(config.get('output_dir', 'output')):
-                    use_sample = st.checkbox(
-                        "📊 Use 1k ICU Sample",
-                        value=False,
-                        help="Loads table with only 1k ICU hospitalizations (stratified proportional by year). Significantly faster for large tables."
-                    )
-                    st.session_state.use_sample = use_sample
-                else:
-                    st.info("ℹ️ Sample not yet generated. Analyze ADT table first to create sample.")
-                    st.session_state.use_sample = False
-            else:
-                st.session_state.use_sample = False
 
             # Run analysis button - only on Table Analysis page
             if st.button("🚀 Run Analysis", type="primary", width='stretch'):
@@ -921,29 +877,9 @@ def analyze_table(table_name, config, run_validation, run_outlier_handling, forc
         output_dir = config.get('output_dir', 'output')
 
         try:
-            # Check if sampling is enabled for eligible tables
-            sample_filter = None
-            SAMPLE_ELIGIBLE_TABLES = [
-                'labs', 'medication_admin_continuous', 'medication_admin_intermittent',
-                'microbiology_nonculture', 'microbiology_susceptibility',
-                'patient_assessments', 'patient_procedures', 'position',
-                'respiratory_support', 'vitals'
-            ]
-
-            if st.session_state.get('use_sample', False) and table_name in SAMPLE_ELIGIBLE_TABLES:
-                from modules.utils.sampling import load_sample_list
-                sample_filter = load_sample_list(output_dir)
-                if sample_filter:
-                    st.info(f"📊 Loading with 1k ICU sample ({len(sample_filter):,} hospitalizations)")
-
             with st.spinner(f"Loading {TABLE_DISPLAY_NAMES[table_name]} table..."):
                 analyzer = analyzer_class(data_dir, filetype, timezone, output_dir)
-
-                # Pass sample_filter to load_table for eligible tables
-                if table_name in SAMPLE_ELIGIBLE_TABLES and sample_filter is not None:
-                    analyzer.load_table(sample_filter=sample_filter)
-                else:
-                    analyzer.load_table()
+                analyzer.load_table()
 
             # Delete old validation response file if it exists (fresh analysis = no old feedback)
             results_dir = os.path.join(output_dir, 'final', 'results')
@@ -1061,43 +997,6 @@ def analyze_table(table_name, config, run_validation, run_outlier_handling, forc
             except Exception as e:
                 st.warning(f"Could not save summary CSV files: {e}")
 
-            # Generate ICU sample after ADT analysis (only if sample doesn't exist)
-            if table_name == 'adt' and analyzer.table is not None:
-                from modules.utils.sampling import (
-                    get_icu_hospitalizations_from_adt,
-                    generate_stratified_sample,
-                    save_sample_list,
-                    sample_exists
-                )
-
-                # Only generate if sample doesn't already exist
-                if not sample_exists(output_dir):
-                    try:
-                        with st.spinner("Generating 1k ICU sample for future analyses..."):
-                            # Step 1: Get ICU hospitalizations from ADT
-                            icu_hosp_ids = get_icu_hospitalizations_from_adt(analyzer.table.df)
-
-                            if len(icu_hosp_ids) > 0:
-                                # Step 2: Load hospitalization table to get years
-                                hosp_analyzer = HospitalizationAnalyzer(data_dir, filetype, timezone, output_dir)
-                                if hosp_analyzer.table is not None:
-                                    # Step 3: Generate stratified sample
-                                    sample_ids = generate_stratified_sample(
-                                        hosp_analyzer.table.df,
-                                        icu_hosp_ids,
-                                        sample_size=1000
-                                    )
-
-                                    # Step 4: Save for future use
-                                    save_sample_list(sample_ids, output_dir)
-                                    st.success(f"✅ Generated 1k ICU sample (stratified by year) - {len(sample_ids):,} hospitalizations")
-                                else:
-                                    st.info("ℹ️ Could not load hospitalization table for sampling")
-                            else:
-                                st.warning("⚠️ No ICU hospitalizations found in ADT table")
-                    except Exception as e:
-                        st.warning(f"Could not generate sample: {e}")
-
             # No existing feedback since we just ran fresh analysis
             existing_feedback = None
 
@@ -1136,7 +1035,7 @@ def analyze_table(table_name, config, run_validation, run_outlier_handling, forc
         st.session_state.analysis_just_completed = False
 
 
-def analyze_all_tables(config, available_tables, use_sample=False, generate_aggregates=False):
+def analyze_all_tables(config, available_tables, generate_aggregates=False):
     """
     Analyze all tables: validation, summary statistics, individual PDFs, and combined report.
 
@@ -1146,8 +1045,6 @@ def analyze_all_tables(config, available_tables, use_sample=False, generate_aggr
         Configuration dictionary
     available_tables : list
         List of available table names
-    use_sample : bool
-        Whether to use 1k ICU sample for eligible tables
     generate_aggregates : bool
         Whether to generate table-specific summary CSV aggregates
     """
@@ -1159,90 +1056,11 @@ def analyze_all_tables(config, available_tables, use_sample=False, generate_aggr
         'patient_assessments', 'patient_procedures', 'position', 'respiratory_support', 'vitals'
     ]
 
-    # Sample-eligible tables (tables that can use hospitalization_id filter)
-    # Note: code_status uses patient_id (not hospitalization_id), so it's excluded and uses full dataset
-    SAMPLE_ELIGIBLE_TABLES = [
-        'labs', 'medication_admin_continuous', 'medication_admin_intermittent',
-        'microbiology_nonculture', 'microbiology_susceptibility', 'microbiology_culture',
-        'vitals', 'patient_assessments', 'respiratory_support', 'position',
-        'patient_procedures', 'adt', 'crrt_therapy', 'ecmo_mcs',
-        'hospital_diagnosis'
-    ]
-
     # Progress tracking
     st.markdown("### 🚀 Bulk Analysis Progress")
     progress_bar = st.progress(0)
     status_text = st.empty()
     results_area = st.container()
-
-    # Load sample filter if needed
-    sample_filter = None
-    if use_sample:
-        from modules.utils.sampling import (
-            get_icu_hospitalizations_from_adt,
-            generate_stratified_sample,
-            save_sample_list,
-            load_sample_list,
-            sample_exists
-        )
-
-        output_dir = config.get('output_dir', 'output')
-
-        # Try to load existing sample
-        if sample_exists(output_dir):
-            sample_list = load_sample_list(output_dir)
-            if sample_list:
-                sample_filter = set(sample_list)
-                st.info(f"✓ Using existing 1k ICU sample: {len(sample_filter)} hospitalizations")
-
-        # If no sample exists, create it from ADT and hospitalization tables
-        if not sample_filter:
-            st.info("📊 Sample not found. Creating 1k ICU sample from ADT and hospitalization tables...")
-
-            # Need to load ADT and hospitalization tables to create sample
-            data_dir = config.get('tables_path', './data')
-            filetype = config.get('filetype', 'parquet')
-            timezone = config.get('timezone', 'UTC')
-
-            try:
-                # Load ADT table
-                from modules.tables.adt_analysis import ADTAnalyzer
-                adt_analyzer = ADTAnalyzer(data_dir, filetype, timezone, output_dir)
-
-                if adt_analyzer.table is not None and hasattr(adt_analyzer.table, 'df'):
-                    # Step 1: Get ICU hospitalizations from ADT
-                    with st.spinner("Step 1/3: Identifying ICU hospitalizations from ADT table..."):
-                        icu_hosp_ids = get_icu_hospitalizations_from_adt(adt_analyzer.table.df)
-                        st.info(f"   Found {len(icu_hosp_ids):,} ICU hospitalizations")
-
-                    # Step 2: Load hospitalization table
-                    from modules.tables.hospitalization_analysis import HospitalizationAnalyzer
-                    with st.spinner("Step 2/3: Loading hospitalization table..."):
-                        hosp_analyzer = HospitalizationAnalyzer(data_dir, filetype, timezone, output_dir)
-
-                    if hosp_analyzer.table is not None and hasattr(hosp_analyzer.table, 'df'):
-                        # Step 3: Generate stratified sample
-                        with st.spinner("Step 3/3: Generating stratified sample (proportional by admission year)..."):
-                            sample_ids = generate_stratified_sample(
-                                hosp_analyzer.table.df,
-                                icu_hosp_ids,
-                                sample_size=1000
-                            )
-
-                        # Step 4: Save for future use
-                        if sample_ids:
-                            save_sample_list(sample_ids, output_dir)
-                            sample_filter = set(sample_ids)
-                            st.success(f"✅ Generated 1k ICU sample (stratified by year) - {len(sample_ids):,} hospitalizations")
-                        else:
-                            st.warning("⚠️ Could not generate sample - no ICU hospitalizations found")
-                    else:
-                        st.warning("⚠️ Could not load hospitalization table for sampling. Proceeding without sample.")
-                else:
-                    st.warning("⚠️ Could not load ADT table for sampling. Proceeding without sample.")
-            except Exception as e:
-                st.error(f"❌ Error creating sample: {e}")
-                st.warning("Proceeding without sample - will use full dataset for all tables.")
 
     # Results tracking
     results = {
@@ -1256,9 +1074,6 @@ def analyze_all_tables(config, available_tables, use_sample=False, generate_aggr
         status_text.markdown(f"**Analyzing {TABLE_DISPLAY_NAMES.get(table_name, table_name)}...** ({idx + 1}/{len(all_tables)})")
 
         try:
-            # Check if table should use sample
-            use_sample_for_table = use_sample and table_name in SAMPLE_ELIGIBLE_TABLES
-
             # Get analyzer class
             analyzer_class = TABLE_ANALYZERS.get(table_name)
             if not analyzer_class:
@@ -1271,22 +1086,12 @@ def analyze_all_tables(config, available_tables, use_sample=False, generate_aggr
             timezone = config.get('timezone', 'UTC')
             output_dir = config.get('output_dir', 'output')
 
-            # Pass sample_filter to __init__ to load table only once
-            if use_sample_for_table and sample_filter:
-                analyzer = analyzer_class(
-                    data_dir=data_dir,
-                    filetype=filetype,
-                    timezone=timezone,
-                    output_dir=output_dir,
-                    sample_filter=sample_filter
-                )
-            else:
-                analyzer = analyzer_class(
-                    data_dir=data_dir,
-                    filetype=filetype,
-                    timezone=timezone,
-                    output_dir=output_dir
-                )
+            analyzer = analyzer_class(
+                data_dir=data_dir,
+                filetype=filetype,
+                timezone=timezone,
+                output_dir=output_dir
+            )
 
             # Check if table loaded (already loaded in __init__)
             if analyzer.table is None or not hasattr(analyzer.table, 'df') or analyzer.table.df is None:
@@ -1510,8 +1315,7 @@ def analyze_all_tables(config, available_tables, use_sample=False, generate_aggr
                         config.get('output_dir', 'output'),
                         available_tables,
                         config.get('site_name'),
-                        config.get('timezone', 'UTC'),
-                        used_sampling=use_sample
+                        config.get('timezone', 'UTC')
                     )
 
                     if pdf_path:

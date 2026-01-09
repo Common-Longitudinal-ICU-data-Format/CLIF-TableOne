@@ -16,14 +16,9 @@ class ECMOMCSAnalyzer(BaseTableAnalyzer):
         """Return the correct table name with underscore."""
         return 'ecmo_mcs'
 
-    def load_table(self, sample_filter=None):
+    def load_table(self):
         """
         Load ECMO/MCS table using clifpy.
-
-        Parameters:
-        -----------
-        sample_filter : list, optional
-            List of hospitalization_ids to filter to (uses clifpy filters)
         """
         try:
             from clifpy.tables.ecmo_mcs import EcmoMcs
@@ -48,22 +43,12 @@ class ECMOMCSAnalyzer(BaseTableAnalyzer):
             clifpy_output_dir = os.path.join(self.output_dir, "final", "clifpy")
             os.makedirs(clifpy_output_dir, exist_ok=True)
 
-            # Use filters parameter ONLY when sample is provided
-            if sample_filter is not None:
-                self.table = EcmoMcs.from_file(
-                    data_directory=self.data_dir,
-                    filetype=self.filetype,
-                    timezone=self.timezone,
-                    output_directory=clifpy_output_dir,
-                    filters={'hospitalization_id': list(sample_filter)}
-                )
-            else:
-                self.table = EcmoMcs.from_file(
-                    data_directory=self.data_dir,
-                    filetype=self.filetype,
-                    timezone=self.timezone,
-                    output_directory=clifpy_output_dir
-                )
+            self.table = EcmoMcs.from_file(
+                data_directory=self.data_dir,
+                filetype=self.filetype,
+                timezone=self.timezone,
+                output_directory=clifpy_output_dir
+            )
 
             # Move any CSV files that clifpy created in parent directory to final/
             self._move_clifpy_csvs_to_final()

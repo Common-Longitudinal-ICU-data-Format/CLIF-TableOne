@@ -12,7 +12,6 @@ from modules.tables import (
     PatientProceduresAnalyzer, PositionAnalyzer, RespiratorySupportAnalyzer,
     VitalsAnalyzer
 )
-from modules.utils import load_sample_list, sample_exists
 from .formatters import ConsoleFormatter
 from .pdf_generator import ValidationPDFGenerator
 
@@ -41,28 +40,8 @@ class CLIAnalysisRunner:
         'vitals': VitalsAnalyzer
     }
 
-    # Tables that support hospitalization_id filtering (can use 1k ICU sample)
-    # Excludes: patient (uses patient_id), hospitalization (defines the sample),
-    # adt (used to create the sample), code_status (uses patient_id),
-    # microbiology_susceptibility (only has organism_id, no hospitalization_id)
-    SAMPLE_ELIGIBLE_TABLES = [
-        'labs',
-        'medication_admin_continuous',
-        'medication_admin_intermittent',
-        'microbiology_culture',
-        'microbiology_nonculture',
-        'vitals',
-        'patient_assessments',
-        'respiratory_support',
-        'position',
-        'patient_procedures',
-        'crrt_therapy',
-        'ecmo_mcs',
-        'hospital_diagnosis'
-    ]
-
     def __init__(self, config: Dict[str, Any], verbose: bool = False, quiet: bool = False,
-                 generate_pdf: bool = True, use_sample: bool = False):
+                 generate_pdf: bool = True):
         """
         Initialize the CLI runner.
 
@@ -76,14 +55,11 @@ class CLIAnalysisRunner:
             Minimize output
         generate_pdf : bool
             Generate PDF reports for validation results
-        use_sample : bool
-            Use 1k ICU sample for faster analysis
         """
         self.config = config
         self.verbose = verbose
         self.quiet = quiet
         self.generate_pdf = generate_pdf
-        self.use_sample = use_sample
         self.formatter = ConsoleFormatter()
         self.pdf_generator = ValidationPDFGenerator()
 
@@ -134,29 +110,9 @@ class CLIAnalysisRunner:
                 self.log(self.formatter.error(f"Analyzer not available for {table_name}"))
                 return result
 
-            # Load sample if requested
-            sample_filter = None
-            if self.use_sample:
-                if sample_exists(self.output_dir):
-                    sample_filter = load_sample_list(self.output_dir)
-                    if sample_filter:
-                        self.log(self.formatter.info(f"[STATS] Using 1k ICU sample ({len(sample_filter):,} hospitalizations)"))
-                    else:
-                        self.log(self.formatter.warning("[WARNING] Sample file exists but could not be loaded. Loading full table."))
-                else:
-                    self.log(self.formatter.warning("[WARNING] Sample file not found. Loading full table."))
-                    self.log(self.formatter.info("   Generate sample by running: python run_analysis.py --adt --validate --summary"))
-
             # Load table
-            # Only pass sample_filter to tables that support hospitalization_id filtering
-            if table_name in self.SAMPLE_ELIGIBLE_TABLES and sample_filter:
-                self.log(self.formatter.progress(f"Loading {table_name} table with 1k sample"))
-                analyzer = analyzer_class(self.data_dir, self.filetype, self.timezone, self.output_dir, sample_filter)
-            else:
-                if sample_filter and table_name not in self.SAMPLE_ELIGIBLE_TABLES:
-                    self.log(self.formatter.info(f"Note: {table_name} does not support sampling, loading full dataset"))
-                self.log(self.formatter.progress(f"Loading {table_name} table"))
-                analyzer = analyzer_class(self.data_dir, self.filetype, self.timezone, self.output_dir, None)
+            self.log(self.formatter.progress(f"Loading {table_name} table"))
+            analyzer = analyzer_class(self.data_dir, self.filetype, self.timezone, self.output_dir)
 
             if analyzer.table is None:
                 result['error'] = f"Failed to load {table_name} table"
@@ -256,46 +212,6 @@ class CLIAnalysisRunner:
                 if self.verbose:
                     self.log(self.formatter.format_summary_info(summary_stats, table_name))
 
-            # Generate ICU sample after ADT analysis if --sample was requested and sample doesn't exist
-            if table_name == 'adt' and self.use_sample and analyzer.table is not None:
-                from modules.utils.sampling import (
-                    get_icu_hospitalizations_from_adt,
-                    generate_stratified_sample,
-                    save_sample_list
-                )
-
-                # Only generate if sample doesn't already exist
-                if not sample_exists(self.output_dir):
-                    try:
-                        self.log(self.formatter.progress("Generating 1k ICU sample for future analyses"))
-
-                        # Step 1: Get ICU hospitalizations from ADT
-                        icu_hosp_ids = get_icu_hospitalizations_from_adt(analyzer.table.df)
-
-                        if len(icu_hosp_ids) > 0:
-                            # Step 2: Load hospitalization table to get years
-                            hosp_analyzer = HospitalizationAnalyzer(self.data_dir, self.filetype, self.timezone, self.output_dir)
-                            if hosp_analyzer.table is not None:
-                                # Step 3: Generate stratified sample
-                                sample_ids = generate_stratified_sample(
-                                    hosp_analyzer.table.df,
-                                    icu_hosp_ids,
-                                    sample_size=1000
-                                )
-
-                                # Step 4: Save for future use
-                                save_sample_list(sample_ids, self.output_dir)
-                                self.log(self.formatter.success(f"Generated 1k ICU sample (stratified by year) - {len(sample_ids):,} hospitalizations"))
-                            else:
-                                self.log(self.formatter.warning("Could not load hospitalization table for sampling"))
-                        else:
-                            self.log(self.formatter.warning("No ICU hospitalizations found in ADT table"))
-                    except Exception as e:
-                        self.log(self.formatter.warning(f"Could not generate sample: {e}"))
-                        if self.verbose:
-                            import traceback
-                            traceback.print_exc()
-
             result['success'] = True
             self.log(self.formatter.success(f"Completed analysis for {table_name}"))
 
@@ -326,25 +242,6 @@ class CLIAnalysisRunner:
         dict
             Overall results with per-table details
         """
-        # If using sample mode, ensure ADT is processed early (after patient/hospitalization)
-        # so the sample can be generated before other tables need it
-        if self.use_sample and 'adt' in tables:
-            # Reorder to ensure: patient, hospitalization, adt come first (in that order if present)
-            priority_tables = ['patient', 'hospitalization', 'adt']
-            ordered_tables = []
-
-            # Add priority tables first (in order)
-            for table in priority_tables:
-                if table in tables:
-                    ordered_tables.append(table)
-
-            # Add remaining tables
-            for table in tables:
-                if table not in priority_tables:
-                    ordered_tables.append(table)
-
-            tables = ordered_tables
-
         # Header
         self.log(self.formatter.header("[HOSPITAL] CLIF TABLE ONE ANALYSIS"), force=True)
         self.log(f"{self.formatter.FOLDER} Data Directory: {self.data_dir}", force=True)
@@ -352,7 +249,6 @@ class CLIAnalysisRunner:
         self.log(f"[LIST] Tables: {', '.join(tables)}", force=True)
         self.log(f"[SEARCH] Validation: {'[OK]' if run_validation else '[X]'}", force=True)
         self.log(f"[STATS] Summary: {'[OK]' if run_summary else '[X]'}", force=True)
-        self.log(f"[TARGET] Sample Mode: {'[OK] (1k ICU hospitalizations)' if self.use_sample else '[X]'}", force=True)
         self.log("", force=True)
 
         results = {

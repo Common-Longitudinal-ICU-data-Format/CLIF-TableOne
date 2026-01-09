@@ -1407,19 +1407,32 @@ def main(memory_monitor=None) -> bool:
     }
 
     # Create 4-way Venn diagram
+    # venny4py creates a subfolder with both Venn_4.png and Intersections_4.txt (contains PHI)
+    # Output to intermediate first, then move only the image to final
     fig = plt.figure(figsize=(12, 10))
-    venny4py(sets=sets_dict, out=get_output_path('final', 'tableone', 'figures', 'Venn_4'), dpi=300)
+    venn_temp_folder = Path(get_output_path('intermediate', 'Venn_4'))
+    venny4py(sets=sets_dict, out=str(venn_temp_folder), dpi=300)
     plt.suptitle('4-way Venn Diagram', fontsize=16, y=0.98)
     plt.savefig(get_output_path('final', 'tableone', 'venn_all_4_groups.png'), dpi=300, bbox_inches='tight')
     plt.close('all')
     print("✅ Saved: ../output/final/tableone/venn_all_4_groups.png")
 
-    # Move Intersections_4.txt to intermediate folder
-    intersections_src = get_output_path('final', 'tableone', 'figures', 'Intersections_4.txt')
+    # Move Venn_4.png to final figures folder, keep Intersections_4.txt in intermediate (contains PHI)
+    venn_img_src = venn_temp_folder / 'Venn_4.png'
+    venn_img_dst = get_output_path('final', 'tableone', 'figures', 'Venn_4.png')
+    if venn_img_src.exists():
+        shutil.move(str(venn_img_src), venn_img_dst)
+        print(f"✅ Saved: ../output/final/tableone/figures/Venn_4.png")
+
+    intersections_src = venn_temp_folder / 'Intersections_4.txt'
     intersections_dst = get_output_path('intermediate', 'Intersections_4.txt')
-    if Path(intersections_src).exists():
-        shutil.move(intersections_src, intersections_dst)
+    if intersections_src.exists():
+        shutil.move(str(intersections_src), intersections_dst)
         print(f"✅ Moved: Intersections_4.txt to ../output/intermediate/")
+
+    # Remove the now-empty temp folder
+    if venn_temp_folder.exists():
+        venn_temp_folder.rmdir()
 
     # Create the diagram
     create_consort_diagram(strobe_counts, mortality_rates)

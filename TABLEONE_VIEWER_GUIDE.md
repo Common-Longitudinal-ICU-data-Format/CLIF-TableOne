@@ -11,7 +11,7 @@ The **📊 Table One Results** button appears in the left navigation bar (below 
 To generate Table One results, run:
 ```bash
 # Generate Table One (after validation)
-python run_project.py --sample
+python run_project.py
 
 # OR run table one only
 python run_project.py --tableone-only
@@ -177,7 +177,7 @@ If certain visualizations are not available, the viewer will display:
 ### Complete Workflow
 ```bash
 # 1. Run validation and table one generation
-python run_project.py --sample
+python run_project.py
 
 # 2. Launch app
 uv run streamlit run app.py
@@ -188,7 +188,7 @@ uv run streamlit run app.py
 ### Or with Auto-Launch
 ```bash
 # Automatically launch app after generation
-python run_project.py --sample --launch-app
+python run_project.py --launch-app
 
 # Then click "📊 Table One Results" when app opens
 ```

@@ -15,14 +15,9 @@ class VitalsAnalyzer(BaseTableAnalyzer):
     def get_table_name(self) -> str:
         return 'vitals'
 
-    def load_table(self, sample_filter=None):
+    def load_table(self):
         """
-        Load Vitals table using efficient Polars loading (sample mode) or clifpy (full mode).
-
-        Parameters:
-        -----------
-        sample_filter : list, optional
-            List of hospitalization_ids to filter to
+        Load Vitals table using clifpy.
         """
         data_path = Path(self.data_dir)
         file_without_clif = data_path / f"vitals.{self.filetype}"
@@ -34,44 +29,15 @@ class VitalsAnalyzer(BaseTableAnalyzer):
             return
 
         try:
-            if sample_filter is not None:
-                # Sample mode: Use efficient Polars loading to avoid memory explosion
-                from modules.validation import load_with_filter, load_schema
-                from types import SimpleNamespace
+            clifpy_output_dir = os.path.join(self.output_dir, "final", "clifpy")
+            os.makedirs(clifpy_output_dir, exist_ok=True)
 
-                # Determine file path
-                if file_with_clif.exists():
-                    file_path = file_with_clif
-                else:
-                    file_path = file_without_clif
-
-                print(f"   Loading vitals with Polars (sample mode: {len(sample_filter):,} hospitalizations)")
-
-                # Load efficiently with Polars
-                df = load_with_filter(
-                    file_path=str(file_path),
-                    filetype=self.filetype,
-                    hospitalization_ids=list(sample_filter),
-                    timezone=self.timezone
-                )
-
-                # Load schema for validation
-                schema = load_schema('vitals')
-
-                # Create table-like object for compatibility
-                self.table = SimpleNamespace(df=df, schema=schema)
-
-            else:
-                # Normal mode: Use clifpy with full validation
-                clifpy_output_dir = os.path.join(self.output_dir, "final", "clifpy")
-                os.makedirs(clifpy_output_dir, exist_ok=True)
-
-                self.table = Vitals.from_file(
-                    data_directory=self.data_dir,
-                    filetype=self.filetype,
-                    timezone=self.timezone,
-                    output_directory=clifpy_output_dir
-                )
+            self.table = Vitals.from_file(
+                data_directory=self.data_dir,
+                filetype=self.filetype,
+                timezone=self.timezone,
+                output_directory=clifpy_output_dir
+            )
         except Exception as e:
             print(f"⚠️  Error loading vitals table: {e}")
             import traceback

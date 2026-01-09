@@ -3,13 +3,12 @@
 CLIF Project Runner - Complete Workflow Automation
 
 This script orchestrates the complete CLIF analysis workflow:
-1. Validation of CLIF tables (with optional sampling)
+1. Validation of CLIF tables
 2. Table One generation with memory optimization
 3. Automatic Streamlit app launch (on successful completion)
 
 Usage:
     python run_project.py                          # Full validation + table one + app
-    python run_project.py --sample                 # Use 1k ICU sample + app
     python run_project.py --validate-only          # Only run validation
     python run_project.py --tableone-only          # Only run table one + app
     python run_project.py --tables patient adt     # Validate specific tables
@@ -176,7 +175,7 @@ class ProjectRunner:
         except Exception as e:
             return False, f"Error checking table statuses: {e}"
 
-    def run_validation(self, tables=None, use_sample=False, verbose=False, no_summary=False):
+    def run_validation(self, tables=None, verbose=False, no_summary=False):
         """
         Run CLIF validation using run_analysis.py.
 
@@ -184,8 +183,6 @@ class ProjectRunner:
         ----------
         tables : list of str, optional
             Specific tables to validate. If None, validates all.
-        use_sample : bool
-            Use 1k ICU sample for faster analysis
         verbose : bool
             Enable verbose output
         no_summary : bool
@@ -214,13 +211,10 @@ class ProjectRunner:
             cmd.append('--summary')
 
         # Add optional flags
-        if use_sample:
-            cmd.append('--sample')
         if verbose:
             cmd.append('--verbose')
 
         self.logger.info(f"Running: {' '.join(cmd)}")
-        self.logger.info(f"Sample mode: {'[OK]' if use_sample else '[X]'}")
         self.logger.info(f"Tables: {', '.join(tables) if tables else 'all'}")
 
         try:
@@ -570,7 +564,7 @@ class ProjectRunner:
         get_ecdf : bool
             Run get ECDF bins step
         **kwargs : dict
-            Additional arguments for validation (tables, use_sample, verbose, visualize)
+            Additional arguments for validation (tables, verbose, visualize)
 
         Returns
         -------
@@ -596,7 +590,6 @@ class ProjectRunner:
             print("\n[DEBUG] Starting validation step...")
             val_success, critical_tables_ok = self.run_validation(
                 tables=kwargs.get('tables'),
-                use_sample=kwargs.get('use_sample', False),
                 verbose=kwargs.get('verbose', False),
                 no_summary=kwargs.get('no_summary', False)
             )
@@ -694,14 +687,13 @@ def main():
         epilog="""
 Examples:
   %(prog)s                                    # Full workflow (validation + tableone)
-  %(prog)s --sample                           # Use 1k ICU sample
   %(prog)s --validate-only                    # Only validation
   %(prog)s --tableone-only                    # Only table one
   %(prog)s --get-ecdf-only                    # Only get ECDF bins
   %(prog)s --get-ecdf-only --visualize        # Get ECDF + HTML visualizations
   %(prog)s --get-ecdf                         # Full workflow + get ECDF
   %(prog)s --tables patient adt               # Validate specific tables
-  %(prog)s --sample --no-launch-app           # Skip automatic app launch
+  %(prog)s --no-launch-app                    # Skip automatic app launch
         """
     )
 
@@ -732,8 +724,6 @@ Examples:
                                           'microbiology_susceptibility', 'patient_assessments',
                                           'patient_procedures', 'position', 'respiratory_support', 'vitals'],
                                   help='Specific tables to validate')
-    validation_group.add_argument('--sample', action='store_true',
-                                  help='Use 1k ICU sample for faster analysis')
     validation_group.add_argument('--no-summary', action='store_true',
                                   help='Skip summary statistics generation (only run validation)')
     validation_group.add_argument('--verbose', '-v', action='store_true',
@@ -780,7 +770,6 @@ Examples:
             tableone=tableone,
             get_ecdf=get_ecdf,
             tables=args.tables,
-            use_sample=args.sample,
             no_summary=args.no_summary,
             verbose=args.verbose,
             visualize=args.visualize,

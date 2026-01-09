@@ -11,17 +11,14 @@ The `run_project.py` script orchestrates the complete analysis pipeline.
 #### Basic Commands
 
 ```bash
-# Full analysis with sampling (recommended)
-uv run python run_project.py --sample --no-summary --get-ecdf
-
-# Full dataset analysis (45-90 minutes)
-uv run python run_project.py --get-ecdf
+# Full analysis
+uv run python run_project.py --no-summary --get-ecdf
 
 # Skip automatic app launch
-uv run python run_project.py --sample --no-summary --get-ecdf --no-launch-app
+uv run python run_project.py --no-summary --get-ecdf --no-launch-app
 
 # Validation only
-uv run python run_project.py --validate-only --sample --no-summary
+uv run python run_project.py --validate-only --no-summary
 
 # Table One only (skip validation)
 uv run python run_project.py --tableone-only
@@ -49,7 +46,6 @@ Workflow Control:
 Validation Options:
   --tables TABLE [TABLE ...]
                           Specific tables to validate
-  --sample                Use 1k ICU sample for faster analysis
   --no-summary            Skip summary statistics generation
   --verbose, -v           Enable verbose output
 
@@ -72,9 +68,6 @@ uv run python run_analysis.py --patient --hospitalization --validate
 
 # All implemented tables
 uv run python run_analysis.py --all --validate --summary
-
-# Use 1k ICU sample for faster analysis
-uv run python run_analysis.py --labs --validate --summary --sample
 
 # Specify custom config file
 uv run python run_analysis.py --config path/to/config.json --patient --validate
@@ -123,7 +116,6 @@ uv run python run_analysis.py --all --validate --summary --quiet
 --verbose, -v               Enable verbose output
 --quiet, -q                 Minimize output (only errors and final summary)
 --no-pdf                    Disable PDF report generation (JSON only)
---sample                    Use 1k ICU sample for faster analysis
 ```
 
 #### Exit Codes
@@ -134,27 +126,6 @@ uv run python run_analysis.py --all --validate --summary --quiet
 - `130` - Interrupted by user (Ctrl+C)
 
 ## Advanced Workflows
-
-### Performance Optimization with Sampling
-
-The `--sample` flag creates or uses a 1k patient ICU sample for faster processing:
-
-```bash
-# Create sample and run validation
-uv run python run_project.py --sample --validate-only
-
-# Sample behavior:
-# 1. First run creates sample from ADT table
-# 2. Sample saved to output/final/sample_1k_icu_hospitalizations.csv
-# 3. Subsequent runs reuse existing sample
-# 4. Core tables (patient, hospitalization, ADT) always use full data
-# 5. Other tables filter to sample hospitalization IDs
-```
-
-Benefits:
-- Reduces runtime from 30-60 min to 5-10 min for all tables
-- Maintains validation accuracy for data quality checks
-- Ideal for iterative development and testing
 
 ### ECDF Bins Configuration
 
@@ -235,9 +206,6 @@ The Table One generation includes memory optimization features:
 
 #### Out of Memory Errors
 ```bash
-# Use sampling for initial runs
-uv run python run_project.py --sample --no-summary
-
 # Increase system swap if needed
 # Monitor with: watch -n 1 free -h
 ```

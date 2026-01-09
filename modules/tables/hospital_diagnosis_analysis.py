@@ -25,14 +25,9 @@ class HospitalDiagnosisAnalyzer(BaseTableAnalyzer):
         """Return the table name."""
         return 'hospital_diagnosis'
 
-    def load_table(self, sample_filter=None):
+    def load_table(self):
         """
         Load Hospital Diagnosis table using clifpy.
-
-        Parameters:
-        -----------
-        sample_filter : list, optional
-            List of hospitalization_ids to filter to (uses clifpy filters)
 
         Handles both naming conventions:
         - hospital_diagnosis.parquet
@@ -53,33 +48,16 @@ class HospitalDiagnosisAnalyzer(BaseTableAnalyzer):
             self.table = None
             return
 
-        # Clifpy saves files directly to output_directory, so pass the final/clifpy subdirectory
-
-
         clifpy_output_dir = os.path.join(self.output_dir, "final", "clifpy")
-
-
         os.makedirs(clifpy_output_dir, exist_ok=True)
 
-
-
         try:
-            # Use filters parameter ONLY when sample is provided
-            if sample_filter is not None:
-                self.table = HospitalDiagnosis.from_file(
-                    data_directory=self.data_dir,
-                    filetype=self.filetype,
-                    timezone=self.timezone,
-                    output_directory=clifpy_output_dir,
-                    filters={'hospitalization_id': list(sample_filter)}
-                )
-            else:
-                self.table = HospitalDiagnosis.from_file(
-                    data_directory=self.data_dir,
-                    filetype=self.filetype,
-                    timezone=self.timezone,
-                    output_directory=clifpy_output_dir
-                )
+            self.table = HospitalDiagnosis.from_file(
+                data_directory=self.data_dir,
+                filetype=self.filetype,
+                timezone=self.timezone,
+                output_directory=clifpy_output_dir
+            )
         except FileNotFoundError:
             print(f"⚠️  hospital_diagnosis table file not found in {self.data_dir}")
             self.table = None

@@ -42,20 +42,18 @@ Create or update `config/config.json`:
 
 ### Linux/MacOS
 
-Run the complete analysis pipeline with sampling (recommended for first run):
+Run the complete analysis pipeline:
 
 ```bash
-uv run python run_project.py --sample --no-summary --get-ecdf
+uv run python run_project.py --no-summary --get-ecdf
 ```
 
 This command:
-1. Validates all 18 CLIF tables using a 1k ICU sample
+1. Validates all 18 CLIF tables
 2. Collects MCIDE data
 3. Generates Table One analysis
 4. Computes ECDF bins for visualizations
 5. Automatically launches the Streamlit app
-
-**Time:** ~10-15 minutes with sampling, 45-90 minutes without
 
 ### Windows
 
@@ -63,12 +61,12 @@ Windows users should use the provided scripts that handle UTF-8 encoding:
 
 **Using Batch files:**
 ```batch
-run_project_windows.bat --sample --no-summary --get-ecdf
+run_project_windows.bat --no-summary --get-ecdf
 ```
 
 **Using PowerShell:**
 ```powershell
-.\run_project_windows.ps1 --sample --no-summary --get-ecdf
+.\run_project_windows.ps1 --no-summary --get-ecdf
 ```
 
 If you encounter Unicode/emoji display issues, see the [Windows Troubleshooting](#windows-unicode-troubleshooting) section below.
@@ -122,10 +120,9 @@ output/final/
 
 ### 2. Configuration
 - Verify paths and settings in config file
-- Choose whether to use sampling for faster initial runs
 
 ### 3. Main Command
-- Run `run_project.py` with appropriate flags: `uv run python run_project.py --sample --no-summary --get-ecdf`
+- Run `run_project.py` with appropriate flags: `uv run python run_project.py --no-summary --get-ecdf`
 - Monitor progress in the terminal
 - Wait for automatic app launch or launch manually
 

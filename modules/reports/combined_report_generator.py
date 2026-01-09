@@ -395,8 +395,7 @@ def _create_table_section(table_name: str, result: Dict[str, Any], timezone: Opt
 
 
 def generate_combined_pdf(table_results: Dict[str, Any], output_path: str,
-                          site_name: Optional[str] = None, timezone: Optional[str] = 'UTC',
-                          used_sampling: bool = False) -> str:
+                          site_name: Optional[str] = None, timezone: Optional[str] = 'UTC') -> str:
     """
     Generate a combined PDF report from multiple table validation results.
 
@@ -410,8 +409,6 @@ def generate_combined_pdf(table_results: Dict[str, Any], output_path: str,
         Name of the site/hospital
     timezone : str, optional
         Configured timezone (defaults to UTC)
-    used_sampling : bool, optional
-        Whether a 1k ICU sample was used (defaults to False)
 
     Returns:
     --------
@@ -499,19 +496,6 @@ def generate_combined_pdf(table_results: Dict[str, Any], output_path: str,
     story.append(Paragraph(title_text, title_style))
     story.append(Paragraph("Combined Validation Report", heading_style))
     story.append(Spacer(1, 0.2 * inch))
-
-    # Add sampling note if applicable
-    if used_sampling:
-        sample_note_style = ParagraphStyle(
-            'SampleNote',
-            parent=normal_style,
-            fontSize=10,
-            textColor=colors.HexColor('#007ACC'),  # Blue color for emphasis
-            alignment=TA_CENTER,
-            fontName='Helvetica-Bold'
-        )
-        story.append(Paragraph("📊 This report was generated using a 1k ICU sample (stratified by year) for eligible tables", sample_note_style))
-        story.append(Spacer(1, 0.15 * inch))
 
     # Status Report Overview
     story.append(Paragraph("Status Report Overview", heading_style))
@@ -777,8 +761,7 @@ def generate_consolidated_csv(table_results: Dict[str, Any], output_path: str,
 
 def generate_combined_report(output_dir: str, table_names: List[str],
                             site_name: Optional[str] = None,
-                            timezone: Optional[str] = 'UTC',
-                            used_sampling: bool = False) -> Optional[str]:
+                            timezone: Optional[str] = 'UTC') -> Optional[str]:
     """
     High-level function to generate a combined validation report (PDF and CSV).
 
@@ -792,8 +775,6 @@ def generate_combined_report(output_dir: str, table_names: List[str],
         Name of the site/hospital
     timezone : str, optional
         Configured timezone (defaults to UTC)
-    used_sampling : bool, optional
-        Whether a 1k ICU sample was used for validation (defaults to False)
 
     Returns:
     --------
@@ -815,7 +796,7 @@ def generate_combined_report(output_dir: str, table_names: List[str],
         os.makedirs(reports_dir, exist_ok=True)
         pdf_path = os.path.join(reports_dir, 'combined_validation_report.pdf')
 
-        generate_combined_pdf(table_results, pdf_path, site_name, timezone, used_sampling)
+        generate_combined_pdf(table_results, pdf_path, site_name, timezone)
 
         # Generate consolidated CSV
         results_dir = os.path.join(output_dir, 'final', 'results')
