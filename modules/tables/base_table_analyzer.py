@@ -80,6 +80,8 @@ class BaseTableAnalyzer(ABC):
             schema=self.table.schema,
             table_name=schema_name,
             tables=tables,
+            error_threshold=10.0,
+            warning_threshold=1.0,
         )
         # if self.table is None:
         #     return {

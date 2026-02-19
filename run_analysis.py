@@ -152,7 +152,7 @@ Examples:
 
     # Validate arguments
     has_table = (args.patient or args.hospitalization or args.adt or args.code_status or args.crrt_therapy or
-                 args.labs or args.medication_admin_continuous or
+                 args.hospital_diagnosis or args.labs or args.medication_admin_continuous or
                  args.medication_admin_intermittent or args.microbiology_culture or
                  args.microbiology_susceptibility or args.patient_assessments or args.patient_procedures or
                  args.position or args.respiratory_support or args.vitals or args.all)

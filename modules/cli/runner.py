@@ -167,7 +167,8 @@ class CLIAnalysisRunner:
             # Run validation
             if run_validation:
                 self.log(self.formatter.progress(f"Running validation for {table_name}"))
-                validation_results = analyzer.validate()
+                loaded_tables = list(self._loaded_tables.values()) if self._loaded_tables else None
+                validation_results = analyzer.validate(tables=loaded_tables)
                 result['validation'] = validation_results
 
                 # Save validation results as JSON
@@ -388,22 +389,23 @@ class CLIAnalysisRunner:
                 ))
                 rel_results = run_relational_integrity_checks(loaded_table_objects)
 
-                # Merge relational results into each table's saved JSON
+                # Merge relational results into completeness for each table
                 for tname, rel_checks in rel_results.items():
                     if not rel_checks:
                         continue
                     serialized_rel = {k: v.to_dict() for k, v in rel_checks.items()}
 
-                    # Update in-memory validation results
+                    # Update in-memory validation results (merge into completeness)
                     if tname in results['details'] and results['details'][tname].get('validation'):
-                        results['details'][tname]['validation']['relational'] = serialized_rel
+                        vr = results['details'][tname]['validation']
+                        vr.setdefault('completeness', {}).update(serialized_rel)
 
-                    # Update saved JSON file
+                    # Update saved JSON file (merge into completeness)
                     json_path = os.path.join(self.output_dir, 'final', 'clifpy', f'{tname}_dqa.json')
                     if os.path.exists(json_path):
                         with open(json_path, 'r') as f:
                             saved = json.load(f)
-                        saved['relational'] = serialized_rel
+                        saved.setdefault('completeness', {}).update(serialized_rel)
                         with open(json_path, 'w') as f:
                             json.dump(saved, f, indent=2, default=str)
 
@@ -411,6 +413,22 @@ class CLIAnalysisRunner:
                 self.log(self.formatter.success(
                     f"Relational checks complete: {rel_count} checks across {len(rel_results)} tables"
                 ))
+
+                # Regenerate PDFs now that relational results are included
+                if self.generate_pdf:
+                    reports_dir = os.path.join(self.output_dir, 'final', 'reports')
+                    for tname in rel_results:
+                        if tname in results['details'] and results['details'][tname].get('validation'):
+                            pdf_path = os.path.join(reports_dir, f"{tname}_validation_report.pdf")
+                            try:
+                                if self.pdf_generator.is_available():
+                                    self.pdf_generator.generate_validation_pdf(
+                                        results['details'][tname]['validation'],
+                                        tname, pdf_path, self.site_name
+                                    )
+                            except Exception as pdf_e:
+                                self.log(self.formatter.warning(
+                                    f"Could not regenerate PDF for {tname}: {pdf_e}"))
             except Exception as e:
                 self.log(self.formatter.warning(f"Could not run relational checks: {e}"))
                 if self.verbose:
