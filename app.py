@@ -40,8 +40,8 @@ from modules.tables import (
     VitalsAnalyzer
 )
 from modules.cli import ValidationPDFGenerator
+from modules.cli.pdf_generator import _collect_dqa_issues, DQA_CATEGORIES
 from modules.utils import (
-    get_validation_summary,
     get_missingness_summary,
     create_missingness_report,
     create_error_id,
@@ -966,7 +966,7 @@ def analyze_table(table_name, config, run_validation, run_outlier_handling, forc
             # Automatically save validation and summary results to JSON files
             if validation_results:
                 try:
-                    analyzer.save_summary_data(validation_results, '_validation')
+                    analyzer.save_validation_results(validation_results)
                     st.success("✅ Validation results saved")
                 except Exception as e:
                     st.warning(f"Could not save validation results: {e}")
@@ -1250,6 +1250,7 @@ def analyze_all_tables(config, available_tables, use_sample=False, generate_aggr
         'failed': [],
         'skipped': []
     }
+    loaded_tables = {}  # table_name -> BaseTable object for relational checks
 
     # Analyze each table
     for idx, table_name in enumerate(all_tables):
@@ -1293,13 +1294,15 @@ def analyze_all_tables(config, available_tables, use_sample=False, generate_aggr
                 results['skipped'].append((table_name, 'Table not found or failed to load'))
                 continue
 
+            loaded_tables[table_name] = analyzer.table
+
             # Always run validation
             validation_results = analyzer.validate()
 
             # Save validation results to disk for persistence
             if validation_results:
                 try:
-                    analyzer.save_summary_data(validation_results, '_validation')
+                    analyzer.save_validation_results(validation_results)
                 except Exception as e:
                     # Log error but continue with other tables
                     if config.get('verbose', False):
@@ -1444,6 +1447,31 @@ def analyze_all_tables(config, available_tables, use_sample=False, generate_aggr
 
         # Update progress
         progress_bar.progress((idx + 1) / len(all_tables))
+
+    # Run cross-table relational checks if multiple tables loaded
+    if len(loaded_tables) > 1:
+        try:
+            from clifpy.utils.validator import run_relational_integrity_checks
+            import json as _json
+
+            rel_results = run_relational_integrity_checks(list(loaded_tables.values()))
+            output_dir = config.get('output_dir', 'output')
+
+            for tname, rel_checks in rel_results.items():
+                if not rel_checks:
+                    continue
+                serialized_rel = {k: v.to_dict() for k, v in rel_checks.items()}
+
+                # Update saved JSON file
+                json_path = os.path.join(output_dir, 'final', 'clifpy', f'{tname}_dqa.json')
+                if os.path.exists(json_path):
+                    with open(json_path, 'r') as f:
+                        saved = _json.load(f)
+                    saved['relational'] = serialized_rel
+                    with open(json_path, 'w') as f:
+                        _json.dump(saved, f, indent=2, default=str)
+        except Exception:
+            pass  # Relational checks are best-effort
 
     # Clear status and progress
     status_text.empty()
@@ -1682,383 +1710,136 @@ def _get_quality_check_definition(check_name: str) -> str:
     return definitions.get(check_name, 'No definition available')
 
 
+def _render_issue_details(details: dict):
+    """Render DQA issue details in Streamlit, properly handling list/dict values."""
+    import pandas as pd
+
+    for key, value in details.items():
+        if isinstance(value, list):
+            if not value:
+                continue
+            if isinstance(value[0], dict) and 'value' in value[0]:
+                df = pd.DataFrame(value[:20])
+                st.caption(f"**{key}:**")
+                st.dataframe(df, use_container_width=True, hide_index=True)
+            elif isinstance(value[0], dict):
+                df = pd.DataFrame(value[:20])
+                st.caption(f"**{key}:**")
+                st.dataframe(df, use_container_width=True, hide_index=True)
+            else:
+                items = ", ".join(str(v) for v in value[:15])
+                if len(value) > 15:
+                    items += f" ... ({len(value)} total)"
+                st.caption(f"**{key}:** {items}")
+        elif isinstance(value, dict):
+            items = ", ".join(f"{k}: {v}" for k, v in list(value.items())[:10])
+            st.caption(f"**{key}:** {items}")
+        else:
+            st.caption(f"**{key}:** {value}")
+
+
 def display_validation_results(analyzer, validation_results, existing_feedback, table_name):
     """
-    Display validation results tab with user feedback option.
+    Display DQA validation results tab.
 
     Parameters:
     -----------
     analyzer : BaseTableAnalyzer
         The table analyzer instance
     validation_results : dict
-        Validation results
+        DQA results from run_full_dqa (keys: conformance, completeness,
+        relational, plausibility)
     existing_feedback : dict or None
-        Existing feedback structure if available
+        Existing feedback structure if available (unused, kept for API compat)
     table_name : str
         Name of the table
     """
     if not validation_results:
-        st.info("ℹ️ Validation not run. Check the 'Run Validation' box in the sidebar to enable.")
+        st.info("Validation not run. Check the 'Run Validation' box in the sidebar to enable.")
         return
 
-    # Get current status (considering feedback if exists)
-    current_status = get_table_status(table_name)
-    if current_status == 'not_analyzed' or current_status == 'unknown':
-        current_status = validation_results.get('status', 'unknown')
+    category_scores, all_issues = _collect_dqa_issues(validation_results)
+    total_passed = sum(p for p, _ in category_scores.values())
+    total_checks = sum(t for _, t in category_scores.values())
+    error_count = sum(1 for i in all_issues if i['severity'] == 'error')
+    warning_count = sum(1 for i in all_issues if i['severity'] == 'warning')
 
-    status_block_class = f'status-block-{current_status}'
-
+    # --- Summary metrics ---
     col1, col2, col3, col4 = st.columns(4)
-
     with col1:
-        st.markdown(f"""
-        <div class="{status_block_class}">
-            <h4>Validation Status</h4>
-            <p class="status-{current_status}">{current_status.upper()}</p>
-        </div>
-        """, unsafe_allow_html=True)
-
+        all_passed = total_passed == total_checks
+        status_label = "PASS" if all_passed else "ISSUES FOUND"
+        st.metric("DQA Status", status_label)
     with col2:
-        data_info = validation_results.get('data_info', {})
-        st.metric("Total Rows", f"{data_info.get('row_count', 0):,}")
-
+        st.metric("Checks Passed", f"{total_passed}/{total_checks}")
     with col3:
-        st.metric("Total Columns", data_info.get('column_count', 0))
-
+        st.metric("Errors", error_count)
     with col4:
-        errors = validation_results.get('errors', {})
-        error_count = sum([
-            len(errors.get('schema_errors', [])),
-            len(errors.get('data_quality_issues', [])),
-            len(errors.get('other_errors', []))
-        ])
-        st.metric("Total Issues", error_count)
+        st.metric("Warnings", warning_count)
 
-    # Display validation summary
-    st.markdown("### Validation Summary")
-    summary = get_validation_summary(validation_results)
-    if summary:
-        st.info(summary)
+    # --- Per-category summary ---
+    st.markdown("### DQA Summary by Category")
+    import pandas as _pd
+    summary_rows = []
+    for category in DQA_CATEGORIES:
+        if category not in category_scores:
+            continue
+        passed, total = category_scores[category]
+        cat_errors = sum(1 for i in all_issues if i['category'] == category and i['severity'] == 'error')
+        cat_warnings = sum(1 for i in all_issues if i['category'] == category and i['severity'] == 'warning')
+        summary_rows.append({
+            'Category': category.title(),
+            'Passed': f"{passed}/{total}",
+            'Errors': cat_errors,
+            'Warnings': cat_warnings,
+        })
+    if summary_rows:
+        st.dataframe(_pd.DataFrame(summary_rows), hide_index=True, use_container_width=True)
 
-    # Classify errors by status impact
-    from modules.utils.validation import classify_errors_by_status_impact
+    # --- Issue details per category ---
+    if all_issues:
+        st.markdown("### Validation Issues")
 
-    # Get required columns from analyzer if available
-    required_columns = []
-    if analyzer and hasattr(analyzer, 'table') and hasattr(analyzer.table, 'schema') and analyzer.table.schema:
-        required_columns = analyzer.table.schema.get('required_columns', [])
+        for category in DQA_CATEGORIES:
+            cat_issues = [i for i in all_issues if i['category'] == category]
+            if not cat_issues:
+                continue
 
-    # Get configured timezone
-    config_timezone = st.session_state.config.get('timezone', 'UTC') if 'config' in st.session_state else 'UTC'
+            cat_errors = [i for i in cat_issues if i['severity'] == 'error']
+            cat_warnings = [i for i in cat_issues if i['severity'] == 'warning']
 
-    classified_errors = classify_errors_by_status_impact(errors, required_columns, table_name, config_timezone)
-    status_affecting = classified_errors['status_affecting']
-    informational = classified_errors['informational']
+            if cat_errors:
+                with st.expander(f"**{category.title()}** — {len(cat_errors)} error(s)", expanded=True):
+                    for issue in cat_errors:
+                        st.markdown(f"**[ERROR] {issue['check_type']}**")
+                        st.write(issue['message'])
+                        details = issue.get('details', {})
+                        if isinstance(details, dict):
+                            _render_issue_details(details)
+                        st.divider()
 
-    # Count total errors in each category
-    status_affecting_count = sum([
-        len(status_affecting.get('schema_errors', [])),
-        len(status_affecting.get('data_quality_issues', [])),
-        len(status_affecting.get('other_errors', []))
-    ])
+            if cat_warnings:
+                with st.expander(f"**{category.title()}** — {len(cat_warnings)} warning(s)"):
+                    for issue in cat_warnings:
+                        st.markdown(f"**[WARNING] {issue['check_type']}**")
+                        st.write(issue['message'])
+                        details = issue.get('details', {})
+                        if isinstance(details, dict):
+                            _render_issue_details(details)
+                        st.divider()
 
-    informational_count = sum([
-        len(informational.get('schema_errors', [])),
-        len(informational.get('data_quality_issues', [])),
-        len(informational.get('other_errors', []))
-    ])
-
-    # Display errors separated by status impact
-    st.markdown("### Validation Issues")
-
-    if error_count == 0:
-        st.success("✅ No validation issues found!")
+            cat_info = [i for i in cat_issues if i['severity'] == 'info']
+            if cat_info:
+                with st.expander(f"**{category.title()}** — {len(cat_info)} info message(s)"):
+                    for issue in cat_info:
+                        st.markdown(f"**[INFO] {issue['check_type']}**")
+                        st.write(issue['message'])
+                        details = issue.get('details', {})
+                        if isinstance(details, dict):
+                            _render_issue_details(details)
+                        st.divider()
     else:
-        # Status-Affecting Errors Section (require feedback)
-        if status_affecting_count > 0:
-            st.markdown(f"#### ⚠️ Status-Affecting Errors ({status_affecting_count})")
-            st.caption("These errors affect the validation status and require your review.")
-
-            # Schema errors
-            schema_errors = status_affecting.get('schema_errors', [])
-            if schema_errors:
-                with st.expander(f"🔴 Schema Errors ({len(schema_errors)})", expanded=True):
-                    for error in schema_errors:
-                        st.markdown(f"**{error['type']}**")
-                        st.write(error['description'])
-                        st.divider()
-
-            # Data quality issues
-            quality_issues = status_affecting.get('data_quality_issues', [])
-            if quality_issues:
-                with st.expander(f"🟡 Data Quality Issues ({len(quality_issues)})", expanded=True):
-                    for issue in quality_issues:
-                        st.markdown(f"**{issue['type']}**")
-                        st.write(issue['description'])
-
-                        # Show additional details if available
-                        if 'details' in issue and issue['details']:
-                            details = issue['details']
-                            # Display missing_values list if present
-                            if 'missing_values' in details and details['missing_values']:
-                                st.caption("**Missing values:**")
-                                st.write(details['missing_values'])
-                            # Display invalid_values list if present
-                            elif 'invalid_values' in details and details['invalid_values']:
-                                st.caption("**Invalid values:**")
-                                st.write(details['invalid_values'])
-
-                        st.divider()
-
-            # Other errors (unlikely but handle)
-            other_errors = status_affecting.get('other_errors', [])
-            if other_errors:
-                with st.expander(f"⚠️ Other Issues ({len(other_errors)})", expanded=True):
-                    for error in other_errors:
-                        st.markdown(f"**{error['type']}**")
-                        st.write(error['description'])
-                        st.divider()
-
-        # Informational Issues Section (no feedback required)
-        if informational_count > 0:
-            st.markdown(f"#### ℹ️ Informational Issues ({informational_count})")
-            st.caption("These issues are for your awareness but do not affect the validation status.")
-
-            # Schema info
-            schema_info = informational.get('schema_errors', [])
-            if schema_info:
-                with st.expander(f"📋 Schema Information ({len(schema_info)})"):
-                    for error in schema_info:
-                        st.markdown(f"**{error['type']}**")
-                        st.write(error['description'])
-                        st.divider()
-
-            # Data quality observations
-            quality_obs = informational.get('data_quality_issues', [])
-            if quality_obs:
-                with st.expander(f"📊 Data Quality Observations ({len(quality_obs)})"):
-                    for issue in quality_obs:
-                        st.markdown(f"**{issue['type']}**")
-                        st.write(issue['description'])
-                        st.divider()
-
-            # Other observations
-            other_obs = informational.get('other_errors', [])
-            if other_obs:
-                with st.expander(f"ℹ️ Other Observations ({len(other_obs)})"):
-                    for error in other_obs:
-                        st.markdown(f"**{error['type']}**")
-                        st.write(error['description'])
-                        st.divider()
-
-    # Data quality checks section
-    if analyzer and hasattr(analyzer, 'check_data_quality'):
-        st.divider()
-        st.markdown("### ✅ Data Quality Checks")
-        quality_checks = analyzer.check_data_quality()
-
-        if 'error' not in quality_checks:
-            for check_name, check_result in quality_checks.items():
-                status_icon = "✅" if check_result['status'] == 'pass' else "⚠️" if check_result['status'] == 'warning' else "❌"
-                check_display = check_name.replace('_', ' ').title()
-
-                # Show expandable details if there are issues
-                if check_result['count'] > 0:
-                    with st.expander(f"{status_icon} **{check_display}:** {check_result['count']} ({check_result['percentage']}%)", expanded=False):
-                        st.write(f"**Definition:** {_get_quality_check_definition(check_name)}")
-
-                        # Show invalid categories if available (for categorical validation)
-                        if 'invalid_categories' in check_result and check_result['invalid_categories']:
-                            st.write("**Invalid categories found:**")
-                            # Display as a bulleted list
-                            for cat in check_result['invalid_categories']:
-                                st.write(f"- {cat}")
-                        # Otherwise show sample of problematic rows if available
-                        elif 'examples' in check_result and check_result['examples'] is not None:
-                            if not check_result['examples'].empty:
-                                st.write("**Sample of problematic records:**")
-                                st.dataframe(check_result['examples'], width='stretch', hide_index=True)
-                else:
-                    st.write(f"{status_icon} **{check_display}:** {check_result['count']} ({check_result['percentage']}%)")
-
-    # User Feedback / Review Mode - ONLY for status-affecting errors
-    if status_affecting_count > 0:
-        st.divider()
-        st.markdown("### 📝 Review & Feedback")
-        st.caption("⚠️ Only status-affecting errors require feedback. Informational issues are acknowledged automatically.")
-
-        # Initialize or load feedback
-        if existing_feedback is None:
-            # Create feedback structure with ONLY status-affecting errors
-            # Build a modified validation_results dict with only status-affecting errors
-            status_affecting_validation = {
-                'status': validation_results.get('status', 'unknown'),
-                'errors': status_affecting  # Use only status-affecting errors
-            }
-            existing_feedback = create_feedback_structure(status_affecting_validation, table_name)
-
-        # Show feedback summary
-        feedback_summary = get_feedback_summary(existing_feedback)
-        st.info(feedback_summary)
-
-        # Check if feedback status differs from original
-        if existing_feedback['adjusted_status'] != existing_feedback['original_status']:
-            st.success(f"🔄 Status adjusted from **{existing_feedback['original_status'].upper()}** "
-                      f"to **{existing_feedback['adjusted_status'].upper()}** based on your feedback")
-
-        # Toggle review mode
-        review_mode = st.checkbox("📋 Review Status-Affecting Errors",
-                                  help="Accept or reject status-affecting errors based on your site's data context")
-
-        if review_mode:
-            st.markdown("#### Review Each Status-Affecting Error")
-            st.caption("Mark errors as 'Accepted' (valid issue) or 'Rejected' (site-specific, not an issue)")
-
-            # Only show status-affecting errors for feedback
-            all_errors = (status_affecting.get('schema_errors', []) +
-                         status_affecting.get('data_quality_issues', []) +
-                         status_affecting.get('other_errors', []))
-
-            # Create decision tracking
-            if 'error_decisions' not in st.session_state:
-                st.session_state.error_decisions = {}
-
-            for idx, error in enumerate(all_errors):
-                error_id = create_error_id(error)
-
-                # Get existing decision
-                existing_decision_info = existing_feedback['user_decisions'].get(error_id, {})
-                current_decision = existing_decision_info.get('decision', 'pending')
-                current_reason = existing_decision_info.get('reason', '')
-
-                with st.container():
-                    col1, col2, col3 = st.columns([3, 1, 2])
-
-                    with col1:
-                        st.markdown(f"**{error['type']}**")
-                        st.caption(error['description'])
-
-                    with col2:
-                        decision = st.radio(
-                            "Decision",
-                            ["Pending", "Accepted", "Rejected"],
-                            index=["pending", "accepted", "rejected"].index(current_decision.lower()),
-                            key=f"decision_{error_id}",
-                            horizontal=False
-                        )
-
-                    with col3:
-                        if decision == "Rejected":
-                            reason = st.text_input(
-                                "Reason for rejection",
-                                value=current_reason,
-                                key=f"reason_{error_id}",
-                                placeholder="e.g., Site-specific category"
-                            )
-                        else:
-                            reason = ""
-                            if decision == "Accepted" and current_reason:
-                                st.caption(f"Previous reason: {current_reason}")
-
-                    # Store decision
-                    st.session_state.error_decisions[error_id] = {
-                        'decision': decision.lower(),
-                        'reason': reason
-                    }
-
-                    st.divider()
-
-            # Save feedback button
-            col1, col2 = st.columns(2)
-
-            with col1:
-                if st.button("💾 Save Feedback", type="primary", width='stretch'):
-                    # Update all decisions
-                    for error_id, decision_info in st.session_state.error_decisions.items():
-                        existing_feedback = update_user_decision(
-                            existing_feedback,
-                            error_id,
-                            decision_info['decision'],
-                            decision_info['reason']
-                        )
-
-                    # Save to file
-                    try:
-                        # Save directly using the utility function (handles analyzer being None)
-                        from modules.utils.feedback import save_feedback
-
-                        # Get output directory from config
-                        output_dir = st.session_state.config.get('output_dir', 'output')
-
-                        filepath = save_feedback(existing_feedback, output_dir, table_name)
-
-                        # Update cache
-                        update_feedback_in_cache(table_name, existing_feedback)
-
-                        # Regenerate PDF with updated feedback
-                        try:
-                            reports_dir = os.path.join(output_dir, 'final', 'reports')
-                            os.makedirs(reports_dir, exist_ok=True)
-
-                            pdf_generator = ValidationPDFGenerator()
-
-                            # Load the validation results to include in the PDF
-                            results_dir = os.path.join(output_dir, 'final', 'results')
-                            os.makedirs(results_dir, exist_ok=True)
-
-                            validation_json_path = os.path.join(results_dir, f"{table_name}_summary_validation.json")
-                            if os.path.exists(validation_json_path):
-                                with open(validation_json_path, 'r') as f:
-                                    validation_data = json.load(f)
-
-                                # Update the validation data with the adjusted status from feedback
-                                validation_data['status'] = existing_feedback['adjusted_status']
-                                validation_data['is_valid'] = (existing_feedback['adjusted_status'] == 'complete')
-
-                                pdf_path = os.path.join(reports_dir, f"{table_name}_validation_report.pdf")
-
-                                if pdf_generator.is_available():
-                                    pdf_generator.generate_validation_pdf(
-                                        validation_data,
-                                        table_name,
-                                        pdf_path,
-                                        st.session_state.config.get('site_name'),
-                                        st.session_state.config.get('timezone', 'UTC'),
-                                        feedback=existing_feedback  # Pass the feedback data
-                                    )
-                                else:
-                                    # Fall back to text report
-                                    txt_path = os.path.join(reports_dir, f"{table_name}_validation_report.txt")
-                                    pdf_generator.generate_text_report(
-                                        validation_data,
-                                        table_name,
-                                        txt_path,
-                                        st.session_state.config.get('site_name'),
-                                        st.session_state.config.get('timezone', 'UTC'),
-                                        feedback=existing_feedback  # Pass the feedback data
-                                    )
-                        except Exception as e:
-                            st.warning(f"Could not regenerate PDF report: {e}")
-
-                        st.success(f"✅ Feedback saved successfully!")
-                        st.info(f"📊 New status: **{existing_feedback['adjusted_status'].upper()}**")
-
-                        import time
-                        time.sleep(1)
-                        st.rerun()
-                    except Exception as e:
-                        st.error(f"❌ Error saving feedback: {e}")
-                        import traceback
-                        st.code(traceback.format_exc())
-
-            with col2:
-                if st.button("🔄 Reset to Clifpy Results", width='stretch'):
-                    # Reset all to pending
-                    for error_id in existing_feedback['user_decisions'].keys():
-                        existing_feedback = update_user_decision(existing_feedback, error_id, 'pending', '')
-                    st.session_state.error_decisions = {}
-                    st.success("Reset complete")
-                    st.rerun()
+        st.success("No validation issues found!")
 
 
 def _show_year_distribution(

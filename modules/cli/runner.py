@@ -26,13 +26,11 @@ class CLIAnalysisRunner:
         'adt': ADTAnalyzer,
         'code_status': CodeStatusAnalyzer,
         'crrt_therapy': CRRTTherapyAnalyzer,
-        'ecmo_mcs': ECMOMCSAnalyzer,
         'hospital_diagnosis': HospitalDiagnosisAnalyzer,
         'labs': LabsAnalyzer,
         'medication_admin_continuous': MedicationAdminContinuousAnalyzer,
         'medication_admin_intermittent': MedicationAdminIntermittentAnalyzer,
         'microbiology_culture': MicrobiologyCultureAnalyzer,
-        'microbiology_nonculture': MicrobiologyNoncultureAnalyzer,
         'microbiology_susceptibility': MicrobiologySusceptibilityAnalyzer,
         'patient_assessments': PatientAssessmentsAnalyzer,
         'patient_procedures': PatientProceduresAnalyzer,
@@ -50,7 +48,6 @@ class CLIAnalysisRunner:
         'medication_admin_continuous',
         'medication_admin_intermittent',
         'microbiology_culture',
-        'microbiology_nonculture',
         'vitals',
         'patient_assessments',
         'respiratory_support',
@@ -86,6 +83,7 @@ class CLIAnalysisRunner:
         self.use_sample = use_sample
         self.formatter = ConsoleFormatter()
         self.pdf_generator = ValidationPDFGenerator()
+        self._loaded_tables = {}  # table_name -> BaseTable object for relational checks
 
         # Extract config values
         self.data_dir = config.get('tables_path', './data')
@@ -164,6 +162,7 @@ class CLIAnalysisRunner:
                 return result
 
             self.log(self.formatter.success(f"Loaded {table_name} table"))
+            self._loaded_tables[table_name] = analyzer.table
 
             # Run validation
             if run_validation:
@@ -171,9 +170,9 @@ class CLIAnalysisRunner:
                 validation_results = analyzer.validate()
                 result['validation'] = validation_results
 
-                # Save validation results
+                # Save validation results as JSON
                 try:
-                    analyzer.save_summary_data(validation_results, '_validation')
+                    analyzer.save_validation_results(validation_results)
                     self.log(self.formatter.success(f"Validation results saved"))
                 except Exception as e:
                     self.log(self.formatter.warning(f"Could not save validation results: {e}"))
@@ -212,7 +211,8 @@ class CLIAnalysisRunner:
                             import traceback
                             traceback.print_exc()
 
-                # Display validation summary
+                # Display validation summary (condensed always, full in verbose)
+                self.log(self.formatter.format_condensed_validation(validation_results, table_name))
                 if self.verbose:
                     self.log(self.formatter.format_validation_summary(validation_results, table_name))
 
@@ -376,6 +376,46 @@ class CLIAnalysisRunner:
             else:
                 results['tables_failed'].append(table_name)
                 results['total_failed'] += 1
+
+        # Run relational integrity checks across loaded tables
+        if run_validation and len(self._loaded_tables) > 1:
+            self.log(f"\n{self.formatter.section('Cross-Table Relational Checks')}")
+            try:
+                from clifpy.utils.validator import run_relational_integrity_checks
+                loaded_table_objects = list(self._loaded_tables.values())
+                self.log(self.formatter.progress(
+                    f"Running relational checks across {len(loaded_table_objects)} tables"
+                ))
+                rel_results = run_relational_integrity_checks(loaded_table_objects)
+
+                # Merge relational results into each table's saved JSON
+                for tname, rel_checks in rel_results.items():
+                    if not rel_checks:
+                        continue
+                    serialized_rel = {k: v.to_dict() for k, v in rel_checks.items()}
+
+                    # Update in-memory validation results
+                    if tname in results['details'] and results['details'][tname].get('validation'):
+                        results['details'][tname]['validation']['relational'] = serialized_rel
+
+                    # Update saved JSON file
+                    json_path = os.path.join(self.output_dir, 'final', 'clifpy', f'{tname}_dqa.json')
+                    if os.path.exists(json_path):
+                        with open(json_path, 'r') as f:
+                            saved = json.load(f)
+                        saved['relational'] = serialized_rel
+                        with open(json_path, 'w') as f:
+                            json.dump(saved, f, indent=2, default=str)
+
+                rel_count = sum(len(v) for v in rel_results.values())
+                self.log(self.formatter.success(
+                    f"Relational checks complete: {rel_count} checks across {len(rel_results)} tables"
+                ))
+            except Exception as e:
+                self.log(self.formatter.warning(f"Could not run relational checks: {e}"))
+                if self.verbose:
+                    import traceback
+                    traceback.print_exc()
 
         # Run MCIDE collection if validation was performed and we have successful tables
         if run_validation and results['tables_analyzed']:

@@ -48,238 +48,246 @@ class BaseTableAnalyzer(ABC):
         # Load the table
         self.load_table(sample_filter)
 
-    @abstractmethod
-    def load_table(self, sample_filter=None):
-        """Load the specific clifpy table class."""
-        pass
+    # @abstractmethod
+    # def load_table(self, sample_filter=None):
+    #     """Load the specific clifpy table class."""
+    #     pass
 
-    def validate(self) -> Dict[str, Any]:
+    def validate(self, tables=None) -> Dict[str, Any]:
         """
-        Run validation and format results.
-
-        Supports both clifpy backend and new Polars-based backend.
-
-        Returns:
-        --------
-        dict
-            Validation results with status, errors, and data info
-        """
-        if self.table is None:
-            return {
-                'is_valid': False,
-                'errors': {'schema_errors': [{'type': 'Table Not Loaded',
-                                             'description': 'Table could not be loaded',
-                                             'category': 'schema'}]},
-                'status': 'incomplete',
-                'data_info': {}
-            }
-
-        # Check if using new Polars backend (SimpleNamespace) or clifpy backend
-        from types import SimpleNamespace
-
-        if isinstance(self.table, SimpleNamespace):
-            # New Polars backend: Use custom validation
-            from modules.validation import validate_dataframe
-
-            errors = validate_dataframe(self.table.df, self.table.schema)
-            is_valid = len(errors) == 0
-
-        else:
-            # Clifpy backend: Use clifpy validation
-            self.table.validate()
-            errors = self.table.errors if hasattr(self.table, 'errors') else []
-            is_valid = self.table.isvalid() if hasattr(self.table, 'isvalid') else False
-
-        return {
-            'is_valid': is_valid,
-            'errors': self.format_errors(errors),
-            'status': self.determine_status(),
-            'data_info': self.get_data_info()
-        }
-
-    def format_errors(self, errors: list) -> Dict[str, list]:
-        """
-        Format errors into categories like clif_report_card.py.
+        Run full DQA validation (conformance, completeness, plausibility, relational).
 
         Parameters:
         -----------
-        errors : list
-            List of error dictionaries from clifpy
+        tables : list, optional
+            List of loaded BaseTable objects for cross-table checks
+            (relational integrity, cross-table plausibility).
+            If None, only single-table checks are run.
 
         Returns:
         --------
         dict
-            Categorized errors (schema_errors, data_quality_issues, other_errors)
+            Full DQA results with keys: table_name, backend,
+            conformance, completeness, relational, plausibility
         """
-        schema_errors = []
-        data_quality_issues = []
-        other_errors = []
+        from clifpy.utils.validator import run_full_dqa
 
-        for error in errors:
-            formatted = self.format_single_error(error)
+        table_name = getattr(self.table, 'table_name', None)
+        schema_name = table_name.replace('clif_', '')  # Removes 'clif_' prefix if present
 
-            if formatted['category'] == 'schema':
-                schema_errors.append(formatted)
-            elif formatted['category'] == 'data_quality':
-                data_quality_issues.append(formatted)
-            else:
-                other_errors.append(formatted)
+        return run_full_dqa(
+            df=self.table.df,
+            schema=self.table.schema,
+            table_name=schema_name,
+            tables=tables,
+        )
+        # if self.table is None:
+        #     return {
+        #         'is_valid': False,
+        #         'errors': {'schema_errors': [{'type': 'Table Not Loaded',
+        #                                      'description': 'Table could not be loaded',
+        #                                      'category': 'schema'}]},
+        #         'status': 'incomplete',
+        #         'data_info': {}
+        #     }
 
-        return {
-            'schema_errors': schema_errors,
-            'data_quality_issues': data_quality_issues,
-            'other_errors': other_errors
-        }
+        # # Check if using new Polars backend (SimpleNamespace) or clifpy backend
+        # from types import SimpleNamespace
 
-    def format_single_error(self, error: Dict[str, Any]) -> Dict[str, Any]:
-        """
-        Format a single error for display.
+        # if isinstance(self.table, SimpleNamespace):
+        #     # New Polars backend: Use clifpy validation
+        #     from clifpy.utils.validator import validate_dataframe
 
-        Parameters:
-        -----------
-        error : dict
-            Error dictionary from clifpy
+        #     errors = validate_dataframe(self.table.df, self.table.schema)
+        #     is_valid = len(errors) == 0
 
-        Returns:
-        --------
-        dict
-            Formatted error with type, description, and category
-        """
-        from ..utils.validation import format_clifpy_error
+        # else:
+        #     # Clifpy backend: Use clifpy validation
+        #     self.table.validate()
+        #     errors = self.table.errors if hasattr(self.table, 'errors') else []
+        #     is_valid = self.table.isvalid() if hasattr(self.table, 'isvalid') else False
 
-        # Get row count if available
-        row_count = len(self.table.df) if hasattr(self.table, 'df') and self.table.df is not None else 0
+        # return {
+        #     'is_valid': is_valid,
+        #     'errors': self.format_errors(errors),
+        #     'status': self.determine_status(),
+        #     'data_info': self.get_data_info()
+        # }
 
-        # Get table name
-        table_name = self.get_table_name()
+    # def format_errors(self, errors: list) -> Dict[str, list]:
+    #     """
+    #     Format errors into categories like clif_report_card.py.
 
-        return format_clifpy_error(error, row_count, table_name)
+    #     Parameters:
+    #     -----------
+    #     errors : list
+    #         List of error dictionaries from clifpy
 
-    def determine_status(self) -> str:
-        """
-        Determine validation status (complete/partial/incomplete).
+    #     Returns:
+    #     --------
+    #     dict
+    #         Categorized errors (schema_errors, data_quality_issues, other_errors)
+    #     """
+    #     schema_errors = []
+    #     data_quality_issues = []
+    #     other_errors = []
 
-        Returns:
-        --------
-        str
-            Status: 'complete', 'partial', or 'incomplete'
-        """
-        if not hasattr(self.table, 'errors'):
-            return 'complete' if self.table and hasattr(self.table, 'df') else 'incomplete'
+    #     for error in errors:
+    #         formatted = self.format_single_error(error)
 
-        errors = self.table.errors
+    #         if formatted['category'] == 'schema':
+    #             schema_errors.append(formatted)
+    #         elif formatted['category'] == 'data_quality':
+    #             data_quality_issues.append(formatted)
+    #         else:
+    #             other_errors.append(formatted)
 
-        if not errors:
-            return 'complete'
+    #     return {
+    #         'schema_errors': schema_errors,
+    #         'data_quality_issues': data_quality_issues,
+    #         'other_errors': other_errors
+    #     }
 
-        # Format errors to check their types
-        formatted_errors = [self.format_single_error(e) for e in errors]
+    # def format_single_error(self, error: Dict[str, Any]) -> Dict[str, Any]:
+    #     """
+    #     Format a single error for display.
 
-        # Get required columns from schema if available
-        required_columns = []
-        if hasattr(self.table, 'schema') and self.table.schema:
-            required_columns = self.table.schema.get('required_columns', [])
+    #     Parameters:
+    #     -----------
+    #     error : dict
+    #         Error dictionary from clifpy
 
-        # Get table name
-        table_name = self.get_table_name()
+    #     Returns:
+    #     --------
+    #     dict
+    #         Formatted error with type, description, and category
+    #     """
+    #     from clifpy.utils.validator import format_clifpy_error
 
-        from ..utils.validation import determine_validation_status
-        return determine_validation_status(formatted_errors, required_columns, table_name)
+    #     # Get row count if available
+    #     row_count = len(self.table.df) if hasattr(self.table, 'df') and self.table.df is not None else 0
 
-    @abstractmethod
-    def get_data_info(self) -> Dict[str, Any]:
-        """
-        Get table-specific data information.
+    #     # Get table name
+    #     table_name = self.get_table_name()
 
-        Returns:
-        --------
-        dict
-            Information about the loaded data
-        """
-        pass
+    #     return format_clifpy_error(error, row_count, table_name)
 
-    @abstractmethod
-    def analyze_distributions(self) -> Dict[str, Any]:
-        """
-        Analyze table-specific distributions.
+    # def determine_status(self) -> str:
+    #     """
+    #     Determine validation status (complete/partial/incomplete).
 
-        Returns:
-        --------
-        dict
-            Distribution analysis results
-        """
-        pass
+    #     Returns:
+    #     --------
+    #     str
+    #         Status: 'complete', 'partial', or 'incomplete'
+    #     """
+    #     if not hasattr(self.table, 'errors'):
+    #         return 'complete' if self.table and hasattr(self.table, 'df') else 'incomplete'
 
-    def calculate_missingness(self) -> Dict[str, Any]:
-        """
-        Calculate missingness for all columns.
+    #     errors = self.table.errors
 
-        Returns:
-        --------
-        dict
-            Missingness statistics for the table
-        """
-        from ..utils.missingness import calculate_missingness
+    #     if not errors:
+    #         return 'complete'
 
-        if self.table is None or not hasattr(self.table, 'df') or self.table.df is None:
-            return {
-                'error': 'No data available',
-                'total_rows': 0
-            }
+    #     # Format errors to check their types
+    #     formatted_errors = [self.format_single_error(e) for e in errors]
 
-        return calculate_missingness(self.table.df)
+    #     # Get required columns from schema if available
+    #     required_columns = []
+    #     if hasattr(self.table, 'schema') and self.table.schema:
+    #         required_columns = self.table.schema.get('required_columns', [])
 
-    def get_summary_statistics(self) -> Dict[str, Any]:
-        """
-        Get summary statistics for the table.
+    #     # Get table name
+    #     table_name = self.get_table_name()
 
-        Returns:
-        --------
-        dict
-            Summary statistics including distributions and missingness
-        """
-        return {
-            'data_info': self.get_data_info(),
-            'missingness': self.calculate_missingness(),
-            'distributions': self.analyze_distributions()
-        }
+    #     from clifpy.utils.validator import determine_validation_status
+    #     return determine_validation_status(formatted_errors, required_columns, table_name)
 
-    def save_intermediate_data(self, df: pd.DataFrame, suffix: str = ''):
-        """
-        Save intermediate data to output directory.
+    # @abstractmethod
+    # def get_data_info(self) -> Dict[str, Any]:
+    #     """
+    #     Get table-specific data information.
 
-        Parameters:
-        -----------
-        df : pd.DataFrame
-            Data to save
-        suffix : str
-            Suffix for the filename
-        """
-        if df is None or df.empty:
-            return
+    #     Returns:
+    #     --------
+    #     dict
+    #         Information about the loaded data
+    #     """
+    #     pass
 
-        table_name = self.get_table_name()
-        filename = f"{table_name}{suffix}.{self.filetype}"
-        filepath = os.path.join(self.output_dir, 'intermediate', filename)
+    # @abstractmethod
+    # def analyze_distributions(self) -> Dict[str, Any]:
+    #     """
+    #     Analyze table-specific distributions.
 
-        if self.filetype == 'parquet':
-            df.to_parquet(filepath, index=False)
-        elif self.filetype == 'csv':
-            df.to_csv(filepath, index=False)
-        elif self.filetype == 'feather':
-            df.to_feather(filepath)
+    #     Returns:
+    #     --------
+    #     dict
+    #         Distribution analysis results
+    #     """
+    #     pass
+
+    # def calculate_missingness(self) -> Dict[str, Any]:
+    #     """
+    #     Calculate missingness for all columns.
+
+    #     Returns:
+    #     --------
+    #     dict
+    #         Missingness statistics for the table
+    #     """
+    #     from ..utils.missingness import calculate_missingness
+
+    #     if self.table is None or not hasattr(self.table, 'df') or self.table.df is None:
+    #         return {
+    #             'error': 'No data available',
+    #             'total_rows': 0
+    #         }
+
+    #     return calculate_missingness(self.table.df)
+
+    # def get_summary_statistics(self) -> Dict[str, Any]:
+    #     """
+    #     Get summary statistics for the table.
+
+    #     Returns:
+    #     --------
+    #     dict
+    #         Summary statistics including distributions and missingness
+    #     """
+    #     return {
+    #         'data_info': self.get_data_info(),
+    #         'missingness': self.calculate_missingness(),
+    #         'distributions': self.analyze_distributions()
+    #     }
+
+    # def save_intermediate_data(self, df: pd.DataFrame, suffix: str = ''):
+    #     """
+    #     Save intermediate data to output directory.
+
+    #     Parameters:
+    #     -----------
+    #     df : pd.DataFrame
+    #         Data to save
+    #     suffix : str
+    #         Suffix for the filename
+    #     """
+    #     if df is None or df.empty:
+    #         return
+
+    #     table_name = self.get_table_name()
+    #     filename = f"{table_name}{suffix}.{self.filetype}"
+    #     filepath = os.path.join(self.output_dir, 'intermediate', filename)
+
+    #     if self.filetype == 'parquet':
+    #         df.to_parquet(filepath, index=False)
+    #     elif self.filetype == 'csv':
+    #         df.to_csv(filepath, index=False)
+    #     elif self.filetype == 'feather':
+    #         df.to_feather(filepath)
 
     def save_summary_data(self, summary: Dict[str, Any], suffix: str = ''):
-        """
-        Save summary data to output directory.
-
-        Parameters:
-        -----------
-        summary : dict
-            Summary data to save
-        suffix : str
-            Suffix for the filename
-        """
+        """Save summary data (e.g. summary statistics) to output directory."""
         import json
 
         table_name = self.get_table_name()
@@ -289,41 +297,26 @@ class BaseTableAnalyzer(ABC):
         with open(filepath, 'w') as f:
             json.dump(summary, f, indent=2, default=str)
 
-    def save_validation_feedback(self, feedback: Dict[str, Any]):
-        """
-        Save validation feedback (user accept/reject decisions).
-
-        Parameters:
-        -----------
-        feedback : dict
-            Feedback structure with user decisions
-        """
-        from ..utils.feedback import save_feedback
+    def save_validation_results(self, dqa_result: Dict[str, Any]):
+        """Save DQA validation results (from run_full_dqa) to JSON."""
+        import json
 
         table_name = self.get_table_name()
-        return save_feedback(feedback, self.output_dir, table_name)
+        out_dir = os.path.join(self.output_dir, 'final', 'clifpy')
+        os.makedirs(out_dir, exist_ok=True)
+        filepath = os.path.join(out_dir, f"{table_name}_dqa.json")
 
-    def load_validation_feedback(self) -> Optional[Dict[str, Any]]:
-        """
-        Load existing validation feedback if available.
+        serializable = {
+            'table_name': dqa_result.get('table_name', table_name),
+            'backend': dqa_result.get('backend', ''),
+        }
+        for key in ('conformance', 'completeness', 'relational', 'plausibility'):
+            checks = dqa_result.get(key, {})
+            serializable[key] = dict(checks) if checks else {}
 
-        Returns:
-        --------
-        dict or None
-            Feedback structure or None if not found
-        """
-        from ..utils.feedback import load_feedback
-
-        table_name = self.get_table_name()
-        return load_feedback(self.output_dir, table_name)
+        with open(filepath, 'w') as f:
+            json.dump(serializable, f, indent=2, default=str)
 
     def get_table_name(self) -> str:
-        """
-        Get the table name from the analyzer class.
-
-        Returns:
-        --------
-        str
-            Table name
-        """
+        """Get the table name from the analyzer class."""
         return self.__class__.__name__.replace('Analyzer', '').lower()

@@ -64,34 +64,87 @@ class ConsoleFormatter:
         """Format progress message."""
         return f"{ConsoleFormatter.SEARCH} {message}..."
 
+    DQA_CATEGORIES = ('conformance', 'completeness', 'relational', 'plausibility')
+
+    @staticmethod
+    def format_condensed_validation(validation_results: Dict[str, Any], table_name: str) -> str:
+        """Format a single-line condensed DQA validation summary."""
+        total_checks = 0
+        total_passed = 0
+        total_errors = 0
+        total_warnings = 0
+        failing_categories = []
+
+        for category in ConsoleFormatter.DQA_CATEGORIES:
+            checks = validation_results.get(category, {})
+            if not checks:
+                continue
+            cat_total = len(checks)
+            cat_passed = sum(1 for r in checks.values() if r['passed'])
+            cat_errors = sum(len(r['errors']) for r in checks.values())
+            cat_warnings = sum(len(r['warnings']) for r in checks.values())
+
+            total_checks += cat_total
+            total_passed += cat_passed
+            total_errors += cat_errors
+            total_warnings += cat_warnings
+
+            if cat_passed < cat_total:
+                failing_categories.append(category)
+
+        if total_passed == total_checks:
+            return ConsoleFormatter.success(
+                f"Validation: {total_passed}/{total_checks} passed — {table_name}"
+            )
+
+        parts = [f"{total_passed}/{total_checks} passed"]
+        if total_errors:
+            parts.append(f"{total_errors} error{'s' if total_errors != 1 else ''}")
+        if total_warnings:
+            parts.append(f"{total_warnings} warning{'s' if total_warnings != 1 else ''}")
+        if failing_categories:
+            parts.append(", ".join(c.title() for c in failing_categories))
+
+        summary = " | ".join(parts)
+        return ConsoleFormatter.warning(f"Validation: {summary} — {table_name}")
+
     @staticmethod
     def format_validation_summary(validation_results: Dict[str, Any], table_name: str) -> str:
-        """Format validation results summary for console."""
+        """Format DQA validation results summary for console."""
         lines = []
         lines.append(ConsoleFormatter.section(f"Validation Results - {table_name}"))
 
-        status = validation_results.get('status', 'unknown')
-        if status == 'complete':
-            lines.append(ConsoleFormatter.success(f"Status: {status.upper()}"))
-        elif status == 'partial':
-            lines.append(ConsoleFormatter.warning(f"Status: {status.upper()}"))
+        total_checks = 0
+        total_passed = 0
+        total_errors = 0
+        total_warnings = 0
+
+        for category in ConsoleFormatter.DQA_CATEGORIES:
+            checks = validation_results.get(category, {})
+            if not checks:
+                continue
+            cat_total = len(checks)
+            cat_passed = sum(1 for r in checks.values() if r['passed'])
+            cat_errors = sum(len(r['errors']) for r in checks.values())
+            cat_warnings = sum(len(r['warnings']) for r in checks.values())
+
+            total_checks += cat_total
+            total_passed += cat_passed
+            total_errors += cat_errors
+            total_warnings += cat_warnings
+
+            if cat_passed == cat_total:
+                lines.append(ConsoleFormatter.success(f"{category.title()}: {cat_passed}/{cat_total} passed"))
+            else:
+                lines.append(ConsoleFormatter.warning(f"{category.title()}: {cat_passed}/{cat_total} passed"))
+
+        if total_checks == total_passed:
+            lines.append(ConsoleFormatter.success(f"Overall: {total_passed}/{total_checks} checks passed"))
         else:
-            lines.append(ConsoleFormatter.error(f"Status: {status.upper()}"))
-
-        # Error counts
-        errors = validation_results.get('errors', {})
-        schema_errors = len(errors.get('schema_errors', []))
-        quality_issues = len(errors.get('data_quality_issues', []))
-        other_errors = len(errors.get('other_errors', []))
-        total_errors = schema_errors + quality_issues + other_errors
-
-        lines.append(f"  Total Issues: {total_errors}")
-        if schema_errors > 0:
-            lines.append(f"  - Schema Errors: {schema_errors}")
-        if quality_issues > 0:
-            lines.append(f"  - Data Quality Issues: {quality_issues}")
-        if other_errors > 0:
-            lines.append(f"  - Other Errors: {other_errors}")
+            lines.append(ConsoleFormatter.warning(
+                f"Overall: {total_passed}/{total_checks} checks passed "
+                f"({total_errors} errors, {total_warnings} warnings)"
+            ))
 
         return "\n".join(lines)
 

@@ -36,7 +36,8 @@ class VitalsAnalyzer(BaseTableAnalyzer):
         try:
             if sample_filter is not None:
                 # Sample mode: Use efficient Polars loading to avoid memory explosion
-                from modules.validation import load_with_filter, load_schema
+                from clifpy.utils.io_polars import load_parquet_polars, load_csv_polars
+                from clifpy.utils.validator import _load_schema
                 from types import SimpleNamespace
 
                 # Determine file path
@@ -48,15 +49,27 @@ class VitalsAnalyzer(BaseTableAnalyzer):
                 print(f"   Loading vitals with Polars (sample mode: {len(sample_filter):,} hospitalizations)")
 
                 # Load efficiently with Polars
-                df = load_with_filter(
-                    file_path=str(file_path),
-                    filetype=self.filetype,
-                    hospitalization_ids=list(sample_filter),
-                    timezone=self.timezone
-                )
+                filters = {'hospitalization_id': list(sample_filter)}
+                if self.filetype == 'parquet':
+                    df = load_parquet_polars(
+                        file_path=str(file_path),
+                        filters=filters,
+                        site_tz=self.timezone,
+                        lazy=False
+                    )
+                else:
+                    df = load_csv_polars(
+                        file_path=str(file_path),
+                        filters=filters,
+                        site_tz=self.timezone,
+                        lazy=False
+                    )
+
+                # Convert to pandas for compatibility
+                df = df.to_pandas()
 
                 # Load schema for validation
-                schema = load_schema('vitals')
+                schema = _load_schema('vitals')
 
                 # Create table-like object for compatibility
                 self.table = SimpleNamespace(df=df, schema=schema)

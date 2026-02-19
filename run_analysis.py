@@ -105,8 +105,6 @@ Examples:
                             help='Analyze code status table')
     table_group.add_argument('--crrt_therapy', action='store_true',
                             help='Analyze CRRT therapy table')
-    table_group.add_argument('--ecmo_mcs', action='store_true',
-                            help='Analyze ECMO/MCS table')
     table_group.add_argument('--hospital_diagnosis', action='store_true',
                             help='Analyze hospital diagnosis table')
     table_group.add_argument('--labs', action='store_true',
@@ -117,8 +115,6 @@ Examples:
                             help='Analyze medication admin intermittent table')
     table_group.add_argument('--microbiology_culture', action='store_true',
                             help='Analyze microbiology culture table')
-    table_group.add_argument('--microbiology_nonculture', action='store_true',
-                            help='Analyze microbiology non-culture table')
     table_group.add_argument('--microbiology_susceptibility', action='store_true',
                             help='Analyze microbiology susceptibility table')
     table_group.add_argument('--patient_assessments', action='store_true',
@@ -156,8 +152,8 @@ Examples:
 
     # Validate arguments
     has_table = (args.patient or args.hospitalization or args.adt or args.code_status or args.crrt_therapy or
-                 args.ecmo_mcs or args.hospital_diagnosis or args.labs or args.medication_admin_continuous or
-                 args.medication_admin_intermittent or args.microbiology_culture or args.microbiology_nonculture or
+                 args.labs or args.medication_admin_continuous or
+                 args.medication_admin_intermittent or args.microbiology_culture or
                  args.microbiology_susceptibility or args.patient_assessments or args.patient_procedures or
                  args.position or args.respiratory_support or args.vitals or args.all)
     if not has_table:
@@ -169,9 +165,9 @@ Examples:
     # Determine which tables to analyze
     tables = []
     if args.all:
-        tables = ['patient', 'hospitalization', 'adt', 'code_status', 'crrt_therapy', 'ecmo_mcs',
+        tables = ['patient', 'hospitalization', 'adt', 'code_status', 'crrt_therapy', 
                   'hospital_diagnosis', 'labs', 'medication_admin_continuous', 'medication_admin_intermittent',
-                  'microbiology_culture', 'microbiology_nonculture', 'microbiology_susceptibility',
+                  'microbiology_culture',  'microbiology_susceptibility',
                   'patient_assessments', 'patient_procedures', 'position', 'respiratory_support', 'vitals']
     else:
         if args.patient:
@@ -184,8 +180,6 @@ Examples:
             tables.append('code_status')
         if args.crrt_therapy:
             tables.append('crrt_therapy')
-        if args.ecmo_mcs:
-            tables.append('ecmo_mcs')
         if args.hospital_diagnosis:
             tables.append('hospital_diagnosis')
         if args.labs:
@@ -196,8 +190,6 @@ Examples:
             tables.append('medication_admin_intermittent')
         if args.microbiology_culture:
             tables.append('microbiology_culture')
-        if args.microbiology_nonculture:
-            tables.append('microbiology_nonculture')
         if args.microbiology_susceptibility:
             tables.append('microbiology_susceptibility')
         if args.patient_assessments:
