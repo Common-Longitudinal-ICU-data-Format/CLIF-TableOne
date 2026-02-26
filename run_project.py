@@ -133,24 +133,25 @@ class ProjectRunner:
             # Read validation results
             df = pd.read_csv(consolidated_csv)
 
-            # Get unique status per table (first row for each table)
-            table_statuses = df.groupby('table_name')['status'].first().to_dict()
+            # Determine table status from the new DQA format
+            # Tables present in CSV with actual check results (not just "Data file not found") are at least partial
+            tables_in_csv = set(df['table_name'].unique())
 
             # Check each critical table
             failed_tables = []
             missing_tables = []
 
             for table in critical_tables:
-                if table not in table_statuses:
+                if table not in tables_in_csv:
                     missing_tables.append(table)
                 else:
-                    status = table_statuses[table].lower()
-                    # Acceptable statuses: complete, partial, or "partial → complete"
-                    if 'complete' in status or 'partial' in status:
-                        continue
-                    else:
-                        # Unacceptable: missing, incomplete
-                        failed_tables.append(f"{table} ({status})")
+                    table_rows = df[df['table_name'] == table]
+                    # If the only row is "Data file not found", the table is incomplete
+                    if (len(table_rows) == 1 and
+                            'not found' in str(table_rows.iloc[0].get('message', '')).lower()):
+                        failed_tables.append(f"{table} (data file not found)")
+                    # Otherwise, the table has been validated (at least partial)
+                    # Continue to next table
 
             # Build error message if any tables failed
             if failed_tables or missing_tables:
