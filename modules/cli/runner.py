@@ -83,7 +83,9 @@ class CLIAnalysisRunner:
         self.use_sample = use_sample
         self.formatter = ConsoleFormatter()
         self.pdf_generator = ValidationPDFGenerator()
-        self._loaded_tables = {}  # table_name -> BaseTable object for relational checks
+        self._loaded_tables = {}  # table_name -> BaseTable object (temporary, released after single-table checks)
+        self._cross_table_caches = {}  # table_name -> lightweight cache dict
+        self._hosp_years = None  # cached hosp_years for P.6 temporal context
 
         # Extract config values
         self.data_dir = config.get('tables_path', './data')
@@ -164,11 +166,19 @@ class CLIAnalysisRunner:
             self.log(self.formatter.success(f"Loaded {table_name} table"))
             self._loaded_tables[table_name] = analyzer.table
 
-            # Run validation
+            # Run validation (single-table only; cross-table checks run in post-processing)
             if run_validation:
                 self.log(self.formatter.progress(f"Running validation for {table_name}"))
-                loaded_tables = list(self._loaded_tables.values()) if self._loaded_tables else None
-                validation_results = analyzer.validate(tables=loaded_tables)
+                validation_results = analyzer.validate(tables=None, hosp_years=self._hosp_years)
+
+                # Inject per-column data profile stats
+                if analyzer.table is not None and hasattr(analyzer.table, 'df') and analyzer.table.df is not None:
+                    from clifpy.utils.report_generator import compute_table_stats
+                    validation_results['total_rows'] = len(analyzer.table.df)
+                    validation_results['table_stats'] = compute_table_stats(
+                        analyzer.table.df, analyzer.table.schema
+                    )
+
                 result['validation'] = validation_results
 
                 # Save validation results as JSON
@@ -297,6 +307,23 @@ class CLIAnalysisRunner:
                             import traceback
                             traceback.print_exc()
 
+            # Extract lightweight cache for cross-table checks, then release the full DataFrame
+            if run_validation and analyzer.table is not None:
+                try:
+                    import gc as _gc
+                    cache = analyzer.extract_cross_table_cache()
+                    self._cross_table_caches[table_name] = cache
+                    if cache.get('hosp_years'):
+                        self._hosp_years = cache['hosp_years']
+                    # Release full DataFrame to free memory
+                    del self._loaded_tables[table_name]
+                    _gc.collect()
+                except Exception as cache_e:
+                    self.log(self.formatter.warning(f"Could not extract cache for {table_name}: {cache_e}"))
+                    if self.verbose:
+                        import traceback
+                        traceback.print_exc()
+
             result['success'] = True
             self.log(self.formatter.success(f"Completed analysis for {table_name}"))
 
@@ -378,18 +405,21 @@ class CLIAnalysisRunner:
                 results['tables_failed'].append(table_name)
                 results['total_failed'] += 1
 
-        # Run relational integrity checks across loaded tables
-        if run_validation and len(self._loaded_tables) > 1:
-            self.log(f"\n{self.formatter.section('Cross-Table Relational Checks')}")
+        # Run cross-table checks from caches (relational + plausibility) — ONCE
+        if run_validation and len(self._cross_table_caches) > 1:
+            self.log(f"\n{self.formatter.section('Cross-Table Checks (from cache)')}")
             try:
-                from clifpy.utils.validator import run_relational_integrity_checks
-                loaded_table_objects = list(self._loaded_tables.values())
-                self.log(self.formatter.progress(
-                    f"Running relational checks across {len(loaded_table_objects)} tables"
-                ))
-                rel_results = run_relational_integrity_checks(loaded_table_objects)
+                from clifpy.utils.validator import (
+                    run_relational_integrity_checks_from_cache,
+                    run_cross_table_plausibility_checks_from_cache,
+                )
 
-                # Merge relational results into completeness for each table
+                # --- Relational integrity (cache-based) ---
+                self.log(self.formatter.progress(
+                    f"Running relational integrity checks across {len(self._cross_table_caches)} tables (from cache)"
+                ))
+                rel_results = run_relational_integrity_checks_from_cache(self._cross_table_caches)
+
                 for tname, rel_checks in rel_results.items():
                     if not rel_checks:
                         continue
@@ -414,10 +444,41 @@ class CLIAnalysisRunner:
                     f"Relational checks complete: {rel_count} checks across {len(rel_results)} tables"
                 ))
 
-                # Regenerate PDFs now that relational results are included
-                if self.generate_pdf:
+                # --- Cross-table plausibility (cache-based) ---
+                self.log(self.formatter.progress(
+                    f"Running cross-table plausibility checks across {len(self._cross_table_caches)} tables (from cache)"
+                ))
+                plaus_results = run_cross_table_plausibility_checks_from_cache(self._cross_table_caches)
+
+                for tname, plaus_checks in plaus_results.items():
+                    if not plaus_checks:
+                        continue
+                    serialized_plaus = {k: v.to_dict() for k, v in plaus_checks.items()}
+
+                    # Update in-memory validation results (merge into plausibility)
+                    if tname in results['details'] and results['details'][tname].get('validation'):
+                        vr = results['details'][tname]['validation']
+                        vr.setdefault('plausibility', {}).update(serialized_plaus)
+
+                    # Update saved JSON file (merge into plausibility)
+                    json_path = os.path.join(self.output_dir, 'final', 'clifpy', f'{tname}_dqa.json')
+                    if os.path.exists(json_path):
+                        with open(json_path, 'r') as f:
+                            saved = json.load(f)
+                        saved.setdefault('plausibility', {}).update(serialized_plaus)
+                        with open(json_path, 'w') as f:
+                            json.dump(saved, f, indent=2, default=str)
+
+                plaus_count = sum(len(v) for v in plaus_results.values())
+                self.log(self.formatter.success(
+                    f"Cross-table plausibility checks complete: {plaus_count} checks across {len(plaus_results)} tables"
+                ))
+
+                # Regenerate PDFs for all tables affected by cross-table results
+                affected_tables = set(rel_results.keys()) | set(plaus_results.keys())
+                if self.generate_pdf and affected_tables:
                     reports_dir = os.path.join(self.output_dir, 'final', 'reports')
-                    for tname in rel_results:
+                    for tname in affected_tables:
                         if tname in results['details'] and results['details'][tname].get('validation'):
                             pdf_path = os.path.join(reports_dir, f"{tname}_validation_report.pdf")
                             try:
@@ -429,8 +490,14 @@ class CLIAnalysisRunner:
                             except Exception as pdf_e:
                                 self.log(self.formatter.warning(
                                     f"Could not regenerate PDF for {tname}: {pdf_e}"))
+
+                # Clear caches to free memory
+                self._cross_table_caches.clear()
+                import gc as _gc
+                _gc.collect()
+
             except Exception as e:
-                self.log(self.formatter.warning(f"Could not run relational checks: {e}"))
+                self.log(self.formatter.warning(f"Could not run cross-table checks: {e}"))
                 if self.verbose:
                     import traceback
                     traceback.print_exc()

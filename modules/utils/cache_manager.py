@@ -126,7 +126,7 @@ def get_cached_analysis(table_name: str) -> Optional[Dict[str, Any]]:
         except Exception as e:
             print(f"Error loading feedback: {e}")
 
-    # Check for raw validation file in results subdirectory
+    # Check for raw validation file in results subdirectory, then fallback to clifpy/ DQA file
     validation = None
     validation_path = os.path.join(results_dir, f"{table_name}_summary_validation.json")
     if os.path.exists(validation_path):
@@ -135,6 +135,15 @@ def get_cached_analysis(table_name: str) -> Optional[Dict[str, Any]]:
                 validation = json.load(f)
         except Exception as e:
             print(f"Error loading validation: {e}")
+
+    if validation is None:
+        clifpy_path = os.path.join(output_dir, 'clifpy', f"{table_name}_dqa.json")
+        if os.path.exists(clifpy_path):
+            try:
+                with open(clifpy_path, 'r') as f:
+                    validation = json.load(f)
+            except Exception as e:
+                print(f"Error loading clifpy DQA: {e}")
 
     # Check for summary file in results subdirectory
     summary = None
@@ -165,6 +174,11 @@ def get_cached_analysis(table_name: str) -> Optional[Dict[str, Any]]:
         ts = _get_file_timestamp(filepath)
         if ts:
             timestamps.append(ts)
+
+    # Add clifpy/ DQA file timestamp
+    clifpy_ts = _get_file_timestamp(os.path.join(output_dir, 'clifpy', f"{table_name}_dqa.json"))
+    if clifpy_ts:
+        timestamps.append(clifpy_ts)
 
     # Add CSV file timestamps
     for csv_file in [f'validation_errors_{table_name}.csv', f'missing_data_stats_{table_name}.csv']:
@@ -300,7 +314,28 @@ def get_table_status(table_name: str) -> str:
 
     # Check validation results
     if cached.get('validation'):
-        return cached['validation'].get('status', 'unknown')
+        validation = cached['validation']
+        # Legacy format: top-level 'status' key
+        if 'status' in validation:
+            return validation['status']
+
+        # New DQA format: derive status from per-category check results
+        try:
+            from modules.cli.pdf_generator import _collect_dqa_issues
+            category_scores, all_issues = _collect_dqa_issues(validation)
+            total_passed = sum(p for p, _ in category_scores.values())
+            total_checks = sum(t for _, t in category_scores.values())
+            error_count = sum(1 for i in all_issues if i['severity'] == 'error')
+
+            if total_checks == 0:
+                return 'unknown'
+            if total_passed == total_checks:
+                return 'complete'
+            if error_count == 0:
+                return 'partial'
+            return 'incomplete'
+        except Exception:
+            return 'unknown'
 
     return 'unknown'
 
@@ -453,14 +488,14 @@ def get_cache_statistics() -> Dict[str, Any]:
         if cached.get('feedback'):
             stats['tables_with_feedback'] += 1
 
-        # Count errors
+        # Count errors using DQA issue format
         validation = cached.get('validation', {})
-        errors = validation.get('errors', {})
-        error_count = sum([
-            len(errors.get('schema_errors', [])),
-            len(errors.get('data_quality_issues', [])),
-            len(errors.get('other_errors', []))
-        ])
+        try:
+            from modules.cli.pdf_generator import _collect_dqa_issues
+            _, issues = _collect_dqa_issues(validation)
+            error_count = sum(1 for i in issues if i['severity'] in ('error', 'warning'))
+        except Exception:
+            error_count = 0
         if error_count > 0:
             stats['tables_with_errors'] += 1
 

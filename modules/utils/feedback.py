@@ -13,23 +13,27 @@ import os
 
 def create_error_id(error: Dict[str, Any]) -> str:
     """
-    Create a unique identifier for an error.
+    Create a unique identifier for a DQA issue (or legacy error).
 
     Parameters:
     -----------
     error : dict
-        Error dictionary with type and description
+        DQA issue dict (category, check_type, message) or legacy error dict
 
     Returns:
     --------
     str
         Unique error identifier
     """
-    # Use type and a hash of description for uniqueness
     import hashlib
-    desc_hash = hashlib.md5(error.get('description', '').encode()).hexdigest()[:8]
-    error_type = error.get('raw_type', error.get('type', 'unknown')).replace(' ', '_').lower()
-    return f"{error_type}_{desc_hash}"
+    # DQA format: hash on 'message'; legacy fallback: hash on 'description'
+    msg = error.get('message', error.get('description', ''))
+    desc_hash = hashlib.md5(msg.encode()).hexdigest()[:8]
+    category = error.get('category', '')
+    check_type = error.get('check_type', error.get('raw_type', error.get('type', 'unknown')))
+    prefix = f"{category}_{check_type}" if category else check_type
+    prefix = prefix.replace(' ', '_').lower()
+    return f"{prefix}_{desc_hash}"
 
 
 def create_feedback_structure(validation_results: Dict[str, Any],
@@ -49,33 +53,31 @@ def create_feedback_structure(validation_results: Dict[str, Any],
     dict
         Feedback structure with all errors initialized as 'pending'
     """
-    errors = validation_results.get('errors', {})
-    all_errors = (
-        errors.get('schema_errors', []) +
-        errors.get('data_quality_issues', []) +
-        errors.get('other_errors', [])
-    )
+    from modules.cli.pdf_generator import _collect_dqa_issues
+    _, all_issues = _collect_dqa_issues(validation_results)
+    reviewable = [i for i in all_issues if i['severity'] in ('error', 'warning')]
 
     feedback = {
         'table': table_name,
         'timestamp': datetime.now().isoformat(),
         'original_status': validation_results.get('status', 'unknown'),
         'adjusted_status': validation_results.get('status', 'unknown'),
-        'total_errors': len(all_errors),
+        'total_errors': len(reviewable),
         'accepted_count': 0,
         'rejected_count': 0,
-        'pending_count': len(all_errors),
+        'pending_count': len(reviewable),
         'user_decisions': {}
     }
 
-    # Initialize all errors as pending
-    for error in all_errors:
-        error_id = create_error_id(error)
+    # Initialize all reviewable issues as pending
+    for issue in reviewable:
+        error_id = create_error_id(issue)
         feedback['user_decisions'][error_id] = {
-            'error_type': error.get('type', 'Unknown'),
-            'raw_type': error.get('raw_type', ''),
-            'category': error.get('category', 'other'),
-            'description': error.get('description', ''),
+            'error_type': issue.get('check_type', 'Unknown'),
+            'raw_type': issue.get('check_type', ''),
+            'category': issue.get('category', 'other'),
+            'severity': issue.get('severity', 'error'),
+            'description': issue.get('message', ''),
             'decision': 'pending',
             'reason': '',
             'timestamp': None

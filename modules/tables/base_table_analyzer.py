@@ -53,7 +53,7 @@ class BaseTableAnalyzer(ABC):
     #     """Load the specific clifpy table class."""
     #     pass
 
-    def validate(self, tables=None) -> Dict[str, Any]:
+    def validate(self, tables=None, hosp_years=None) -> Dict[str, Any]:
         """
         Run full DQA validation (conformance, completeness, plausibility, relational).
 
@@ -63,6 +63,9 @@ class BaseTableAnalyzer(ABC):
             List of loaded BaseTable objects for cross-table checks
             (relational integrity, cross-table plausibility).
             If None, only single-table checks are run.
+        hosp_years : set, optional
+            Pre-extracted hospitalization years for P.6 temporal consistency.
+            When provided, skips scanning the hospitalization table.
 
         Returns:
         --------
@@ -82,7 +85,25 @@ class BaseTableAnalyzer(ABC):
             tables=tables,
             error_threshold=10.0,
             warning_threshold=1.0,
+            hosp_years=hosp_years,
         )
+
+    def extract_cross_table_cache(self) -> Dict[str, Any]:
+        """
+        Extract lightweight cache for cross-table checks.
+
+        Returns a dict with FK ID sets, temporal subset, and
+        hospitalization-specific caches (bounds, years) — used by
+        the optimised pipeline to avoid keeping full DataFrames in memory.
+
+        Returns:
+        --------
+        dict
+            Cache dict with keys: table_name, fk_ids, schema_cols,
+            temporal_df, hosp_bounds_df, hosp_years.
+        """
+        from clifpy.utils.validator import extract_cross_table_cache
+        return extract_cross_table_cache(self.table)
         # if self.table is None:
         #     return {
         #         'is_valid': False,
@@ -205,88 +226,88 @@ class BaseTableAnalyzer(ABC):
     #     from clifpy.utils.validator import determine_validation_status
     #     return determine_validation_status(formatted_errors, required_columns, table_name)
 
-    # @abstractmethod
-    # def get_data_info(self) -> Dict[str, Any]:
-    #     """
-    #     Get table-specific data information.
+    @abstractmethod
+    def get_data_info(self) -> Dict[str, Any]:
+        """
+        Get table-specific data information.
 
-    #     Returns:
-    #     --------
-    #     dict
-    #         Information about the loaded data
-    #     """
-    #     pass
+        Returns:
+        --------
+        dict
+            Information about the loaded data
+        """
+        pass
 
-    # @abstractmethod
-    # def analyze_distributions(self) -> Dict[str, Any]:
-    #     """
-    #     Analyze table-specific distributions.
+    @abstractmethod
+    def analyze_distributions(self) -> Dict[str, Any]:
+        """
+        Analyze table-specific distributions.
 
-    #     Returns:
-    #     --------
-    #     dict
-    #         Distribution analysis results
-    #     """
-    #     pass
+        Returns:
+        --------
+        dict
+            Distribution analysis results
+        """
+        pass
 
-    # def calculate_missingness(self) -> Dict[str, Any]:
-    #     """
-    #     Calculate missingness for all columns.
+    def calculate_missingness(self) -> Dict[str, Any]:
+        """
+        Calculate missingness for all columns.
 
-    #     Returns:
-    #     --------
-    #     dict
-    #         Missingness statistics for the table
-    #     """
-    #     from ..utils.missingness import calculate_missingness
+        Returns:
+        --------
+        dict
+            Missingness statistics for the table
+        """
+        from ..utils.missingness import calculate_missingness
 
-    #     if self.table is None or not hasattr(self.table, 'df') or self.table.df is None:
-    #         return {
-    #             'error': 'No data available',
-    #             'total_rows': 0
-    #         }
+        if self.table is None or not hasattr(self.table, 'df') or self.table.df is None:
+            return {
+                'error': 'No data available',
+                'total_rows': 0
+            }
 
-    #     return calculate_missingness(self.table.df)
+        return calculate_missingness(self.table.df)
 
-    # def get_summary_statistics(self) -> Dict[str, Any]:
-    #     """
-    #     Get summary statistics for the table.
+    def get_summary_statistics(self) -> Dict[str, Any]:
+        """
+        Get summary statistics for the table.
 
-    #     Returns:
-    #     --------
-    #     dict
-    #         Summary statistics including distributions and missingness
-    #     """
-    #     return {
-    #         'data_info': self.get_data_info(),
-    #         'missingness': self.calculate_missingness(),
-    #         'distributions': self.analyze_distributions()
-    #     }
+        Returns:
+        --------
+        dict
+            Summary statistics including distributions and missingness
+        """
+        return {
+            'data_info': self.get_data_info(),
+            'missingness': self.calculate_missingness(),
+            'distributions': self.analyze_distributions()
+        }
 
-    # def save_intermediate_data(self, df: pd.DataFrame, suffix: str = ''):
-    #     """
-    #     Save intermediate data to output directory.
+    def save_intermediate_data(self, df: pd.DataFrame, suffix: str = ''):
+        """
+        Save intermediate data to output directory.
 
-    #     Parameters:
-    #     -----------
-    #     df : pd.DataFrame
-    #         Data to save
-    #     suffix : str
-    #         Suffix for the filename
-    #     """
-    #     if df is None or df.empty:
-    #         return
+        Parameters:
+        -----------
+        df : pd.DataFrame
+            Data to save
+        suffix : str
+            Suffix for the filename
+        """
+        if df is None or df.empty:
+            return
 
-    #     table_name = self.get_table_name()
-    #     filename = f"{table_name}{suffix}.{self.filetype}"
-    #     filepath = os.path.join(self.output_dir, 'intermediate', filename)
+        table_name = self.get_table_name()
+        filename = f"{table_name}{suffix}.{self.filetype}"
+        filepath = os.path.join(self.output_dir, 'intermediate', filename)
 
-    #     if self.filetype == 'parquet':
-    #         df.to_parquet(filepath, index=False)
-    #     elif self.filetype == 'csv':
-    #         df.to_csv(filepath, index=False)
-    #     elif self.filetype == 'feather':
-    #         df.to_feather(filepath)
+        if self.filetype == 'parquet':
+            df.to_parquet(filepath, index=False)
+        elif self.filetype == 'csv':
+            df.to_csv(filepath, index=False)
+        elif self.filetype == 'feather':
+            df.to_feather(filepath)
 
     def save_summary_data(self, summary: Dict[str, Any], suffix: str = ''):
         """Save summary data (e.g. summary statistics) to output directory."""
@@ -315,6 +336,11 @@ class BaseTableAnalyzer(ABC):
         for key in ('conformance', 'completeness', 'relational', 'plausibility'):
             checks = dqa_result.get(key, {})
             serializable[key] = dict(checks) if checks else {}
+
+        if 'table_stats' in dqa_result:
+            serializable['table_stats'] = dqa_result['table_stats']
+        if 'total_rows' in dqa_result:
+            serializable['total_rows'] = dqa_result['total_rows']
 
         with open(filepath, 'w') as f:
             json.dump(serializable, f, indent=2, default=str)

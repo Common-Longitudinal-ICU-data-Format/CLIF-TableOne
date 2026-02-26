@@ -3,6 +3,7 @@
 from clifpy.utils.report_generator import (
     DQA_CATEGORIES,
     collect_dqa_issues,
+    compute_table_stats,
     generate_validation_pdf,
     generate_text_report,
 )

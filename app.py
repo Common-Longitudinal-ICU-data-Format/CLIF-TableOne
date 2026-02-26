@@ -48,6 +48,8 @@ from modules.utils import (
     create_feedback_structure,
     update_user_decision,
     get_feedback_summary,
+    save_feedback,
+    load_feedback,
     initialize_cache,
     cache_analysis,
     get_cached_analysis,
@@ -957,8 +959,26 @@ def analyze_table(table_name, config, run_validation, run_outlier_handling, forc
                     st.warning(f"Could not remove old feedback file: {e}")
 
             # Run analysis
+            hosp_years = st.session_state.get('hosp_years', None)
             with st.spinner("Running validation..."):
-                validation_results = analyzer.validate() if run_validation else None
+                validation_results = analyzer.validate(hosp_years=hosp_years) if run_validation else None
+
+            # Inject per-column data profile stats (matching CLI runner)
+            if validation_results and analyzer.table is not None and hasattr(analyzer.table, 'df') and analyzer.table.df is not None:
+                from clifpy.utils.report_generator import compute_table_stats
+                validation_results['total_rows'] = len(analyzer.table.df)
+                validation_results['table_stats'] = compute_table_stats(
+                    analyzer.table.df, analyzer.table.schema
+                )
+
+            # Extract cross-table cache and propagate hosp_years
+            if validation_results and analyzer.table is not None:
+                try:
+                    cache = analyzer.extract_cross_table_cache()
+                    if cache.get('hosp_years'):
+                        st.session_state.hosp_years = cache['hosp_years']
+                except Exception:
+                    pass
 
             with st.spinner("Calculating summary statistics..."):
                 summary_stats = analyzer.get_summary_statistics()
@@ -1250,7 +1270,8 @@ def analyze_all_tables(config, available_tables, use_sample=False, generate_aggr
         'failed': [],
         'skipped': []
     }
-    loaded_tables = {}  # table_name -> BaseTable object for relational checks
+    cross_table_caches = {}  # table_name -> lightweight cache dict for cross-table checks
+    hosp_years = None  # cached hosp_years for temporal context
 
     # Analyze each table
     for idx, table_name in enumerate(all_tables):
@@ -1294,10 +1315,26 @@ def analyze_all_tables(config, available_tables, use_sample=False, generate_aggr
                 results['skipped'].append((table_name, 'Table not found or failed to load'))
                 continue
 
-            loaded_tables[table_name] = analyzer.table
-
             # Always run validation
-            validation_results = analyzer.validate()
+            validation_results = analyzer.validate(hosp_years=hosp_years)
+
+            # Inject per-column data profile stats (matching CLI runner)
+            if validation_results and analyzer.table is not None and hasattr(analyzer.table, 'df') and analyzer.table.df is not None:
+                from clifpy.utils.report_generator import compute_table_stats
+                validation_results['total_rows'] = len(analyzer.table.df)
+                validation_results['table_stats'] = compute_table_stats(
+                    analyzer.table.df, analyzer.table.schema
+                )
+
+            # Extract cross-table cache and propagate hosp_years
+            if validation_results and analyzer.table is not None:
+                try:
+                    cache = analyzer.extract_cross_table_cache()
+                    cross_table_caches[table_name] = cache
+                    if cache.get('hosp_years'):
+                        hosp_years = cache['hosp_years']
+                except Exception:
+                    pass
 
             # Save validation results to disk for persistence
             if validation_results:
@@ -1448,30 +1485,85 @@ def analyze_all_tables(config, available_tables, use_sample=False, generate_aggr
         # Update progress
         progress_bar.progress((idx + 1) / len(all_tables))
 
-    # Run cross-table relational checks if multiple tables loaded
-    if len(loaded_tables) > 1:
+    # Run cache-based cross-table checks (relational + plausibility) matching CLI runner
+    if len(cross_table_caches) > 1:
         try:
-            from clifpy.utils.validator import run_relational_integrity_checks
+            from clifpy.utils.validator import (
+                run_relational_integrity_checks_from_cache,
+                run_cross_table_plausibility_checks_from_cache,
+            )
             import json as _json
 
-            rel_results = run_relational_integrity_checks(list(loaded_tables.values()))
             output_dir = config.get('output_dir', 'output')
+            pdf_generator = ValidationPDFGenerator()
+            affected_tables = set()
 
+            # --- Relational integrity (cache-based) ---
+            rel_results = run_relational_integrity_checks_from_cache(cross_table_caches)
             for tname, rel_checks in rel_results.items():
                 if not rel_checks:
                     continue
                 serialized_rel = {k: v.to_dict() for k, v in rel_checks.items()}
+                affected_tables.add(tname)
 
-                # Update saved JSON file
+                # Update in-memory session state
+                if tname in st.session_state.get('analyzed_tables', {}):
+                    vr = st.session_state.analyzed_tables[tname].get('validation')
+                    if vr:
+                        vr.setdefault('completeness', {}).update(serialized_rel)
+
+                # Update saved JSON file (merge into completeness, not relational)
                 json_path = os.path.join(output_dir, 'final', 'clifpy', f'{tname}_dqa.json')
                 if os.path.exists(json_path):
                     with open(json_path, 'r') as f:
                         saved = _json.load(f)
-                    saved['relational'] = serialized_rel
+                    saved.setdefault('completeness', {}).update(serialized_rel)
                     with open(json_path, 'w') as f:
                         _json.dump(saved, f, indent=2, default=str)
+
+            # --- Cross-table plausibility (cache-based) ---
+            plaus_results = run_cross_table_plausibility_checks_from_cache(cross_table_caches)
+            for tname, plaus_checks in plaus_results.items():
+                if not plaus_checks:
+                    continue
+                serialized_plaus = {k: v.to_dict() for k, v in plaus_checks.items()}
+                affected_tables.add(tname)
+
+                # Update in-memory session state
+                if tname in st.session_state.get('analyzed_tables', {}):
+                    vr = st.session_state.analyzed_tables[tname].get('validation')
+                    if vr:
+                        vr.setdefault('plausibility', {}).update(serialized_plaus)
+
+                # Update saved JSON file (merge into plausibility)
+                json_path = os.path.join(output_dir, 'final', 'clifpy', f'{tname}_dqa.json')
+                if os.path.exists(json_path):
+                    with open(json_path, 'r') as f:
+                        saved = _json.load(f)
+                    saved.setdefault('plausibility', {}).update(serialized_plaus)
+                    with open(json_path, 'w') as f:
+                        _json.dump(saved, f, indent=2, default=str)
+
+            # Regenerate PDFs for affected tables
+            if affected_tables:
+                reports_dir = os.path.join(output_dir, 'final', 'reports')
+                for tname in affected_tables:
+                    cached = st.session_state.get('analyzed_tables', {}).get(tname, {})
+                    vr = cached.get('validation')
+                    if vr and pdf_generator.is_available():
+                        try:
+                            pdf_path = os.path.join(reports_dir, f"{tname}_validation_report.pdf")
+                            pdf_generator.generate_validation_pdf(
+                                vr, tname, pdf_path,
+                                config.get('site_name'),
+                                config.get('timezone', 'UTC')
+                            )
+                        except Exception:
+                            pass
+
+            cross_table_caches.clear()
         except Exception:
-            pass  # Relational checks are best-effort
+            pass  # Cross-table checks are best-effort
 
     # Clear status and progress
     status_text.empty()
@@ -1840,6 +1932,84 @@ def display_validation_results(analyzer, validation_results, existing_feedback, 
                         st.divider()
     else:
         st.success("No validation issues found!")
+
+    # --- Feedback review section ---
+    reviewable = [i for i in all_issues if i['severity'] in ('error', 'warning')]
+    if reviewable:
+        st.markdown("---")
+        review_enabled = st.checkbox("Review Status-Affecting Errors", key=f"review_{table_name}")
+
+        if review_enabled:
+            output_dir = st.session_state.get('config', {}).get('output_dir', 'output')
+
+            # Load or create feedback
+            feedback = load_feedback(output_dir, table_name)
+            if feedback is None:
+                feedback = create_feedback_structure(validation_results, table_name)
+
+            # Summary metrics
+            fc1, fc2, fc3 = st.columns(3)
+            with fc1:
+                st.metric("Accepted", feedback['accepted_count'])
+            with fc2:
+                st.metric("Rejected", feedback['rejected_count'])
+            with fc3:
+                st.metric("Pending", feedback['pending_count'])
+
+            # Review each issue
+            changes_made = False
+            for issue in reviewable:
+                eid = create_error_id(issue)
+                decision_info = feedback['user_decisions'].get(eid)
+                if decision_info is None:
+                    # Issue not in feedback yet — add it
+                    feedback['user_decisions'][eid] = {
+                        'error_type': issue.get('check_type', 'Unknown'),
+                        'raw_type': issue.get('check_type', ''),
+                        'category': issue.get('category', 'other'),
+                        'severity': issue.get('severity', 'error'),
+                        'description': issue.get('message', ''),
+                        'decision': 'pending',
+                        'reason': '',
+                        'timestamp': None
+                    }
+                    feedback['total_errors'] = len(feedback['user_decisions'])
+                    feedback['pending_count'] = sum(
+                        1 for d in feedback['user_decisions'].values() if d['decision'] == 'pending'
+                    )
+                    decision_info = feedback['user_decisions'][eid]
+
+                sev_icon = "🔴" if issue['severity'] == 'error' else "🟡"
+                with st.expander(
+                    f"{sev_icon} [{issue['severity'].upper()}] {issue['check_type']} — {issue['category'].title()}"
+                ):
+                    st.write(issue['message'])
+
+                    current_decision = decision_info.get('decision', 'pending')
+                    options = ['pending', 'accepted', 'rejected']
+                    idx = options.index(current_decision) if current_decision in options else 0
+
+                    new_decision = st.selectbox(
+                        "Decision", options, index=idx,
+                        key=f"decision_{table_name}_{eid}"
+                    )
+                    new_reason = st.text_input(
+                        "Reason (optional)", value=decision_info.get('reason', ''),
+                        key=f"reason_{table_name}_{eid}"
+                    )
+
+                    if new_decision != current_decision or new_reason != decision_info.get('reason', ''):
+                        feedback = update_user_decision(feedback, eid, new_decision, new_reason)
+                        changes_made = True
+
+            # Save button
+            if st.button("Save Feedback", key=f"save_feedback_{table_name}"):
+                filepath = save_feedback(feedback, output_dir, table_name)
+                update_feedback_in_cache(table_name, feedback)
+                st.success(f"Feedback saved to {os.path.basename(filepath)}")
+
+            # Summary
+            st.caption(get_feedback_summary(feedback))
 
 
 def _show_year_distribution(
