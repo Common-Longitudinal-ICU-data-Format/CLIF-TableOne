@@ -188,6 +188,14 @@ class CLIAnalysisRunner:
                 except Exception as e:
                     self.log(self.formatter.warning(f"Could not save validation results: {e}"))
 
+                # Save monthly trend CSVs from P.6 temporal consistency
+                try:
+                    trends_dir = analyzer.save_monthly_trend_csvs(validation_results)
+                    if trends_dir:
+                        self.log(self.formatter.success(f"Monthly trends saved to {trends_dir}"))
+                except Exception as e:
+                    self.log(self.formatter.warning(f"Could not save monthly trends: {e}"))
+
                 # Generate PDF report
                 if self.generate_pdf:
                     try:

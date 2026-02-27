@@ -1863,7 +1863,7 @@ def display_validation_results(analyzer, validation_results, existing_feedback, 
         status_label = "PASS" if all_passed else "ISSUES FOUND"
         st.metric("DQA Status", status_label)
     with col2:
-        st.metric("Checks Passed", f"{total_passed}/{total_checks}")
+        st.metric("Non-Error Checks", f"{total_passed}/{total_checks}")
     with col3:
         st.metric("Errors", error_count)
     with col4:
@@ -1881,7 +1881,7 @@ def display_validation_results(analyzer, validation_results, existing_feedback, 
         cat_warnings = sum(1 for i in all_issues if i['category'] == category and i['severity'] == 'warning')
         summary_rows.append({
             'Category': category.title(),
-            'Passed': f"{passed}/{total}",
+            'Non-Error': f"{passed}/{total}",
             'Errors': cat_errors,
             'Warnings': cat_warnings,
         })

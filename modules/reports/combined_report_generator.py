@@ -114,7 +114,7 @@ def _score_from_serialized(dqa_data: Dict[str, Any]):
                     cat_issues.append(enriched)
         all_issues.extend(cat_issues)
         if cat_issues:
-            cat_passed = sum(1 for i in cat_issues if i['severity'] == 'info')
+            cat_passed = sum(1 for i in cat_issues if i['severity'] in ('info', 'warning'))
             category_scores[category] = (cat_passed, len(cat_issues))
 
     return category_scores, all_issues

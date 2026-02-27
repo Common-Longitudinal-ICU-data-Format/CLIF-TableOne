@@ -345,6 +345,26 @@ class BaseTableAnalyzer(ABC):
         with open(filepath, 'w') as f:
             json.dump(serializable, f, indent=2, default=str)
 
+    def save_monthly_trend_csvs(self, dqa_result: Dict[str, Any]) -> Optional[str]:
+        """Extract monthly trends from P.6 result and save as CSVs."""
+        p6 = dqa_result.get('plausibility', {}).get('category_temporal_consistency', {})
+        monthly_trends = p6.get('metrics', {}).get('monthly_trends', {})
+        if not monthly_trends:
+            return None
+
+        table_name = self.get_table_name()
+        trends_dir = os.path.join(self.output_dir, 'final', 'clifpy', 'monthly_trends')
+        os.makedirs(trends_dir, exist_ok=True)
+
+        for cat_col, records in monthly_trends.items():
+            if not records:
+                continue
+            filepath = os.path.join(trends_dir, f"{table_name}_{cat_col}_monthly.csv")
+            df = pd.DataFrame(records)
+            df.to_csv(filepath, index=False)
+
+        return trends_dir
+
     def get_table_name(self) -> str:
         """Get the table name from the analyzer class."""
         return self.__class__.__name__.replace('Analyzer', '').lower()
