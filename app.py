@@ -29,6 +29,7 @@ import streamlit as st
 import pandas as pd
 import json
 import os
+from itertools import groupby
 from pathlib import Path
 from modules.tables import (
     PatientAnalyzer, HospitalizationAnalyzer, ADTAnalyzer, CodeStatusAnalyzer,
@@ -195,6 +196,7 @@ st.markdown("""
         font-weight: bold;
         color: #dc3545;
     }
+
 </style>
 """, unsafe_allow_html=True)
 
@@ -1802,37 +1804,40 @@ def _get_quality_check_definition(check_name: str) -> str:
     return definitions.get(check_name, 'No definition available')
 
 
-def _render_issue_details(details: dict):
-    """Render DQA issue details in Streamlit, properly handling list/dict values."""
-    import pandas as pd
-
+def _details_to_kv(details: dict) -> list:
+    """Extract key-value pairs from issue details dict, flattening simple values."""
+    pairs = []
     for key, value in details.items():
         if isinstance(value, list):
             if not value:
                 continue
-            if isinstance(value[0], dict) and 'value' in value[0]:
-                df = pd.DataFrame(value[:20])
-                st.caption(f"**{key}:**")
-                st.dataframe(df, use_container_width=True, hide_index=True)
-            elif isinstance(value[0], dict):
-                df = pd.DataFrame(value[:20])
-                st.caption(f"**{key}:**")
-                st.dataframe(df, use_container_width=True, hide_index=True)
-            else:
-                items = ", ".join(str(v) for v in value[:15])
-                if len(value) > 15:
-                    items += f" ... ({len(value)} total)"
-                st.caption(f"**{key}:** {items}")
+            if isinstance(value[0], dict):
+                # Skip tabular data — handled separately
+                continue
+            items = ", ".join(str(v) for v in value[:15])
+            if len(value) > 15:
+                items += f" ... ({len(value)} total)"
+            pairs.append((key, items))
         elif isinstance(value, dict):
             items = ", ".join(f"{k}: {v}" for k, v in list(value.items())[:10])
-            st.caption(f"**{key}:** {items}")
+            pairs.append((key, items))
         else:
-            st.caption(f"**{key}:** {value}")
+            pairs.append((key, value))
+    return pairs
+
+
+def _render_issue_tables(details: dict):
+    """Render any tabular (list-of-dicts) data from issue details via st.dataframe."""
+    import pandas as pd
+    for key, value in details.items():
+        if isinstance(value, list) and value and isinstance(value[0], dict):
+            st.caption(f"**{key}:**")
+            st.dataframe(pd.DataFrame(value[:20]), use_container_width=True, hide_index=True)
 
 
 def display_validation_results(analyzer, validation_results, existing_feedback, table_name):
     """
-    Display DQA validation results tab.
+    Display DQA validation results tab using Plotly charts and native Streamlit widgets.
 
     Parameters:
     -----------
@@ -1855,161 +1860,128 @@ def display_validation_results(analyzer, validation_results, existing_feedback, 
     total_checks = sum(t for _, t in category_scores.values())
     error_count = sum(1 for i in all_issues if i['severity'] == 'error')
     warning_count = sum(1 for i in all_issues if i['severity'] == 'warning')
+    overall_pct = round(total_passed / total_checks * 100, 1) if total_checks else 100
 
-    # --- Summary metrics ---
-    col1, col2, col3, col4 = st.columns(4)
-    with col1:
-        all_passed = total_passed == total_checks
-        status_label = "PASS" if all_passed else "ISSUES FOUND"
-        st.metric("DQA Status", status_label)
-    with col2:
-        st.metric("Non-Error Checks", f"{total_passed}/{total_checks}")
-    with col3:
-        st.metric("Errors", error_count)
-    with col4:
-        st.metric("Warnings", warning_count)
+    # ── Summary metrics ──
+    m1, m2, m3, m4 = st.columns(4)
+    score_delta = "Good" if overall_pct >= 85 else ("Fair" if overall_pct >= 60 else "Low")
+    score_delta_dir = "normal" if overall_pct >= 85 else ("off" if overall_pct >= 60 else "inverse")
+    m1.metric("DQA Score", f"{overall_pct}%", delta=score_delta, delta_color=score_delta_dir)
+    m2.metric("Checks Passed", f"{total_passed}/{total_checks}")
+    m3.metric("Errors", error_count, delta_color="inverse" if error_count > 0 else "off")
+    m4.metric("Warnings", warning_count, delta_color="inverse" if warning_count > 0 else "off")
 
-    # --- Per-category summary ---
-    st.markdown("### DQA Summary by Category")
-    import pandas as _pd
-    summary_rows = []
-    for category in DQA_CATEGORIES:
-        if category not in category_scores:
-            continue
-        passed, total = category_scores[category]
-        cat_errors = sum(1 for i in all_issues if i['category'] == category and i['severity'] == 'error')
-        cat_warnings = sum(1 for i in all_issues if i['category'] == category and i['severity'] == 'warning')
-        summary_rows.append({
-            'Category': category.title(),
-            'Non-Error': f"{passed}/{total}",
-            'Errors': cat_errors,
-            'Warnings': cat_warnings,
-        })
-    if summary_rows:
-        st.dataframe(_pd.DataFrame(summary_rows), hide_index=True, use_container_width=True)
+    # ── Category pass rates (native metric cards) ──
+    active_cats = [c for c in DQA_CATEGORIES if c in category_scores]
+    if active_cats:
+        cat_cols = st.columns(len(active_cats))
+        for col, category in zip(cat_cols, active_cats):
+            passed, total = category_scores[category]
+            pct = round(passed / total * 100, 1) if total else 100
+            status = "Passing" if pct >= 85 else ("At Risk" if pct >= 60 else "Failing")
+            delta_dir = "normal" if pct >= 85 else ("off" if pct >= 60 else "inverse")
+            col.metric(category.title(), f"{passed}/{total}", delta=status, delta_color=delta_dir)
 
-    # --- Issue details per category ---
-    if all_issues:
-        st.markdown("### Validation Issues")
+    # ── Issues: unified list with inline review ──
+    actionable = [i for i in all_issues if i['severity'] == 'error']
 
-        for category in DQA_CATEGORIES:
-            cat_issues = [i for i in all_issues if i['category'] == category]
-            if not cat_issues:
-                continue
+    # Load feedback for inline review controls
+    output_dir = st.session_state.get('config', {}).get('output_dir', 'output')
+    feedback = load_feedback(output_dir, table_name)
+    if feedback is None and actionable:
+        feedback = create_feedback_structure(validation_results, table_name)
+    if actionable:
+        st.subheader(f"Validation Issues ({len(actionable)})")
 
-            cat_errors = [i for i in cat_issues if i['severity'] == 'error']
-            cat_warnings = [i for i in cat_issues if i['severity'] == 'warning']
+        # Review summary
+        if feedback:
+            rc1, rc2, rc3 = st.columns(3)
+            rc1.metric("Accepted", feedback['accepted_count'])
+            rc2.metric("Rejected", feedback['rejected_count'])
+            rc3.metric("Pending", feedback['pending_count'])
 
-            if cat_errors:
-                with st.expander(f"**{category.title()}** — {len(cat_errors)} error(s)", expanded=True):
-                    for issue in cat_errors:
-                        st.markdown(f"**[ERROR] {issue['check_type']}**")
-                        st.write(issue['message'])
-                        details = issue.get('details', {})
-                        if isinstance(details, dict):
-                            _render_issue_details(details)
-                        st.divider()
+        # Group issues by (rule_description, category) to reduce clutter
+        def _group_key(issue):
+            return (issue.get('rule_description', issue['check_type']), issue['category'])
 
-            if cat_warnings:
-                with st.expander(f"**{category.title()}** — {len(cat_warnings)} warning(s)"):
-                    for issue in cat_warnings:
-                        st.markdown(f"**[WARNING] {issue['check_type']}**")
-                        st.write(issue['message'])
-                        details = issue.get('details', {})
-                        if isinstance(details, dict):
-                            _render_issue_details(details)
-                        st.divider()
+        actionable.sort(key=_group_key)
+        for (label, category), group_iter in groupby(actionable, key=_group_key):
+            group_list = list(group_iter)
+            count = len(group_list)
+            count_suffix = f" ({count})" if count > 1 else ""
+            header = f"\u274c {label} — {category.title()}{count_suffix}"
 
-            cat_info = [i for i in cat_issues if i['severity'] == 'info']
-            if cat_info:
-                with st.expander(f"**{category.title()}** — {len(cat_info)} info message(s)"):
-                    for issue in cat_info:
-                        st.markdown(f"**[INFO] {issue['check_type']}**")
-                        st.write(issue['message'])
-                        details = issue.get('details', {})
-                        if isinstance(details, dict):
-                            _render_issue_details(details)
-                        st.divider()
-    else:
-        st.success("No validation issues found!")
+            with st.expander(header, expanded=True):
+                for idx_issue, issue in enumerate(group_list):
+                    # Ensure feedback entry exists for this issue
+                    eid = create_error_id(issue)
+                    if feedback:
+                        decision_info = feedback['user_decisions'].get(eid)
+                        if decision_info is None:
+                            feedback['user_decisions'][eid] = {
+                                'error_type': issue.get('check_type', 'Unknown'),
+                                'raw_type': issue.get('check_type', ''),
+                                'category': issue.get('category', 'other'),
+                                'severity': issue.get('severity', 'error'),
+                                'description': issue.get('message', ''),
+                                'decision': 'pending',
+                                'reason': '',
+                                'timestamp': None,
+                            }
+                            feedback['total_errors'] = len(feedback['user_decisions'])
+                            feedback['pending_count'] = sum(
+                                1 for d in feedback['user_decisions'].values() if d['decision'] == 'pending'
+                            )
+                            decision_info = feedback['user_decisions'][eid]
+                        current_decision = decision_info.get('decision', 'pending')
+                    else:
+                        current_decision = 'pending'
 
-    # --- Feedback review section ---
-    reviewable = [i for i in all_issues if i['severity'] in ('error', 'warning')]
-    if reviewable:
-        st.markdown("---")
-        review_enabled = st.checkbox("Review Status-Affecting Errors", key=f"review_{table_name}")
+                    # Issue details
+                    details = issue.get('details', {})
+                    lines = [f"**{issue['message']}**", ""]
+                    if isinstance(details, dict):
+                        pairs = _details_to_kv(details)
+                        for k, v in pairs:
+                            v_str = str(v)
+                            if len(v_str) > 120:
+                                v_str = v_str[:120] + "..."
+                            lines.append(f"**{k}:** `{v_str}`")
+                    st.markdown("  \n".join(lines))
+                    if isinstance(details, dict):
+                        _render_issue_tables(details)
 
-        if review_enabled:
-            output_dir = st.session_state.get('config', {}).get('output_dir', 'output')
+                    # Inline review controls
+                    if feedback:
+                        dcol, rcol = st.columns([1, 2])
+                        options = ['pending', 'accepted', 'rejected']
+                        opt_idx = options.index(current_decision) if current_decision in options else 0
+                        with dcol:
+                            new_decision = st.selectbox(
+                                "Decision", options, index=opt_idx,
+                                key=f"decision_{table_name}_{eid}",
+                            )
+                        with rcol:
+                            new_reason = st.text_input(
+                                "Reason (optional)", value=decision_info.get('reason', ''),
+                                key=f"reason_{table_name}_{eid}",
+                            )
+                        if new_decision != current_decision or new_reason != decision_info.get('reason', ''):
+                            feedback = update_user_decision(feedback, eid, new_decision, new_reason)
 
-            # Load or create feedback
-            feedback = load_feedback(output_dir, table_name)
-            if feedback is None:
-                feedback = create_feedback_structure(validation_results, table_name)
+                    # Separator between issues (skip after last)
+                    if idx_issue < count - 1:
+                        st.markdown("---")
 
-            # Summary metrics
-            fc1, fc2, fc3 = st.columns(3)
-            with fc1:
-                st.metric("Accepted", feedback['accepted_count'])
-            with fc2:
-                st.metric("Rejected", feedback['rejected_count'])
-            with fc3:
-                st.metric("Pending", feedback['pending_count'])
-
-            # Review each issue
-            changes_made = False
-            for issue in reviewable:
-                eid = create_error_id(issue)
-                decision_info = feedback['user_decisions'].get(eid)
-                if decision_info is None:
-                    # Issue not in feedback yet — add it
-                    feedback['user_decisions'][eid] = {
-                        'error_type': issue.get('check_type', 'Unknown'),
-                        'raw_type': issue.get('check_type', ''),
-                        'category': issue.get('category', 'other'),
-                        'severity': issue.get('severity', 'error'),
-                        'description': issue.get('message', ''),
-                        'decision': 'pending',
-                        'reason': '',
-                        'timestamp': None
-                    }
-                    feedback['total_errors'] = len(feedback['user_decisions'])
-                    feedback['pending_count'] = sum(
-                        1 for d in feedback['user_decisions'].values() if d['decision'] == 'pending'
-                    )
-                    decision_info = feedback['user_decisions'][eid]
-
-                sev_icon = "🔴" if issue['severity'] == 'error' else "🟡"
-                with st.expander(
-                    f"{sev_icon} [{issue['severity'].upper()}] {issue['check_type']} — {issue['category'].title()}"
-                ):
-                    st.write(issue['message'])
-
-                    current_decision = decision_info.get('decision', 'pending')
-                    options = ['pending', 'accepted', 'rejected']
-                    idx = options.index(current_decision) if current_decision in options else 0
-
-                    new_decision = st.selectbox(
-                        "Decision", options, index=idx,
-                        key=f"decision_{table_name}_{eid}"
-                    )
-                    new_reason = st.text_input(
-                        "Reason (optional)", value=decision_info.get('reason', ''),
-                        key=f"reason_{table_name}_{eid}"
-                    )
-
-                    if new_decision != current_decision or new_reason != decision_info.get('reason', ''):
-                        feedback = update_user_decision(feedback, eid, new_decision, new_reason)
-                        changes_made = True
-
-            # Save button
+        # Save button
+        if feedback:
             if st.button("Save Feedback", key=f"save_feedback_{table_name}"):
                 filepath = save_feedback(feedback, output_dir, table_name)
                 update_feedback_in_cache(table_name, feedback)
                 st.success(f"Feedback saved to {os.path.basename(filepath)}")
 
-            # Summary
-            st.caption(get_feedback_summary(feedback))
+    else:
+        st.success("No validation issues found!")
 
 
 def _show_year_distribution(
