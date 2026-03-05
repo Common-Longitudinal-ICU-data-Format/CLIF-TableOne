@@ -41,9 +41,8 @@ from .cache_manager import (
     get_completion_status,
     get_status_display
 )
-from .categorical_numeric_viz import (
-    show_categorical_numeric_distribution
-)
+# categorical_numeric_viz requires streamlit — import lazily if needed
+# from .categorical_numeric_viz import show_categorical_numeric_distribution
 from .sampling import (
     get_icu_hospitalizations_from_adt,
     generate_stratified_sample,
@@ -94,8 +93,6 @@ __all__ = [
     'get_cache_statistics',
     'get_completion_status',
     'get_status_display',
-    # Categorical-Numeric Visualization
-    'show_categorical_numeric_distribution',
     # Sampling
     'get_icu_hospitalizations_from_adt',
     'generate_stratified_sample',

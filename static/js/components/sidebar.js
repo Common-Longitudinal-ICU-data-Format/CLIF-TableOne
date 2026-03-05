@@ -35,7 +35,7 @@ export function renderSidebar(el) {
   el.innerHTML = `
     <div class="sidebar-inner">
       <div class="sidebar-logo">
-        <img src="/images/clif_logo_v1_white.png" alt="CLIF" onerror="this.style.display='none'">
+        <img src="${theme === 'dark' ? '/images/clif_logo_v1_white.png' : '/images/clif_logo_red_2.png'}" alt="CLIF" onerror="this.style.display='none'">
         <span>CLIF 2.1</span>
       </div>
 

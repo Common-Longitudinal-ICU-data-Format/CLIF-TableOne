@@ -161,14 +161,17 @@ async function renderValidation(table, panel) {
           const sel = panel.querySelector(`.feedback-select[data-eid="${eid}"]`);
           if (sel) sel.value = info.decision || 'pending';
         }
+        updateStatsFromFeedback(panel, data, feedback);
       }
     } catch (e) { /* no feedback yet */ }
 
-    // Feedback change handlers
+    // Feedback change handlers — update stats live on change
     panel.querySelectorAll('.feedback-select').forEach(sel => {
       sel.addEventListener('change', async () => {
         try {
           await api.putFeedback(table, sel.dataset.eid, sel.value, '');
+          const fb = await api.getFeedback(table);
+          updateStatsFromFeedback(panel, data, fb);
         } catch (e) { console.error(e); }
       });
     });
@@ -187,6 +190,76 @@ async function renderValidation(table, panel) {
 
   } catch (e) {
     panel.innerHTML = `<p>No validation results available. Click "Run Analysis" to validate this table.</p>`;
+  }
+}
+
+function updateStatsFromFeedback(panel, data, feedback) {
+  if (!feedback || !feedback.user_decisions) return;
+
+  const decisions = feedback.user_decisions;
+  // Rejected = "not a real error" → resolved, counts as passed
+  // Accepted = "confirmed error" → still an error
+  // Pending = unresolved → still an error
+  const rejectedIds = new Set(
+    Object.entries(decisions)
+      .filter(([, d]) => d.decision === 'rejected')
+      .map(([eid]) => eid)
+  );
+
+  // Recount errors/warnings excluding rejected
+  const adjErrors = data.issues.filter(i => i.severity === 'error' && !rejectedIds.has(i.error_id));
+  const adjWarnings = data.issues.filter(i => i.severity === 'warning' && !rejectedIds.has(i.error_id));
+  const rejectedCount = data.issues.filter(i => i.severity === 'error' && rejectedIds.has(i.error_id)).length;
+
+  // Adjusted scores: rejected errors become "passed"
+  const adjPassed = data.total_passed + rejectedCount;
+  const adjPct = data.total_checks ? Math.round(adjPassed / data.total_checks * 1000) / 10 : 100;
+
+  // Update hero stats
+  const metricCards = panel.querySelectorAll('.metric-card');
+  const heroLine = panel.querySelector('[style*="font-size:2.2rem"]');
+  if (heroLine) {
+    heroLine.parentElement.innerHTML = `
+      <span style="font-size:2.2rem;font-weight:700;">${adjPct}%</span>
+      <span style="font-size:0.85rem;opacity:0.5;">${adjPassed}/${data.total_checks} checks passed</span>
+    `;
+  }
+
+  // Update progress bar
+  const bar = panel.querySelector('.progress-fill');
+  if (bar) bar.style.width = adjPct + '%';
+
+  // Update error/warning metric cards
+  if (metricCards.length >= 2) {
+    const errVal = metricCards[0].querySelector('.metric-value');
+    if (errVal) {
+      errVal.textContent = adjErrors.length;
+      errVal.style.color = adjErrors.length > 0 ? 'var(--danger)' : 'var(--success)';
+    }
+    const warnVal = metricCards[1].querySelector('.metric-value');
+    if (warnVal) {
+      warnVal.textContent = adjWarnings.length;
+      warnVal.style.color = adjWarnings.length > 0 ? 'var(--warning)' : 'var(--success)';
+    }
+  }
+
+  // Update per-category cards
+  let cardIdx = 2;
+  for (const [cat, scores] of Object.entries(data.category_scores)) {
+    const catRejected = data.issues.filter(
+      i => i.category === cat && i.severity === 'error' && rejectedIds.has(i.error_id)
+    ).length;
+    const adjCatPassed = scores.passed + catRejected;
+    const pct = scores.total ? Math.round(adjCatPassed / scores.total * 100) : 100;
+    const color = pct >= 85 ? 'var(--success)' : pct >= 60 ? 'var(--warning)' : 'var(--danger)';
+    if (metricCards[cardIdx]) {
+      const val = metricCards[cardIdx].querySelector('.metric-value');
+      if (val) {
+        val.textContent = `${adjCatPassed}/${scores.total}`;
+        val.style.color = color;
+      }
+    }
+    cardIdx++;
   }
 }
 

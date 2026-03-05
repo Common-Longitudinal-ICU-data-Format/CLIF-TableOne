@@ -3,6 +3,7 @@
 from fastapi import APIRouter, HTTPException
 from server.services import cache_service
 from modules.cli.pdf_generator import _collect_dqa_issues, DQA_CATEGORIES
+from modules.utils.feedback import create_error_id
 
 router = APIRouter(prefix="/api", tags=["validation"])
 
@@ -16,6 +17,10 @@ async def get_validation(name: str):
 
     validation = cached["validation"]
     category_scores, all_issues = _collect_dqa_issues(validation)
+
+    # Add error_id to each issue so frontend can match with feedback
+    for issue in all_issues:
+        issue["error_id"] = create_error_id(issue)
 
     total_passed = sum(p for p, _ in category_scores.values())
     total_checks = sum(t for _, t in category_scores.values())

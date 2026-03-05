@@ -223,18 +223,25 @@ def recalculate_status(original_status: str, feedback: Dict[str, Any]) -> str:
     str
         Adjusted validation status
     """
-    accepted_errors = get_accepted_errors(feedback)
-    total_errors = feedback.get('total_errors', 0)
-    rejected_count = feedback.get('rejected_count', 0)
+    decisions = feedback.get('user_decisions', {})
 
-    # If there are any accepted or pending errors, keep original status
-    # because these represent real issues (accepted) or unreviewed issues (pending)
-    if accepted_errors or rejected_count < total_errors:
-        # Has accepted or pending errors - keep original status
+    # Only consider actual errors (not warnings) for status calculation
+    error_decisions = [d for d in decisions.values() if d.get('severity') == 'error']
+
+    if not error_decisions:
+        # No errors at all — warnings alone don't make it incomplete
+        return 'complete'
+
+    pending_or_accepted = [
+        d for d in error_decisions
+        if d.get('decision') in ('accepted', 'pending')
+    ]
+
+    # If any errors are accepted (confirmed) or pending (unreviewed), keep original status
+    if pending_or_accepted:
         return original_status
 
-    # All errors were explicitly rejected - table is complete
-    # (rejected = site-specific, not applicable)
+    # All errors were explicitly rejected — table is complete
     return 'complete'
 
 

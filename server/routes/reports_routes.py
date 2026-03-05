@@ -2,10 +2,13 @@
 
 import os
 import json
+import logging
 
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import FileResponse
 from server import session
+
+logger = logging.getLogger("clif.reports")
 
 router = APIRouter(prefix="/api", tags=["reports"])
 
@@ -32,6 +35,7 @@ def _regenerate_table_pdf(table_name: str, config: dict) -> bool:
 
     dqa_json_path = os.path.join(clifpy_dir, f'{table_name}_dqa.json')
     if not os.path.exists(dqa_json_path):
+        logger.warning("DQA JSON not found: %s", dqa_json_path)
         return False
 
     try:
@@ -51,8 +55,10 @@ def _regenerate_table_pdf(table_name: str, config: dict) -> bool:
                 validation_results, table_name, pdf_path,
                 config.get('site_name'), config.get('timezone', 'UTC'), feedback,
             )
+            logger.info("Regenerated PDF: %s", pdf_path)
         return True
-    except Exception:
+    except Exception as e:
+        logger.error("Failed to regenerate PDF for %s: %s", table_name, e, exc_info=True)
         return False
 
 
