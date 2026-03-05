@@ -551,7 +551,7 @@ class ProjectRunner:
 
         threading.Thread(target=open_browser, daemon=True).start()
 
-        cmd = [sys.executable, '-m', 'uvicorn', 'server.main:app', '--host', '127.0.0.1', '--port', '8000']
+        cmd = [sys.executable, '-m', 'uvicorn', 'server.main:app', '--host', '127.0.0.1', '--port', '8000', '--no-access-log']
 
         try:
             subprocess.run(cmd, check=True)

@@ -20,6 +20,9 @@ logging.basicConfig(
 )
 logger = logging.getLogger("clif")
 
+# Suppress duplicate Uvicorn access logs (our middleware handles API logging)
+logging.getLogger("uvicorn.access").setLevel(logging.WARNING)
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):

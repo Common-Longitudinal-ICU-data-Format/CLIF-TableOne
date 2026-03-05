@@ -1,4 +1,5 @@
 import { api } from '../api.js';
+import { navigate } from '../router.js';
 import { renderTabs } from '../components/tabs.js';
 
 export async function renderTableone(el) {
@@ -6,20 +7,29 @@ export async function renderTableone(el) {
   try {
     const { available } = await api.getTableone('available');
     if (!available) {
-      el.innerHTML = `<h1>Table One Results</h1><p>Results not yet generated. Run: <code>uv run run_tableone.py</code></p>`;
+      el.innerHTML = `
+        <button class="btn btn-back" id="btn-back-home">&larr; Back to Home</button>
+        <h1>Table One Results</h1><p>Results not yet generated. Run: <code>uv run run_tableone.py</code></p>`;
+      document.getElementById('btn-back-home').addEventListener('click', () => navigate('home'));
       return;
     }
   } catch (e) {
-    el.innerHTML = `<h1>Table One Results</h1><p>Could not check availability.</p>`;
+    el.innerHTML = `
+      <button class="btn btn-back" id="btn-back-home">&larr; Back to Home</button>
+      <h1>Table One Results</h1><p>Could not check availability.</p>`;
+    document.getElementById('btn-back-home').addEventListener('click', () => navigate('home'));
     return;
   }
 
   el.innerHTML = `
+    <button class="btn btn-back" id="btn-back-home">&larr; Back to Home</button>
     <h1>Table One Results</h1>
     <p style="opacity:0.6;">To update, run: <code>uv run run_tableone.py</code></p>
     <div id="t1-tabs"></div>
     <div id="t1-content"></div>
   `;
+
+  document.getElementById('btn-back-home').addEventListener('click', () => navigate('home'));
 
   const tabs = [
     { id: 'cohort', label: 'Cohort' },

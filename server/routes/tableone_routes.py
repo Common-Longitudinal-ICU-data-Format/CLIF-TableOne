@@ -72,6 +72,14 @@ def _file_exists_or_none(path: Path):
     return str(path.name) if path.exists() else None
 
 
+def _df_to_table(df: pd.DataFrame) -> dict:
+    """Convert DataFrame to JSON-safe table dict, replacing NaN with None."""
+    return {
+        "columns": df.columns.tolist(),
+        "data": df.where(df.notnull(), None).to_dict(orient="records"),
+    }
+
+
 def _cohort_data(d: Path):
     figures_dir = d / "figures"
     sankeys = []
@@ -96,24 +104,32 @@ def _cohort_data(d: Path):
     }
 
 
+def _demographics_slice(df: pd.DataFrame) -> pd.DataFrame:
+    """Return only the demographics portion of a full table-one DataFrame.
+
+    Cuts before 'SOFA Scores' row, which is where clinical data begins.
+    """
+    if "Variable" not in df.columns:
+        return df
+    mask = df["Variable"].str.strip() == "SOFA Scores"
+    idx = df.index[mask]
+    if len(idx) > 0:
+        return df.iloc[:idx[0]].reset_index(drop=True)
+    return df
+
+
 def _demographics_data(d: Path):
     result: dict = {"tables": {}, "images": []}
 
     by_year = d / "table_one_by_year.csv"
     if by_year.exists():
-        df = pd.read_csv(by_year)
-        result["tables"]["by_year"] = {
-            "columns": df.columns.tolist(),
-            "data": df.to_dict(orient="records"),
-        }
+        df = _demographics_slice(pd.read_csv(by_year))
+        result["tables"]["by_year"] = _df_to_table(df)
 
     overall = d / "table_one_overall.csv"
     if overall.exists():
-        df = pd.read_csv(overall)
-        result["tables"]["overall"] = {
-            "columns": df.columns.tolist(),
-            "data": df.to_dict(orient="records"),
-        }
+        df = _demographics_slice(pd.read_csv(overall))
+        result["tables"]["overall"] = _df_to_table(df)
 
     return result
 
@@ -135,11 +151,9 @@ def _medications_data(d: Path):
     meds_csv = d / "medications_summary_stats.csv"
     if meds_csv.exists():
         df = pd.read_csv(meds_csv)
-        result["csv_files"].append({
-            "label": "Medication Summary Statistics",
-            "columns": df.columns.tolist(),
-            "data": df.to_dict(orient="records"),
-        })
+        tbl = _df_to_table(df)
+        tbl["label"] = "Medication Summary Statistics"
+        result["csv_files"].append(tbl)
 
     return result
 
@@ -162,12 +176,10 @@ def _imv_data(d: Path):
     ]:
         if (d / fname).exists():
             df = pd.read_csv(d / fname)
-            result["csv_files"].append({
-                "label": label,
-                "filename": fname,
-                "columns": df.columns.tolist(),
-                "data": df.to_dict(orient="records"),
-            })
+            tbl = _df_to_table(df)
+            tbl["label"] = label
+            tbl["filename"] = fname
+            result["csv_files"].append(tbl)
 
     return result
 
@@ -186,11 +198,9 @@ def _sofa_cci_data(d: Path):
     comorbid_csv = d / "comorbidities_per_1000_hospitalizations.csv"
     if comorbid_csv.exists():
         df = pd.read_csv(comorbid_csv)
-        result["csv_files"].append({
-            "label": "Comorbidities per 1000 Hospitalizations",
-            "columns": df.columns.tolist(),
-            "data": df.to_dict(orient="records"),
-        })
+        tbl = _df_to_table(df)
+        tbl["label"] = "Comorbidities per 1000 Hospitalizations"
+        result["csv_files"].append(tbl)
 
     return result
 

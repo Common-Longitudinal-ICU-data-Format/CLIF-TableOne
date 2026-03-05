@@ -1,8 +1,8 @@
 import { api } from '../api.js';
 import * as state from '../state.js';
-import { getParams } from '../router.js';
+import { getParams, navigate } from '../router.js';
 import { connectSSE } from '../sse.js';
-import { TABLE_DISPLAY_NAMES } from '../components/sidebar.js';
+import { TABLE_DISPLAY_NAMES } from '../components/navbar.js';
 import { renderTabs } from '../components/tabs.js';
 
 export async function renderAnalysis(el, params) {
@@ -12,6 +12,7 @@ export async function renderAnalysis(el, params) {
   const displayName = TABLE_DISPLAY_NAMES[table] || table;
 
   el.innerHTML = `
+    <button class="btn btn-back" id="btn-back-validation">&larr; Back to Validation</button>
     <h1>${displayName} Analysis</h1>
     <div style="margin-bottom:16px;display:flex;gap:12px;align-items:center;">
       <button class="btn btn-primary" id="btn-run-analysis">Run Analysis</button>
@@ -23,6 +24,9 @@ export async function renderAnalysis(el, params) {
     <div id="analysis-tabs"></div>
     <div id="analysis-content"></div>
   `;
+
+  // Back to validation
+  document.getElementById('btn-back-validation').addEventListener('click', () => navigate('validation'));
 
   // Run analysis button
   document.getElementById('btn-run-analysis').addEventListener('click', async () => {
@@ -99,6 +103,9 @@ async function renderValidation(table, panel) {
     }
     html += `</div>`;
 
+    // Review status placeholder (populated after feedback loads)
+    html += `<div id="review-status"></div>`;
+
     // Issues table (errors)
     const errors = data.issues.filter(i => i.severity === 'error');
     if (errors.length > 0) {
@@ -106,17 +113,22 @@ async function renderValidation(table, panel) {
         <h3>Review & Resolve (${errors.length} error(s))</h3>
         <div id="feedback-container"></div>
         <table class="data-table" id="errors-table">
-          <thead><tr><th>Feedback</th><th>Category</th><th>Check</th><th>Column</th><th>Message</th></tr></thead>
+          <thead><tr><th>Feedback</th><th class="reason-col" style="display:none;">Reason</th><th>Category</th><th>Check</th><th>Column</th><th>Message</th></tr></thead>
           <tbody>`;
 
       for (const issue of errors) {
         const eid = issue.error_id || '';
         html += `<tr data-eid="${eid}">
-          <td><select class="feedback-select" data-eid="${eid}">
-            <option value="pending">Pending</option>
-            <option value="accepted">Accepted</option>
-            <option value="rejected">Rejected</option>
-          </select></td>
+          <td>
+            <select class="feedback-select" data-eid="${eid}">
+              <option value="pending">Pending</option>
+              <option value="accepted">Accepted</option>
+              <option value="rejected">Rejected</option>
+            </select>
+          </td>
+          <td class="reason-col" style="display:none;">
+            <textarea class="feedback-reason" data-eid="${eid}" placeholder="Reason..." rows="1" style="display:none;"></textarea>
+          </td>
           <td>${issue.category || ''}</td>
           <td>${issue.rule_description || issue.check_type || ''}</td>
           <td>${issue.column_field || 'N/A'}</td>
@@ -131,7 +143,7 @@ async function renderValidation(table, panel) {
       html += `<div class="card" style="border-left:4px solid var(--success);"><p>No validation issues found!</p></div>`;
     }
 
-    // Warnings (read-only, grouped by rule type)
+    // Warnings — grouped by rule_description with sparklines
     const warnings = data.issues.filter(i => i.severity === 'warning');
     if (warnings.length > 0) {
       const groups = {};
@@ -146,10 +158,25 @@ async function renderValidation(table, panel) {
         html += `<details${first ? ' open' : ''} style="margin-bottom:8px;">
           <summary style="cursor:pointer;font-weight:600;padding:6px 0;">${groupName} <span style="background:var(--warning);color:#000;border-radius:10px;padding:1px 8px;font-size:0.85em;font-weight:500;margin-left:6px;">${items.length}</span></summary>
           <table class="data-table" style="margin:4px 0 8px 16px;">
-            <thead><tr><th>Column</th><th>Message</th></tr></thead>
+            <thead><tr><th>Column</th><th>Finding</th></tr></thead>
             <tbody>`;
         for (const w of items) {
-          html += `<tr><td>${w.column_field || 'N/A'}</td><td>${w.message || ''}</td></tr>`;
+          const finding = w.finding || w.message || '';
+          const yearly = w.details && w.details.yearly_counts;
+          let sparkHtml = '';
+          if (yearly) {
+            const years = Object.keys(yearly).sort();
+            const maxCount = Math.max(...Object.values(yearly)) || 1;
+            sparkHtml = `<div class="spark-bar" title="${years.map(y => y + ': ' + yearly[y]).join(', ')}">`;
+            for (const y of years) {
+              const count = yearly[y];
+              const pct = count > 0 ? Math.max(10, Math.round((count / maxCount) * 100)) : 100;
+              const color = count > 0 ? 'var(--info)' : 'var(--danger)';
+              sparkHtml += `<span class="spark-bar-col" style="height:${pct}%;background:${color};"></span>`;
+            }
+            sparkHtml += `<span class="spark-bar-labels"><span>${years[0]}</span><span>${years[years.length - 1]}</span></span></div>`;
+          }
+          html += `<tr><td>${w.column_field || 'N/A'}</td><td>${finding}${sparkHtml}</td></tr>`;
         }
         html += `</tbody></table></details>`;
         first = false;
@@ -159,26 +186,89 @@ async function renderValidation(table, panel) {
 
     panel.innerHTML = html;
 
-    // Load existing feedback decisions
+    // Show/hide the Reason column based on whether any row is rejected
+    const toggleReasonColumn = () => {
+      const hasRejected = [...panel.querySelectorAll('.feedback-select')].some(s => s.value === 'rejected');
+      const display = hasRejected ? '' : 'none';
+      panel.querySelectorAll('.reason-col').forEach(el => el.style.display = display);
+    };
+
+    // Load existing feedback decisions and reasons
     try {
       const feedback = await api.getFeedback(table);
       if (feedback && feedback.user_decisions) {
         for (const [eid, info] of Object.entries(feedback.user_decisions)) {
           const sel = panel.querySelector(`.feedback-select[data-eid="${eid}"]`);
           if (sel) sel.value = info.decision || 'pending';
+          const reasonInput = panel.querySelector(`.feedback-reason[data-eid="${eid}"]`);
+          if (reasonInput) {
+            if (info.decision === 'rejected') {
+              reasonInput.style.display = 'block';
+              reasonInput.value = info.reason || '';
+              reasonInput.style.height = 'auto';
+              reasonInput.style.height = reasonInput.scrollHeight + 'px';
+            }
+          }
         }
         updateStatsFromFeedback(panel, data, feedback);
       }
+
+      // Render review status
+      const statusEl = panel.querySelector('#review-status');
+      if (statusEl && feedback) {
+        const hasDecisions = feedback.accepted_count > 0 || feedback.rejected_count > 0;
+        if (hasDecisions && feedback.timestamp) {
+          const ts = new Date(feedback.timestamp);
+          const dateStr = ts.toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' });
+          const timeStr = ts.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' });
+          const parts = [];
+          if (feedback.accepted_count) parts.push(`${feedback.accepted_count} accepted`);
+          if (feedback.rejected_count) parts.push(`${feedback.rejected_count} rejected`);
+          if (feedback.pending_count) parts.push(`${feedback.pending_count} pending`);
+          statusEl.innerHTML = `<div class="review-status-bar">
+            <span>Last reviewed ${dateStr} at ${timeStr}</span>
+            <span class="review-status-counts">${parts.join(' · ')}</span>
+          </div>`;
+        }
+      }
+
+      toggleReasonColumn();
     } catch (e) { /* no feedback yet */ }
 
     // Feedback change handlers — update stats live on change
     panel.querySelectorAll('.feedback-select').forEach(sel => {
       sel.addEventListener('change', async () => {
+        const eid = sel.dataset.eid;
+        const reasonInput = panel.querySelector(`.feedback-reason[data-eid="${eid}"]`);
+        if (sel.value === 'rejected') {
+          reasonInput.style.display = 'block';
+        } else {
+          reasonInput.style.display = 'none';
+          reasonInput.value = '';
+        }
+        toggleReasonColumn();
         try {
-          await api.putFeedback(table, sel.dataset.eid, sel.value, '');
+          await api.putFeedback(table, eid, sel.value, reasonInput.value);
           const fb = await api.getFeedback(table);
           updateStatsFromFeedback(panel, data, fb);
         } catch (e) { console.error(e); }
+      });
+    });
+
+    // Reason textarea handlers — auto-resize, save on blur or Enter
+    const autoResize = (el) => { el.style.height = 'auto'; el.style.height = el.scrollHeight + 'px'; };
+    panel.querySelectorAll('.feedback-reason').forEach(input => {
+      const save = async () => {
+        const eid = input.dataset.eid;
+        const sel = panel.querySelector(`.feedback-select[data-eid="${eid}"]`);
+        try {
+          await api.putFeedback(table, eid, sel.value, input.value);
+        } catch (e) { console.error(e); }
+      };
+      input.addEventListener('input', () => autoResize(input));
+      input.addEventListener('blur', save);
+      input.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); input.blur(); }
       });
     });
 
@@ -190,6 +280,22 @@ async function renderValidation(table, panel) {
           await api.saveFeedback(table);
           saveBtn.textContent = 'Saved!';
           setTimeout(() => saveBtn.textContent = 'Save Feedback', 2000);
+          // Refresh review status bar
+          const fb = await api.getFeedback(table);
+          const statusEl = panel.querySelector('#review-status');
+          if (statusEl && fb) {
+            const now = new Date();
+            const dateStr = now.toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' });
+            const timeStr = now.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' });
+            const parts = [];
+            if (fb.accepted_count) parts.push(`${fb.accepted_count} accepted`);
+            if (fb.rejected_count) parts.push(`${fb.rejected_count} rejected`);
+            if (fb.pending_count) parts.push(`${fb.pending_count} pending`);
+            statusEl.innerHTML = `<div class="review-status-bar">
+              <span>Last reviewed ${dateStr} at ${timeStr}</span>
+              <span class="review-status-counts">${parts.join(' · ')}</span>
+            </div>`;
+          }
         } catch (e) { alert('Save failed: ' + e.message); }
       });
     }

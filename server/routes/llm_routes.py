@@ -79,7 +79,10 @@ def _build_validation_data(name: str, cached: dict) -> dict:
 @router.get("/llm/status")
 async def llm_status():
     """Check if LLM interpretation is available."""
-    return {"available": llm_service.is_available()}
+    return {
+        "available": llm_service.is_available(),
+        "model": llm_service.OLLAMA_MODEL,
+    }
 
 
 @router.post("/llm/interpret-all")

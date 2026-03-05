@@ -1,7 +1,7 @@
 import * as router from './router.js';
 import * as state from './state.js';
 import { api } from './api.js';
-import { renderSidebar } from './components/sidebar.js';
+import { renderNavbar } from './components/navbar.js';
 import { renderHome } from './pages/home.js';
 import { renderAnalysis } from './pages/analysis.js';
 import { renderTableone } from './pages/tableone.js';
@@ -30,7 +30,7 @@ async function init() {
     console.warn('Config not loaded:', e);
   }
 
-  renderSidebar(document.getElementById('sidebar'));
+  renderNavbar(document.getElementById('navbar'));
   router.init();
 }
 

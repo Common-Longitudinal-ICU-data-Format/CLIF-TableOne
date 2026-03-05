@@ -29,7 +29,7 @@ async def get_mcide(name: str):
 
     for filepath in table_files:
         try:
-            df = pd.read_csv(filepath)
+            df = pd.read_csv(filepath).fillna("")
             basename = os.path.basename(filepath).replace('_mcide.csv', '').replace('clif_', '')
             result["mcide_files"].append({
                 "name": basename,

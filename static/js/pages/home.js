@@ -2,19 +2,24 @@ import { api } from '../api.js';
 import * as state from '../state.js';
 import { navigate } from '../router.js';
 import { connectSSE } from '../sse.js';
-import { updateSidebarStatus } from '../components/sidebar.js';
 
 export async function renderHome(el) {
   el.innerHTML = `
     <!-- Hero Nav Cards -->
     <div class="home-hero">
       <div class="hero-card" id="hero-tableone">
-        <h3>Table One Results</h3>
-        <p>Explore cohorts, demographics, medications, ventilation, outcomes</p>
+        <div class="hero-card-body">
+          <h3>Table One Results</h3>
+          <p>Explore cohorts, demographics, medications, ventilation, outcomes</p>
+        </div>
+        <span class="hero-arrow" aria-hidden="true">&rarr;</span>
       </div>
       <div class="hero-card" id="hero-validation">
-        <h3>Validation</h3>
-        <p>Review DQA validation status for all CLIF tables</p>
+        <div class="hero-card-body">
+          <h3>Validation</h3>
+          <p>Review DQA validation status for all CLIF tables</p>
+        </div>
+        <span class="hero-arrow" aria-hidden="true">&rarr;</span>
       </div>
     </div>
 
@@ -23,7 +28,8 @@ export async function renderHome(el) {
       <div class="card ai-card">
         <div style="display:flex;align-items:center;gap:8px;margin-bottom:10px;">
           <div class="loading-spinner" id="ai-all-spinner"></div>
-          <span style="font-size:0.9rem;font-weight:600;">AI Interpretation</span>
+          <span style="font-size:0.9rem;font-weight:600;">Validation Summary</span>
+          <span id="ai-model-badge" style="font-size:0.68rem;color:var(--text-muted);display:none;"></span>
           <button class="btn btn-sm btn-secondary" id="btn-ai-expand" style="margin-left:auto;display:none;">Expand</button>
           <a href="#" id="btn-ai-reinterpret" style="margin-left:8px;font-size:0.8rem;display:none;">Re-interpret</a>
         </div>
@@ -64,20 +70,40 @@ export async function renderHome(el) {
 
     <!-- FAQ -->
     <div class="faq-section">
-      <h3>FAQ</h3>
+      <h3>How to Use This App</h3>
       <details>
         <summary>What does this app do?</summary>
-        <p>This app validates your CLIF 2.1 data against the official spec. It checks conformance, completeness, and plausibility across all tables, then generates combined reports.</p>
+        <p>This app validates your CLIF 2.1 data against the official spec. It flags issues across conformance, completeness, and plausibility — but some "errors" might be totally fine for your site. Your data might not use a certain drug or device, and that's okay.</p>
       </details>
       <details>
-        <summary>What is the typical workflow?</summary>
-        <ol>
-          <li><strong>Review Each Table</strong> — Click through the tables on the Validation page</li>
-          <li><strong>Mark Site-Specific Stuff</strong> — For each error, decide: Accept, Reject, or Pending</li>
-          <li><strong>Regenerate the Combined Report</strong> — Once reviewed, regenerate reports from this page</li>
-          <li><strong>Need to Update Just One Table?</strong> — Select that table and click Run Analysis</li>
-          <li><strong>Check Out Table One</strong> — Explore cohorts, demographics, meds, ventilation, outcomes</li>
-        </ol>
+        <summary>1. Review Each Table</summary>
+        <p>Click through the tables on the Validation page. Check out the validation results and summary stats. See what's flagged.</p>
+      </details>
+      <details>
+        <summary>2. Mark Site-Specific Stuff</summary>
+        <p>In the Validation tab, enable "Review Status-Affecting Errors". For each error, decide:</p>
+        <ul>
+          <li><strong>Accept</strong> — Legit issue, needs fixing</li>
+          <li><strong>Reject</strong> — Not a problem for your site (add a reason why)</li>
+          <li><strong>Pending</strong> — You'll deal with it later</li>
+        </ul>
+        <p>Hit "Save Feedback" when done.</p>
+      </details>
+      <details>
+        <summary>3. Regenerate the Combined Report</summary>
+        <p>Once you've reviewed, come back to this page and click "Regenerate All Reports". This creates a fresh combined report with your feedback applied.</p>
+      </details>
+      <details>
+        <summary>4. Need to Update Just One Table?</summary>
+        <p>Select that table from the table picker above, then click "Analyze All Tables". Just those selected tables get refreshed.</p>
+      </details>
+      <details>
+        <summary>5. Check Out Table One</summary>
+        <p>Click "Table One Results" above to explore cohorts, demographics, meds, ventilation, and outcomes — all in one place.</p>
+      </details>
+      <details>
+        <summary>Questions?</summary>
+        <p>Hit me up on CLIF Slack — Kaveri Chhikara.</p>
       </details>
     </div>
   `;
@@ -171,12 +197,21 @@ async function initAiAll() {
   const section = document.getElementById('ai-all-section');
   if (!section) return;
 
+  let modelName = '';
   try {
-    const { available } = await api.getLlmStatus();
+    const { available, model } = await api.getLlmStatus();
     if (!available) return;
+    modelName = model || '';
   } catch (e) { return; }
 
   section.style.display = 'block';
+
+  // Show model badge
+  const badge = document.getElementById('ai-model-badge');
+  if (badge && modelName) {
+    badge.textContent = `via ${modelName} (Ollama)`;
+    badge.style.display = 'inline';
+  }
 
   // Restore cached interpretation or fetch fresh
   const cached = state.get('aiInterpretation');
@@ -199,7 +234,7 @@ async function initAiAll() {
     overlay.className = 'ai-fullpage-overlay';
     overlay.innerHTML = `
       <button class="btn btn-secondary close-btn" id="ai-overlay-close">Close</button>
-      <h2>AI Interpretation — All Tables</h2>
+      <h2>Validation Summary — All Tables</h2>
       <div class="card ai-card"><div class="ai-prose">${html}</div></div>
     `;
     document.body.appendChild(overlay);
@@ -246,7 +281,7 @@ function startAiStream() {
     onError(msg) {
       spinner.style.display = 'none';
       if (msg && (msg.includes('404') || msg.toLowerCase().includes('no tables'))) {
-        textEl.innerHTML = '<em>No tables analyzed yet. Run analysis first to get an AI interpretation.</em>';
+        textEl.innerHTML = '<em>No tables analyzed yet. Run analysis first to generate a validation summary.</em>';
       } else {
         textEl.innerHTML = '<em>Error: ' + escapeHtml(msg) + '</em>';
       }
@@ -286,10 +321,9 @@ function showProgress(taskId) {
           </div>
         `;
       }
-      // Refresh sidebar
+      // Refresh table data in state
       api.getTables().then(({ tables }) => {
         state.set('tables', tables);
-        updateSidebarStatus(tables);
       });
       checkDownloads();
     },
