@@ -5,7 +5,7 @@ CLIF Project Runner - Complete Workflow Automation
 This script orchestrates the complete CLIF analysis workflow:
 1. Validation of CLIF tables (with optional sampling)
 2. Table One generation with memory optimization
-3. Automatic Streamlit app launch (on successful completion)
+3. Automatic web app launch (on successful completion)
 
 Usage:
     python run_project.py                          # Full validation + table one + app
@@ -539,22 +539,32 @@ class ProjectRunner:
         return self.results['overall_success']
 
     def launch_app(self):
-        """Launch the Streamlit web application."""
-        self.print_header("LAUNCHING STREAMLIT APP")
+        """Launch the FastAPI web application."""
+        self.print_header("LAUNCHING WEB APP")
 
-        print("Starting Streamlit web application...")
-        print("The app will open in your default browser at http://localhost:8501")
+        print("Starting CLIF web application...")
+        print("The app will open in your default browser at http://localhost:8000")
         print("\nPress Ctrl+C to stop the app\n")
 
-        cmd = ['streamlit', 'run', 'app.py']
+        # Open browser after a short delay
+        import threading
+        import webbrowser
+
+        def open_browser():
+            import time
+            time.sleep(1.5)
+            webbrowser.open("http://localhost:8000")
+
+        threading.Thread(target=open_browser, daemon=True).start()
+
+        cmd = [sys.executable, '-m', 'uvicorn', 'server.main:app', '--host', '127.0.0.1', '--port', '8000']
 
         try:
-            # Run streamlit in foreground so user can interact
             subprocess.run(cmd, check=True)
         except KeyboardInterrupt:
-            print("\n\n[SUCCESS] Streamlit app stopped")
+            print("\n\n[SUCCESS] Web app stopped")
         except FileNotFoundError:
-            print("\n[ERROR] Error: streamlit not found. Install with: uv add streamlit")
+            print("\n[ERROR] Error: uvicorn not found. Install with: uv add uvicorn[standard]")
         except Exception as e:
             print(f"\n[ERROR] Error launching app: {e}")
 
@@ -641,7 +651,7 @@ class ProjectRunner:
             # Check if user wants to skip app launch
             if not kwargs.get('no_launch_app', False):
                 print("\n" + "="*80)
-                print("🚀 Launching Streamlit App...")
+                print("🚀 Launching Web App...")
                 print("="*80)
 
                 # Show warnings for any failed steps
@@ -674,7 +684,7 @@ class ProjectRunner:
                     self.launch_app()
                 except KeyboardInterrupt:
                     print("\n\n⏭️  App launch skipped by user")
-                    print("   You can launch it manually with: uv run streamlit run app.py\n")
+                    print("   You can launch it manually with: uv run uvicorn server.main:app\n")
         else:
             # Only happens if critical tables validation failed and no override
             print("\n" + "="*80)
@@ -702,7 +712,7 @@ Examples:
   %(prog)s --get-ecdf-only --visualize        # Get ECDF + HTML visualizations
   %(prog)s --get-ecdf                         # Full workflow + get ECDF
   %(prog)s --tables patient adt               # Validate specific tables
-  %(prog)s --sample --no-launch-app           # Skip automatic app launch
+  %(prog)s --sample --no-launch-app           # Skip automatic web app launch
         """
     )
 
@@ -721,7 +731,7 @@ Examples:
     workflow_group.add_argument('--continue-on-error', action='store_true',
                                 help='Continue to next step even if previous step fails')
     workflow_group.add_argument('--no-launch-app', action='store_true',
-                                help='Skip automatic Streamlit app launch after completion')
+                                help='Skip automatic web app launch after completion')
 
     # Validation options
     validation_group = parser.add_argument_group('Validation Options')

@@ -403,9 +403,8 @@ def show_home_page(config: dict, available_tables: list):
                 failed_tables = []
 
                 # Regenerate individual table reports from validation JSON files
-                clifpy_dir = os.path.join(output_dir, 'final', 'clifpy')
                 for table_name in available_tables:
-                    validation_json_path = os.path.join(clifpy_dir, f'{table_name}_dqa.json')
+                    validation_json_path = os.path.join(results_dir, f'{table_name}_summary_validation.json')
 
                     if os.path.exists(validation_json_path):
                         try:
@@ -2060,21 +2059,6 @@ def display_validation_results(analyzer, validation_results, existing_feedback, 
                     filepath = save_feedback(feedback, output_dir, table_name)
                     update_feedback_in_cache(table_name, feedback)
                     st.success(f"Feedback saved to {os.path.basename(filepath)}")
-
-                    # Regenerate per-table PDF with feedback
-                    try:
-                        from modules.cli import ValidationPDFGenerator
-                        reports_dir = os.path.join(output_dir, 'final', 'reports')
-                        os.makedirs(reports_dir, exist_ok=True)
-                        pdf_path = os.path.join(reports_dir, f"{table_name}_validation_report.pdf")
-                        site_name = st.session_state.get('config', {}).get('site_name')
-                        ValidationPDFGenerator.generate_validation_pdf(
-                            validation_results, table_name, pdf_path,
-                            site_name=site_name, feedback=feedback,
-                        )
-                        st.success(f"PDF report updated with feedback")
-                    except Exception as e:
-                        st.warning(f"Feedback saved but PDF regeneration failed: {e}")
 
     else:
         st.success("No validation issues found!")

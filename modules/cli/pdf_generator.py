@@ -22,7 +22,7 @@ class ValidationPDFGenerator:
     @staticmethod
     def generate_validation_pdf(validation_data, table_name, output_path,
                                 site_name=None, timezone=None, feedback=None):
-        return generate_validation_pdf(validation_data, table_name, output_path, site_name)
+        return generate_validation_pdf(validation_data, table_name, output_path, site_name, feedback)
 
     @staticmethod
     def generate_text_report(validation_data, table_name, output_path,

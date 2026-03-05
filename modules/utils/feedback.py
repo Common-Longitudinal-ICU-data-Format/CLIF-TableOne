@@ -54,14 +54,31 @@ def create_feedback_structure(validation_results: Dict[str, Any],
         Feedback structure with all errors initialized as 'pending'
     """
     from modules.cli.pdf_generator import _collect_dqa_issues
-    _, all_issues = _collect_dqa_issues(validation_results)
+    category_scores, all_issues = _collect_dqa_issues(validation_results)
     reviewable = [i for i in all_issues if i['severity'] in ('error', 'warning')]
+
+    # Compute status: use legacy top-level 'status' if present,
+    # otherwise derive from DQA category scores
+    if 'status' in validation_results:
+        computed_status = validation_results['status']
+    else:
+        total_passed = sum(p for p, _ in category_scores.values())
+        total_checks = sum(t for _, t in category_scores.values())
+        error_count = sum(1 for i in all_issues if i['severity'] == 'error')
+        if total_checks == 0:
+            computed_status = 'unknown'
+        elif total_passed == total_checks:
+            computed_status = 'complete'
+        elif error_count == 0:
+            computed_status = 'partial'
+        else:
+            computed_status = 'incomplete'
 
     feedback = {
         'table': table_name,
         'timestamp': datetime.now().isoformat(),
-        'original_status': validation_results.get('status', 'unknown'),
-        'adjusted_status': validation_results.get('status', 'unknown'),
+        'original_status': computed_status,
+        'adjusted_status': computed_status,
         'total_errors': len(reviewable),
         'accepted_count': 0,
         'rejected_count': 0,
@@ -234,11 +251,12 @@ def save_feedback(feedback: Dict[str, Any], output_dir: str, table_name: str):
     table_name : str
         Name of the table
     """
-    # Update adjusted status before saving
+    # Update adjusted status and timestamp before saving
     feedback['adjusted_status'] = recalculate_status(
         feedback['original_status'],
         feedback
     )
+    feedback['timestamp'] = datetime.now().isoformat()
 
     # Ensure output directory exists
     final_dir = os.path.join(output_dir, 'final', 'results')
