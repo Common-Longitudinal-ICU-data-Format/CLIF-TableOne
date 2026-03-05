@@ -12,6 +12,7 @@ from datetime import datetime
 from pathlib import Path
 
 from modules.cli.pdf_generator import _collect_dqa_issues, DQA_CATEGORIES
+from clifpy.utils.report_generator import _make_error_id
 from clifpy.utils.rule_codes import enrich_issue
 
 # Table display names mapping
@@ -137,7 +138,6 @@ def _score_from_serialized(dqa_data: Dict[str, Any]):
 
 def generate_combined_pdf(table_results: Dict[str, Any], output_path: str,
                           site_name: Optional[str] = None, timezone: Optional[str] = 'UTC',
-                          used_sampling: bool = False,
                           feedback_map: Optional[Dict[str, Any]] = None) -> str:
     """Generate a combined PDF report from multiple table DQA results."""
     try:
@@ -197,18 +197,6 @@ def generate_combined_pdf(table_results: Dict[str, Any], output_path: str,
     story.append(Paragraph(title_text, title_style))
     story.append(Paragraph("Combined Validation Report", heading_style))
     story.append(Spacer(1, 0.2 * inch))
-
-    if used_sampling:
-        note_style = ParagraphStyle(
-            'SampleNote', parent=normal_style, fontSize=10,
-            textColor=colors.HexColor('#007ACC'), alignment=TA_CENTER,
-            fontName='Helvetica-Bold',
-        )
-        story.append(Paragraph(
-            "This report was generated using a 1k ICU sample (stratified by year) for eligible tables",
-            note_style,
-        ))
-        story.append(Spacer(1, 0.15 * inch))
 
     # Check if any table has feedback
     if feedback_map is None:
@@ -287,7 +275,25 @@ def generate_combined_pdf(table_results: Dict[str, Any], output_path: str,
                 row.append('')
             overview_rows.append(row)
             continue
-        scores, _ = _score_from_serialized(dqa_data)
+        scores, all_issues = _score_from_serialized(dqa_data)
+        # Adjust scores for rejected feedback
+        fb = feedback_map.get(table_name)
+        rejected_ids: set = set()
+        if fb and fb.get('user_decisions'):
+            rejected_ids = {
+                eid for eid, d in fb['user_decisions'].items()
+                if d.get('decision') == 'rejected'
+            }
+        if rejected_ids:
+            for cat in list(scores.keys()):
+                cat_rejected = sum(
+                    1 for i in all_issues
+                    if i['category'] == cat and i['severity'] == 'error'
+                    and _make_error_id(i) in rejected_ids
+                )
+                if cat_rejected:
+                    p, t = scores[cat]
+                    scores[cat] = (p + cat_rejected, t)
         row = [display_name]
         for cat in DQA_CATEGORIES:
             if cat in scores:
@@ -363,8 +369,6 @@ def generate_consolidated_csv(table_results: Dict[str, Any], output_path: str,
                                timezone: Optional[str] = 'UTC',
                                feedback_map: Optional[Dict[str, Any]] = None) -> str:
     """Generate a consolidated CSV report from multiple table DQA results."""
-    from clifpy.utils.report_generator import _make_error_id
-
     if feedback_map is None:
         feedback_map = {}
     rows = []
@@ -438,8 +442,7 @@ def generate_consolidated_csv(table_results: Dict[str, Any], output_path: str,
 
 def generate_combined_report(output_dir: str, table_names: List[str],
                             site_name: Optional[str] = None,
-                            timezone: Optional[str] = 'UTC',
-                            used_sampling: bool = False) -> Optional[str]:
+                            timezone: Optional[str] = 'UTC') -> Optional[str]:
     """
     High-level function to generate a combined DQA report (PDF and CSV).
 
@@ -453,8 +456,6 @@ def generate_combined_report(output_dir: str, table_names: List[str],
         Name of the site/hospital.
     timezone : str, optional
         Configured timezone (defaults to UTC).
-    used_sampling : bool, optional
-        Whether a 1k ICU sample was used.
 
     Returns
     -------
@@ -472,7 +473,7 @@ def generate_combined_report(output_dir: str, table_names: List[str],
         reports_dir = os.path.join(output_dir, 'final', 'reports')
         os.makedirs(reports_dir, exist_ok=True)
         pdf_path = os.path.join(reports_dir, 'combined_validation_report.pdf')
-        generate_combined_pdf(table_results, pdf_path, site_name, timezone, used_sampling,
+        generate_combined_pdf(table_results, pdf_path, site_name, timezone,
                               feedback_map=feedback_map)
 
         results_dir = os.path.join(output_dir, 'final', 'results')

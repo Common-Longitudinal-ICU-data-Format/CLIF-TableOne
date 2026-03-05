@@ -43,52 +43,27 @@ TABLE_ANALYZERS = {
 
 ALL_TABLES = list(TABLE_ANALYZERS.keys())
 
-SAMPLE_ELIGIBLE_TABLES = [
-    'labs', 'medication_admin_continuous', 'medication_admin_intermittent',
-    'microbiology_nonculture', 'microbiology_susceptibility', 'microbiology_culture',
-    'vitals', 'patient_assessments', 'respiratory_support', 'position',
-    'patient_procedures', 'adt', 'crrt_therapy', 'ecmo_mcs', 'hospital_diagnosis',
-]
-
 
 class AnalyzeRequest(BaseModel):
-    use_sample: bool = False
     generate_aggregates: bool = False
 
 
 class AnalyzeAllRequest(BaseModel):
-    use_sample: bool = True
     generate_aggregates: bool = False
+    tables: list[str] | None = None
 
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 
-def _load_sample_filter(output_dir: str):
-    """Try to load a sample hospitalization_id filter set."""
-    try:
-        from modules.utils.sampling import load_sample_list, sample_exists
-        if sample_exists(output_dir):
-            sample_list = load_sample_list(output_dir)
-            if sample_list:
-                return set(sample_list)
-    except Exception:
-        pass
-    return None
-
-
-def _build_analyzer(table_name: str, config: dict, sample_filter):
-    """Instantiate an analyzer, optionally with a sample filter."""
+def _build_analyzer(table_name: str, config: dict):
+    """Instantiate an analyzer."""
     analyzer_class = TABLE_ANALYZERS[table_name]
     data_dir = config.get('tables_path', './data')
     filetype = config.get('filetype') or config.get('file_type', 'parquet')
     timezone = config.get('timezone', 'UTC')
     output_dir = config.get('output_dir', 'output')
-
-    use_sample = sample_filter and table_name in SAMPLE_ELIGIBLE_TABLES
-    if use_sample:
-        return analyzer_class(data_dir, filetype, timezone, output_dir, sample_filter=sample_filter)
     return analyzer_class(data_dir, filetype, timezone, output_dir)
 
 
@@ -151,15 +126,13 @@ def _update_task(task_id: str, **fields):
 # ---------------------------------------------------------------------------
 
 def _run_single_analysis(task_id: str, table_name: str, config: dict,
-                         use_sample: bool, generate_aggregates: bool):
+                         generate_aggregates: bool):
     """Run analysis for a single table in a background thread."""
     try:
         _update_task(task_id, status="progress", table=table_name,
                      message=f"Loading {table_name}...", pct=0)
 
-        output_dir = config.get('output_dir', 'output')
-        sample_filter = _load_sample_filter(output_dir) if use_sample else None
-        analyzer = _build_analyzer(table_name, config, sample_filter)
+        analyzer = _build_analyzer(table_name, config)
 
         _update_task(task_id, message=f"Validating {table_name}...", pct=30)
 
@@ -196,22 +169,22 @@ def _run_single_analysis(task_id: str, table_name: str, config: dict,
 
 
 def _run_bulk_analysis(task_id: str, config: dict,
-                       use_sample: bool, generate_aggregates: bool):
-    """Run analysis for all tables in a background thread."""
+                       generate_aggregates: bool,
+                       tables: list[str] | None = None):
+    """Run analysis for selected (or all) tables in a background thread."""
+    tables_to_run = tables if tables else ALL_TABLES
     _update_task(task_id, status="progress", message="Starting bulk analysis...",
                  pct=0, results={"success": [], "failed": [], "skipped": []})
 
-    output_dir = config.get('output_dir', 'output')
-    sample_filter = _load_sample_filter(output_dir) if use_sample else None
     cross_table_caches = {}
     hosp_years = session.get("hosp_years")
 
-    for idx, table_name in enumerate(ALL_TABLES):
-        pct = int((idx / len(ALL_TABLES)) * 100)
-        _update_task(task_id, message=f"Analyzing {table_name}... ({idx + 1}/{len(ALL_TABLES)})", pct=pct)
+    for idx, table_name in enumerate(tables_to_run):
+        pct = int((idx / len(tables_to_run)) * 100)
+        _update_task(task_id, message=f"Analyzing {table_name}... ({idx + 1}/{len(tables_to_run)})", pct=pct)
 
         try:
-            analyzer = _build_analyzer(table_name, config, sample_filter)
+            analyzer = _build_analyzer(table_name, config)
 
             if (analyzer.table is None
                     or not hasattr(analyzer.table, 'df')
@@ -306,10 +279,10 @@ def _run_bulk_analysis(task_id: str, config: dict,
     # ---- Combined report ----
     try:
         from modules.reports.combined_report_generator import generate_combined_report
+        output_dir = config.get('output_dir', 'output')
         generate_combined_report(
-            output_dir, ALL_TABLES,
+            output_dir, tables_to_run,
             config.get('site_name'), config.get('timezone', 'UTC'),
-            used_sampling=use_sample,
         )
     except Exception:
         pass
@@ -375,7 +348,7 @@ async def analyze_table(name: str, body: AnalyzeRequest = AnalyzeRequest()):
 
     thread = threading.Thread(
         target=_run_single_analysis,
-        args=(task_id, name, config, body.use_sample, body.generate_aggregates),
+        args=(task_id, name, config, body.generate_aggregates),
         daemon=True,
     )
     thread.start()
@@ -390,12 +363,17 @@ async def analyze_all(body: AnalyzeAllRequest = AnalyzeAllRequest()):
     if not config:
         raise HTTPException(400, "No config loaded")
 
+    if body.tables is not None:
+        unknown = [t for t in body.tables if t not in TABLE_ANALYZERS]
+        if unknown:
+            raise HTTPException(400, f"Unknown tables: {unknown}")
+
     task_id = str(uuid.uuid4())
     _update_task(task_id, status="starting")
 
     thread = threading.Thread(
         target=_run_bulk_analysis,
-        args=(task_id, config, body.use_sample, body.generate_aggregates),
+        args=(task_id, config, body.generate_aggregates, body.tables),
         daemon=True,
     )
     thread.start()

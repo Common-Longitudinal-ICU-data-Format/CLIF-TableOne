@@ -5,13 +5,13 @@ import { renderSidebar } from './components/sidebar.js';
 import { renderHome } from './pages/home.js';
 import { renderAnalysis } from './pages/analysis.js';
 import { renderTableone } from './pages/tableone.js';
-import { renderInstructions } from './pages/instructions.js';
+import { renderValidation } from './pages/validation.js';
 
 // Register routes
 router.register('home', renderHome);
 router.register('analysis', renderAnalysis);
 router.register('tableone', renderTableone);
-router.register('instructions', renderInstructions);
+router.register('validation', renderValidation);
 
 // Initialize theme from localStorage
 function initTheme() {

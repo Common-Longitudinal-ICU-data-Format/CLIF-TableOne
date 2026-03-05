@@ -36,14 +36,9 @@ class MedicationAdminIntermittentAnalyzer(BaseTableAnalyzer):
         """Return the table name."""
         return 'medication_admin_intermittent'
 
-    def load_table(self, sample_filter=None):
+    def load_table(self):
         """
         Load Medication Admin Intermittent table using clifpy.
-
-        Parameters:
-        -----------
-        sample_filter : list, optional
-            List of hospitalization_ids to filter to (uses clifpy filters)
 
         Handles both naming conventions:
         - medication_admin_intermittent.parquet
@@ -64,34 +59,16 @@ class MedicationAdminIntermittentAnalyzer(BaseTableAnalyzer):
             self.table = None
             return
 
-        # Clifpy saves files directly to output_directory, so pass the final/clifpy subdirectory
-
-
         clifpy_output_dir = os.path.join(self.output_dir, "final", "clifpy")
-
-
         os.makedirs(clifpy_output_dir, exist_ok=True)
 
-
-
         try:
-            # Use filters parameter ONLY when sample is provided
-            if sample_filter is not None:
-                self.table = MedicationAdminIntermittent.from_file(
-                    data_directory=self.data_dir,
-                    filetype=self.filetype,
-                    timezone=self.timezone,
-                    output_directory=clifpy_output_dir,
-                    filters={'hospitalization_id': list(sample_filter)}
-                )
-            else:
-                # Normal load without filters
-                self.table = MedicationAdminIntermittent.from_file(
-                    data_directory=self.data_dir,
-                    filetype=self.filetype,
-                    timezone=self.timezone,
-                    output_directory=clifpy_output_dir
-                )
+            self.table = MedicationAdminIntermittent.from_file(
+                data_directory=self.data_dir,
+                filetype=self.filetype,
+                timezone=self.timezone,
+                output_directory=clifpy_output_dir
+            )
         except FileNotFoundError:
             print(f"⚠️  medication_admin_intermittent table file not found in {self.data_dir}")
             self.table = None

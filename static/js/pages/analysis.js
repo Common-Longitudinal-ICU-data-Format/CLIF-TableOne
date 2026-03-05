@@ -9,17 +9,12 @@ export async function renderAnalysis(el, params) {
   const table = params.table || state.get('selectedTable') || 'patient';
   state.set('selectedTable', table);
 
-  // Update sidebar dropdown
-  const select = document.getElementById('table-select');
-  if (select) select.value = table;
-
   const displayName = TABLE_DISPLAY_NAMES[table] || table;
 
   el.innerHTML = `
     <h1>${displayName} Analysis</h1>
     <div style="margin-bottom:16px;display:flex;gap:12px;align-items:center;">
       <button class="btn btn-primary" id="btn-run-analysis">Run Analysis</button>
-      <label><input type="checkbox" id="chk-sample-single"> Use 1k ICU Sample</label>
       <div id="single-progress" style="display:none;flex:1;">
         <div class="progress-bar"><div class="progress-fill" id="single-progress-fill"></div></div>
         <span id="single-progress-text" style="font-size:0.8rem;opacity:0.7;"></span>
@@ -31,9 +26,8 @@ export async function renderAnalysis(el, params) {
 
   // Run analysis button
   document.getElementById('btn-run-analysis').addEventListener('click', async () => {
-    const useSample = document.getElementById('chk-sample-single').checked;
     try {
-      const { task_id } = await api.analyze(table, { use_sample: useSample, generate_aggregates: true });
+      const { task_id } = await api.analyze(table, { generate_aggregates: true });
       const prog = document.getElementById('single-progress');
       prog.style.display = 'block';
       const fill = document.getElementById('single-progress-fill');
@@ -137,18 +131,30 @@ async function renderValidation(table, panel) {
       html += `<div class="card" style="border-left:4px solid var(--success);"><p>No validation issues found!</p></div>`;
     }
 
-    // Warnings (read-only)
+    // Warnings (read-only, grouped by rule type)
     const warnings = data.issues.filter(i => i.severity === 'warning');
     if (warnings.length > 0) {
-      html += `<div class="card" style="margin-top:12px;">
-        <h3>Warnings (${warnings.length})</h3>
-        <table class="data-table">
-          <thead><tr><th>Check</th><th>Column</th><th>Message</th></tr></thead>
-          <tbody>`;
+      const groups = {};
       for (const w of warnings) {
-        html += `<tr><td>${w.rule_description || w.check_type || ''}</td><td>${w.column_field || 'N/A'}</td><td>${w.message || ''}</td></tr>`;
+        const key = w.rule_description || w.check_type || 'Other';
+        (groups[key] = groups[key] || []).push(w);
       }
-      html += `</tbody></table></div>`;
+      html += `<div class="card" style="margin-top:12px;">
+        <h3>Warnings (${warnings.length})</h3>`;
+      let first = true;
+      for (const [groupName, items] of Object.entries(groups)) {
+        html += `<details${first ? ' open' : ''} style="margin-bottom:8px;">
+          <summary style="cursor:pointer;font-weight:600;padding:6px 0;">${groupName} <span style="background:var(--warning);color:#000;border-radius:10px;padding:1px 8px;font-size:0.85em;font-weight:500;margin-left:6px;">${items.length}</span></summary>
+          <table class="data-table" style="margin:4px 0 8px 16px;">
+            <thead><tr><th>Column</th><th>Message</th></tr></thead>
+            <tbody>`;
+        for (const w of items) {
+          html += `<tr><td>${w.column_field || 'N/A'}</td><td>${w.message || ''}</td></tr>`;
+        }
+        html += `</tbody></table></details>`;
+        first = false;
+      }
+      html += `</div>`;
     }
 
     panel.innerHTML = html;

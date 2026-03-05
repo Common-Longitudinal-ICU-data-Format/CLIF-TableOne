@@ -43,13 +43,6 @@ from .cache_manager import (
 )
 # categorical_numeric_viz requires streamlit — import lazily if needed
 # from .categorical_numeric_viz import show_categorical_numeric_distribution
-from .sampling import (
-    get_icu_hospitalizations_from_adt,
-    generate_stratified_sample,
-    save_sample_list,
-    load_sample_list,
-    sample_exists
-)
 from .datetime_utils import (
     standardize_datetime_columns,
     ensure_datetime_precision_match,
@@ -93,12 +86,6 @@ __all__ = [
     'get_cache_statistics',
     'get_completion_status',
     'get_status_display',
-    # Sampling
-    'get_icu_hospitalizations_from_adt',
-    'generate_stratified_sample',
-    'save_sample_list',
-    'load_sample_list',
-    'sample_exists',
     # Datetime utilities
     'standardize_datetime_columns',
     'ensure_datetime_precision_match',

@@ -15,7 +15,7 @@ class BaseTableAnalyzer(ABC):
     """Base class for all table-specific analyzers."""
 
     def __init__(self, data_dir: str, filetype: str = 'parquet',
-                 timezone: str = 'UTC', output_dir: str = None, sample_filter: Optional[List[str]] = None):
+                 timezone: str = 'UTC', output_dir: str = None, **kwargs):
         """
         Initialize the base analyzer.
 
@@ -29,8 +29,6 @@ class BaseTableAnalyzer(ABC):
             Timezone for datetime processing
         output_dir : str, optional
             Directory for output files
-        sample_filter : list, optional
-            List of hospitalization_ids to filter to (for sampling)
         """
         self.data_dir = data_dir
         self.filetype = filetype
@@ -46,12 +44,7 @@ class BaseTableAnalyzer(ABC):
         os.makedirs(os.path.join(self.output_dir, 'final', 'clifpy'), exist_ok=True)
 
         # Load the table
-        self.load_table(sample_filter)
-
-    # @abstractmethod
-    # def load_table(self, sample_filter=None):
-    #     """Load the specific clifpy table class."""
-    #     pass
+        self.load_table()
 
     def validate(self, tables=None, hosp_years=None) -> Dict[str, Any]:
         """

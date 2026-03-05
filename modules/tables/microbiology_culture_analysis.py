@@ -13,15 +13,8 @@ class MicrobiologyCultureAnalyzer(BaseTableAnalyzer):
     def get_table_name(self) -> str:
         return 'microbiology_culture'
 
-    def load_table(self, sample_filter=None):
-        """
-        Load Microbiology Culture table using clifpy.
-
-        Parameters:
-        -----------
-        sample_filter : list, optional
-            List of hospitalization_ids to filter to (uses clifpy filters)
-        """
+    def load_table(self):
+        """Load Microbiology Culture table using clifpy."""
         data_path = Path(self.data_dir)
         file_without_clif = data_path / f"microbiology_culture.{self.filetype}"
         file_with_clif = data_path / f"clif_microbiology_culture.{self.filetype}"
@@ -31,33 +24,16 @@ class MicrobiologyCultureAnalyzer(BaseTableAnalyzer):
             self.table = None
             return
 
-        # Clifpy saves files directly to output_directory, so pass the final/clifpy subdirectory
-
-
         clifpy_output_dir = os.path.join(self.output_dir, "final", "clifpy")
-
-
         os.makedirs(clifpy_output_dir, exist_ok=True)
 
-
-
         try:
-            # Use filters parameter ONLY when sample is provided
-            if sample_filter is not None:
-                self.table = MicrobiologyCulture.from_file(
-                    data_directory=self.data_dir,
-                    filetype=self.filetype,
-                    timezone=self.timezone,
-                    output_directory=clifpy_output_dir,
-                    filters={'hospitalization_id': list(sample_filter)}
-                )
-            else:
-                self.table = MicrobiologyCulture.from_file(
-                    data_directory=self.data_dir,
-                    filetype=self.filetype,
-                    timezone=self.timezone,
-                    output_directory=clifpy_output_dir
-                )
+            self.table = MicrobiologyCulture.from_file(
+                data_directory=self.data_dir,
+                filetype=self.filetype,
+                timezone=self.timezone,
+                output_directory=clifpy_output_dir
+            )
         except Exception as e:
             print(f"⚠️  Error loading microbiology_culture table: {e}")
             self.table = None

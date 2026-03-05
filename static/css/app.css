@@ -146,10 +146,14 @@ code { background: var(--bg-tertiary); padding: 2px 6px; border-radius: 4px; fon
   width: auto;
 }
 
-.sidebar-logo span {
-  font-weight: 700;
-  font-size: 1rem;
-  letter-spacing: 0.02em;
+.sidebar-logo .version-badge {
+  font-size: 0.65rem;
+  font-weight: 600;
+  padding: 2px 8px;
+  border-radius: 10px;
+  background: var(--primary);
+  color: #fff;
+  letter-spacing: 0.03em;
 }
 
 .sidebar-section {
@@ -209,6 +213,8 @@ code { background: var(--bg-tertiary); padding: 2px 6px; border-radius: 4px; fon
   color: var(--text);
 }
 
+.nav-btn svg { width: 16px; height: 16px; flex-shrink: 0; }
+
 .nav-btn.active {
   background: var(--primary-bg);
   color: var(--primary);
@@ -219,27 +225,29 @@ code { background: var(--bg-tertiary); padding: 2px 6px; border-radius: 4px; fon
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 5px 8px;
+  padding: 6px 10px;
   font-size: 0.78rem;
   color: var(--text-secondary);
   border-radius: 6px;
+  cursor: pointer;
+  transition: background 0.15s, transform 0.1s;
 }
 
 .sidebar-status-item:hover {
   background: var(--bg-hover);
+  transform: translateX(2px);
 }
 
-.status-dot {
-  width: 7px;
-  height: 7px;
-  border-radius: 50%;
+.sidebar-status-item.not_analyzed { opacity: 0.5; }
+.sidebar-status-item.not_analyzed:hover { opacity: 0.8; }
+
+.status-icon {
   flex-shrink: 0;
+  display: flex;
+  align-items: center;
 }
 
-.status-dot.complete { background: var(--success); }
-.status-dot.partial { background: var(--warning); }
-.status-dot.incomplete { background: var(--danger); }
-.status-dot.not_analyzed { background: var(--text-muted); opacity: 0.4; }
+.status-label { flex: 1; }
 
 .sidebar-footer {
   margin-top: auto;
@@ -692,6 +700,68 @@ input[type="checkbox"] {
   justify-content: space-between;
   margin-bottom: 16px;
 }
+
+/* ===========================
+   AI Interpretation Card
+   =========================== */
+.ai-card {
+  border-left: 4px solid var(--info);
+}
+
+.ai-card #ai-all-text,
+.ai-card .ai-prose {
+  font-size: 0.85rem;
+  line-height: 1.7;
+  color: var(--text-secondary);
+  max-height: 400px;
+  overflow-y: auto;
+}
+
+.ai-card #ai-all-text h1, .ai-card .ai-prose h1,
+.ai-card #ai-all-text h2, .ai-card .ai-prose h2,
+.ai-card #ai-all-text h3, .ai-card .ai-prose h3 {
+  font-size: 0.95rem;
+  font-weight: 700;
+  color: var(--text);
+  margin: 16px 0 6px;
+}
+
+.ai-card #ai-all-text strong, .ai-card .ai-prose strong { color: var(--text); }
+
+.ai-card #ai-all-text ul, .ai-card .ai-prose ul,
+.ai-card #ai-all-text ol, .ai-card .ai-prose ol {
+  padding-left: 20px;
+  margin: 6px 0;
+}
+
+.ai-card #ai-all-text li, .ai-card .ai-prose li { margin-bottom: 4px; }
+
+.ai-card #ai-all-text p, .ai-card .ai-prose p { margin: 8px 0; }
+
+.ai-fullpage-overlay .ai-card #ai-all-text,
+.ai-fullpage-overlay .ai-card .ai-prose { max-height: none; }
+
+/* ===========================
+   Hero Navigation Cards
+   =========================== */
+.home-hero { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-bottom: 28px; }
+.hero-card { background: var(--bg-secondary); border: 1px solid var(--card-border); border-radius: var(--radius-lg); padding: 28px 24px; cursor: pointer; transition: all var(--transition); box-shadow: var(--shadow-sm); border-bottom: 3px solid var(--primary); }
+.hero-card:hover { box-shadow: var(--shadow-md); transform: translateY(-2px); border-bottom-color: var(--primary-hover); }
+.hero-card h3 { margin-bottom: 8px; font-size: 1.15rem; }
+.hero-card p { font-size: 0.85rem; margin: 0; color: var(--text-secondary); }
+
+/* ===========================
+   AI Full-Page Overlay
+   =========================== */
+.ai-fullpage-overlay { position: fixed; inset: 0; z-index: 9999; background: var(--bg); overflow-y: auto; padding: 40px; }
+.ai-fullpage-overlay .close-btn { position: fixed; top: 16px; right: 24px; z-index: 10000; }
+
+/* ===========================
+   FAQ
+   =========================== */
+.faq-section details { border-bottom: 1px solid var(--border); padding: 12px 0; }
+.faq-section details summary { cursor: pointer; font-weight: 600; font-size: 0.9rem; padding: 4px 0; }
+.faq-section details[open] summary { color: var(--primary); margin-bottom: 8px; }
 
 /* Plotly dark background fix */
 .js-plotly-plot .plotly .main-svg { border-radius: var(--radius); }

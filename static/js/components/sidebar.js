@@ -27,6 +27,7 @@ export { TABLE_DISPLAY_NAMES };
 
 const SUN_ICON = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="5"/><line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/><line x1="1" y1="12" x2="3" y2="12"/><line x1="21" y1="12" x2="23" y2="12"/><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/></svg>`;
 const MOON_ICON = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>`;
+const HOME_ICON = `<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/></svg>`;
 
 export function renderSidebar(el) {
   const config = state.get('config') || {};
@@ -36,7 +37,7 @@ export function renderSidebar(el) {
     <div class="sidebar-inner">
       <div class="sidebar-logo">
         <img src="${theme === 'dark' ? '/images/clif_logo_v1_white.png' : '/images/clif_logo_red_2.png'}" alt="CLIF" onerror="this.style.display='none'">
-        <span>CLIF 2.1</span>
+        <span class="version-badge">v2.1</span>
       </div>
 
       <div class="sidebar-config">
@@ -44,24 +45,19 @@ export function renderSidebar(el) {
         <div class="site-path">${config.tables_path || ''}</div>
       </div>
 
-      <div class="sidebar-section">
-        <div class="sidebar-label">Navigation</div>
-        <button class="nav-btn" data-page="home">Home</button>
-        <button class="nav-btn" data-page="instructions">Instructions</button>
-        <button class="nav-btn" data-page="tableone">Table One Results</button>
+      <div style="margin-bottom:16px;">
+        <button class="theme-toggle" id="theme-toggle">
+          ${theme === 'dark' ? SUN_ICON : MOON_ICON}
+          ${theme === 'dark' ? 'Light Mode' : 'Dark Mode'}
+        </button>
       </div>
 
-      <div class="sidebar-section">
-        <div class="sidebar-label">Select Table</div>
-        <select id="table-select">
-          ${Object.entries(TABLE_DISPLAY_NAMES).map(([k, v]) =>
-            `<option value="${k}">${v}</option>`
-          ).join('')}
-        </select>
+      <div class="sidebar-section" style="margin-bottom:12px;">
+        <button class="nav-btn" data-page="home">${HOME_ICON} Home</button>
       </div>
 
       <div class="sidebar-section" id="sidebar-status">
-        <div class="sidebar-label">Table Status</div>
+        <div class="sidebar-label">Tables</div>
         <div id="status-list">
           <div style="padding:8px;color:var(--text-muted);font-size:0.8rem;">
             <span class="loading-spinner" style="width:14px;height:14px;margin-right:6px;vertical-align:middle;"></span>
@@ -70,25 +66,13 @@ export function renderSidebar(el) {
         </div>
       </div>
 
-      <div class="sidebar-footer">
-        <button class="theme-toggle" id="theme-toggle">
-          ${theme === 'dark' ? SUN_ICON : MOON_ICON}
-          ${theme === 'dark' ? 'Light Mode' : 'Dark Mode'}
-        </button>
-      </div>
+      <div class="sidebar-footer"></div>
     </div>
   `;
 
   // Nav button click handlers
   el.querySelectorAll('.nav-btn').forEach(btn => {
     btn.addEventListener('click', () => navigate(btn.dataset.page));
-  });
-
-  // Table select handler
-  const select = el.querySelector('#table-select');
-  select.addEventListener('change', () => {
-    state.set('selectedTable', select.value);
-    navigate('analysis', { table: select.value });
   });
 
   // Highlight active nav
@@ -144,13 +128,22 @@ export function updateSidebarStatus(tables) {
   const list = document.getElementById('status-list');
   if (!list) return;
 
+  const STATUS_ICONS = {
+    pass: `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="var(--success)" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>`,
+    fail: `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="var(--danger)" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>`,
+    warning: `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="var(--warning)" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>`,
+    not_analyzed: `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="var(--text-muted)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="8" y1="12" x2="16" y2="12"/></svg>`,
+  };
+
   list.innerHTML = Object.entries(tables).map(([name, info]) => {
     const status = info.status || 'not_analyzed';
     const display = TABLE_DISPLAY_NAMES[name] || name;
+    const full = info.display_name || name;
+    const icon = STATUS_ICONS[status] || STATUS_ICONS.not_analyzed;
     return `
-      <div class="sidebar-status-item" data-table="${name}">
-        <span class="status-dot ${status}"></span>
-        <span>${display}</span>
+      <div class="sidebar-status-item ${status}" data-table="${name}" title="${full}">
+        <span class="status-icon">${icon}</span>
+        <span class="status-label">${display}</span>
       </div>
     `;
   }).join('');
@@ -161,8 +154,6 @@ export function updateSidebarStatus(tables) {
     item.addEventListener('click', () => {
       const table = item.dataset.table;
       state.set('selectedTable', table);
-      const select = document.getElementById('table-select');
-      if (select) select.value = table;
       navigate('analysis', { table });
     });
   });
