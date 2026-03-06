@@ -3,15 +3,18 @@
 import asyncio
 import json
 import logging
+from pathlib import Path
 
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import StreamingResponse
 
 from server.services import cache_service
 from server.services import llm_service
+from server.services import golden_standard
 from server.routes.analysis_routes import ALL_TABLES
 from modules.cli.pdf_generator import _collect_dqa_issues
 from modules.utils.feedback import create_error_id
+from server import session
 
 logger = logging.getLogger("clif.llm")
 
@@ -101,8 +104,26 @@ async def interpret_all():
     if not all_data:
         raise HTTPException(404, "No tables have been analyzed yet")
 
-    context = llm_service.curate_all_tables_context(all_data)
-    stream = llm_service.stream_interpretation(context, llm_service.SYSTEM_PROMPT_ALL)
+    # Try to load consortium comparison from user's table one
+    comparison_text = None
+    try:
+        config = session.get("config") or {}
+        output_dir = config.get("output_dir", "output")
+        tableone_csv = Path(output_dir) / "final" / "tableone" / "table_one_overall.csv"
+        logger.info("Looking for table one at: %s (exists=%s)", tableone_csv, tableone_csv.exists())
+        comparison_text = golden_standard.build_comparison_context(tableone_csv)
+        logger.info("Comparison context: %s", "built successfully" if comparison_text else "not available")
+    except Exception as e:
+        logger.warning("Could not build consortium comparison: %s", e)
+
+    if comparison_text:
+        context = llm_service.curate_all_tables_context_with_comparison(all_data, comparison_text)
+        system_prompt = llm_service.SYSTEM_PROMPT_ALL_WITH_COMPARISON
+    else:
+        context = llm_service.curate_all_tables_context(all_data)
+        system_prompt = llm_service.SYSTEM_PROMPT_ALL
+
+    stream = llm_service.stream_interpretation(context, system_prompt)
     return StreamingResponse(_make_event_generator(stream), media_type="text/event-stream")
 
 

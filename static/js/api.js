@@ -17,6 +17,7 @@ export const api = {
   getTables: () => request('GET', '/tables'),
   analyze: (name, opts) => request('POST', `/analyze/${name}`, opts),
   analyzeAll: (opts) => request('POST', '/analyze-all', opts),
+  getValidationSummary: () => request('GET', '/validation/summary'),
   getValidation: (name) => request('GET', `/validation/${name}`),
   getSummary: (name) => request('GET', `/summary/${name}`),
   getChart: (name, type) => request('GET', `/summary/${name}/charts/${type}`),

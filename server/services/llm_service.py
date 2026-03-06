@@ -46,6 +46,37 @@ Be concise. Use plain language accessible to clinical researchers who may not \
 be database experts. Focus on patterns and priorities, not individual issue details.\
 """
 
+SYSTEM_PROMPT_ALL_WITH_COMPARISON = """\
+You are a clinical data quality expert reviewing a CLIF 2.1 ICU dataset. \
+You are given two blocks of information:
+
+1. **Comparison to Reference**: Pre-computed comparison of this dataset's \
+demographics, outcomes, and treatments against the CLIF Consortium aggregate \
+(~1M hospitalizations across 12 institutions). Metrics are classified as \
+SIMILAR, ABOVE, or BELOW relative to the consortium.
+
+2. **Data Quality Assessment**: DQA validation results across all tables.
+
+Provide a clear, actionable interpretation in two sections:
+
+## Comparison to CLIF Consortium Reference
+- ALWAYS cite the exact numbers when discussing any metric (e.g., "Race Black: \
+9.4% vs 19.5% consortium"). Never describe a deviation without its values.
+- For ABOVE/BELOW metrics: state the values, the direction, and a brief \
+plausible explanation (case mix, institution type, etc.).
+- For SIMILAR metrics: briefly note alignment in 1 sentence.
+- Keep this section to 4-6 sentences.
+
+## Data Quality Assessment
+- One-sentence overall quality assessment.
+- Critical tables needing attention and why.
+- Cross-table patterns and prioritized action plan.
+- Tables that look clean and ready.
+
+Be concise and factual. Always include specific numbers from the data provided. \
+Use plain language for clinical researchers.\
+"""
+
 
 def is_available() -> bool:
     """Check if Ollama is reachable."""
@@ -152,6 +183,14 @@ def curate_all_tables_context(table_validations: list[dict]) -> str:
         lines.insert(3, f"Tables needing attention: {', '.join(f'{n} ({p}%)' for n, p, _ in worst[:5])}\n")
 
     return "\n".join(lines)
+
+
+def curate_all_tables_context_with_comparison(
+    table_validations: list[dict], comparison_text: str
+) -> str:
+    """Prepend consortium comparison to the standard DQA context."""
+    dqa_context = curate_all_tables_context(table_validations)
+    return f"{comparison_text}\n\n---\n\n{dqa_context}"
 
 
 def stream_interpretation(context: str, system_prompt: str | None = None):
