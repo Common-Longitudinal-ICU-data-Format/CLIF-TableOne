@@ -59,19 +59,52 @@ async def get_chart(name: str, chart_type: str):
         charts = {}
         for key, dist_data in distributions.items():
             if isinstance(dist_data, dict) and "values" in dist_data and "counts" in dist_data:
-                charts[key] = {
-                    "data": [{
-                        "type": "pie",
-                        "labels": dist_data["values"],
-                        "values": dist_data["counts"],
-                        "textinfo": "percent+label",
-                    }],
-                    "layout": {
-                        "title": f"{key.replace('_', ' ').title()} Distribution",
-                        "height": 400,
-                        "template": "plotly_dark",
-                    },
-                }
+                labels = dist_data["values"]
+                counts = dist_data["counts"]
+                title = f"{key.replace('_', ' ').title()} Distribution"
+
+                # Many categories: horizontal bar chart with %
+                if len(labels) > 6:
+                    total = sum(counts)
+                    paired = sorted(zip(counts, labels), reverse=True)
+                    sorted_counts, sorted_labels = zip(*paired) if paired else ([], [])
+                    pcts = [c / total * 100 if total else 0 for c in sorted_counts]
+                    height = max(350, len(labels) * 24 + 80)
+
+                    charts[key] = {
+                        "data": [{
+                            "type": "bar",
+                            "y": list(sorted_labels),
+                            "x": list(pcts),
+                            "orientation": "h",
+                            "text": [f"{p:.1f}%" for p in pcts],
+                            "textposition": "outside",
+                            "marker": {"color": "steelblue"},
+                        }],
+                        "layout": {
+                            "title": title,
+                            "xaxis": {"title": "Percentage"},
+                            "yaxis": {"automargin": True, "autorange": "reversed"},
+                            "height": height,
+                            "margin": {"l": 10, "r": 40, "t": 40, "b": 40},
+                            "template": "plotly_dark",
+                        },
+                    }
+                else:
+                    charts[key] = {
+                        "data": [{
+                            "type": "pie",
+                            "labels": labels,
+                            "values": counts,
+                            "textinfo": "percent+label",
+                        }],
+                        "layout": {
+                            "title": title,
+                            "height": 400,
+                            "margin": {"t": 40, "b": 20, "l": 20, "r": 20},
+                            "template": "plotly_dark",
+                        },
+                    }
         return charts
 
     raise HTTPException(404, f"Unknown chart type: {chart_type}")
