@@ -55,7 +55,7 @@ def create_feedback_structure(validation_results: Dict[str, Any],
     """
     from modules.cli.pdf_generator import _collect_dqa_issues
     category_scores, all_issues = _collect_dqa_issues(validation_results)
-    reviewable = [i for i in all_issues if i['severity'] in ('error', 'warning')]
+    reviewable = [i for i in all_issues if i['severity'] == 'error']
 
     # Compute status: use legacy top-level 'status' if present,
     # otherwise derive from DQA category scores

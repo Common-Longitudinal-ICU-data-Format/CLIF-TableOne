@@ -3,7 +3,6 @@ MCIDE (Minimum Common Data Elements) Viewer Module
 Displays MCIDE statistics for CLIF tables
 """
 
-import streamlit as st
 import pandas as pd
 import os
 from pathlib import Path
@@ -144,6 +143,7 @@ def display_mcide_file(filepath: str, table_name: str):
     table_name : str
         Name of the table for context
     """
+    import streamlit as st
     try:
         # Read CSV with explicit encoding and error handling for Windows compatibility
         try:
@@ -253,6 +253,7 @@ def display_mcide_tab(output_dir: str = 'output'):
     output_dir : str
         Base output directory
     """
+    import streamlit as st
     st.header("📊 MCIDE (Minimum Common Data Elements) Statistics")
 
     mcide_dir = os.path.join(output_dir, 'final', 'tableone', 'mcide')
@@ -374,6 +375,7 @@ def display_table_mcide(table_name: str, output_dir: str = 'output'):
         Base output directory
     """
     import json
+    import streamlit as st
 
     mcide_dir = os.path.join(output_dir, 'final', 'tableone', 'mcide')
     stats_dir = os.path.join(output_dir, 'final', 'tableone', 'summary_stats')

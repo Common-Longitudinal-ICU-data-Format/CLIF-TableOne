@@ -425,8 +425,8 @@ def generate_consolidated_csv(table_results: Dict[str, Any], output_path: str,
                 'severity': issue['severity'],
                 'passed': False,
                 'message': issue.get('finding', issue['message']),
-                'decision': decision_info.get('decision', ''),
-                'reason': decision_info.get('reason', ''),
+                'decision': decision_info.get('decision', '') if issue['severity'] == 'error' else '',
+                'reason': decision_info.get('reason', '') if issue['severity'] == 'error' else '',
             })
 
     fieldnames = ['table_name', 'category', 'rule_code', 'rule_description',
