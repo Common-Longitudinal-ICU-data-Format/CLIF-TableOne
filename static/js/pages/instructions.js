@@ -6,9 +6,8 @@ export function renderInstructions(el) {
     <h3>Your Workflow:</h3>
     <ol>
       <li><strong>Review Each Table</strong> - Click through the tables in the grid on the Home page</li>
-      <li><strong>Mark Site-Specific Stuff</strong> - For each error, decide: Accept, Reject, or Pending</li>
-      <li><strong>Regenerate the Combined Report</strong> - Once reviewed, regenerate reports from Home page</li>
-      <li><strong>Need to Update Just One Table?</strong> - Select that table and click Run Analysis</li>
+      <li><strong>Review & Provide Feedback</strong> - For each error, decide: Accept, Reject, or Pending. Saving feedback auto-regenerates reports.</li>
+      <li><strong>Fixed Something? Re-run Validation</strong> - Select the affected table(s) and click "Run Validation" to re-validate. Reports update automatically.</li>
       <li><strong>Check Out Table One</strong> - Explore cohorts, demographics, meds, ventilation, outcomes</li>
     </ol>
   `;

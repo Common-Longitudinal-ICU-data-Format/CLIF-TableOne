@@ -1,6 +1,7 @@
 import { api } from '../api.js';
 import * as state from '../state.js';
 import { navigate } from '../router.js';
+import { connectSSE } from '../sse.js';
 import { renderStatusGrid } from '../components/status-grid.js';
 
 export async function renderValidation(el) {
@@ -10,6 +11,29 @@ export async function renderValidation(el) {
     <p>Click any table to view detailed validation results.</p>
     <div id="dqa-report-card"></div>
     <div class="status-grid" id="status-grid"></div>
+
+    <div id="run-validation-section" style="margin-top:28px;">
+      <h3>Run Validation</h3>
+      <p style="font-size:0.85rem;opacity:0.7;margin-bottom:12px;">Fixed an issue in your data? Re-run validation on specific tables or all at once.</p>
+      <div style="display:flex;gap:12px;align-items:center;margin-bottom:12px;">
+        <label><input type="checkbox" id="chk-aggregates"> Generate Summary Aggregates</label>
+      </div>
+      <div style="margin-bottom:12px;">
+        <a href="#" id="toggle-table-picker" style="font-size:0.85rem;">Select Tables &#9662;</a>
+        <div id="table-picker" style="display:none;margin-top:8px;padding:12px;border:1px solid var(--border);border-radius:6px;">
+          <div style="margin-bottom:8px;font-size:0.8rem;">
+            <a href="#" id="picker-all">All</a> &middot; <a href="#" id="picker-none">None</a>
+          </div>
+          <div id="picker-grid" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:4px 16px;"></div>
+        </div>
+      </div>
+      <button class="btn btn-primary" id="btn-run-validation">Run Validation</button>
+      <div id="bulk-progress" style="display:none;margin-top:16px;">
+        <div class="progress-bar"><div class="progress-fill" id="progress-fill"></div></div>
+        <div id="progress-text" style="margin-top:8px;font-size:0.85rem;opacity:0.7;"></div>
+      </div>
+      <div id="bulk-results"></div>
+    </div>
   `;
 
   document.getElementById('btn-back-home').addEventListener('click', () => navigate('home'));
@@ -22,9 +46,24 @@ export async function renderValidation(el) {
     state.set('tables', tables);
     renderReportCard(summary);
     renderStatusGrid('status-grid', tables);
+    initTablePicker(tables);
   } catch (e) {
     document.getElementById('status-grid').innerHTML = '<p>Could not load table status.</p>';
   }
+
+  // Run validation button
+  document.getElementById('btn-run-validation').addEventListener('click', async () => {
+    const genAgg = document.getElementById('chk-aggregates').checked;
+    const selected = getSelectedTables();
+    const payload = { generate_aggregates: genAgg };
+    if (selected) payload.tables = selected;
+    try {
+      const { task_id } = await api.analyzeAll(payload);
+      showProgress(task_id);
+    } catch (e) {
+      alert('Failed to start validation: ' + e.message);
+    }
+  });
 }
 
 function renderReportCard(data) {
@@ -96,5 +135,80 @@ function renderReportCard(data) {
       popup.querySelector('.dqa-popup-close').addEventListener('click', () => popup.remove());
       popup.addEventListener('click', (ev) => { if (ev.target === popup) popup.remove(); });
     });
+  });
+}
+
+function initTablePicker(tables) {
+  const toggle = document.getElementById('toggle-table-picker');
+  const picker = document.getElementById('table-picker');
+  const grid = document.getElementById('picker-grid');
+
+  toggle.addEventListener('click', (e) => {
+    e.preventDefault();
+    const open = picker.style.display !== 'none';
+    picker.style.display = open ? 'none' : 'block';
+    toggle.innerHTML = open ? 'Select Tables &#9662;' : 'Select Tables &#9652;';
+  });
+
+  for (const [key, info] of Object.entries(tables)) {
+    const label = document.createElement('label');
+    label.style.fontSize = '0.85rem';
+    label.innerHTML = `<input type="checkbox" class="table-pick" value="${key}" checked> ${info.display_name}`;
+    grid.appendChild(label);
+  }
+
+  document.getElementById('picker-all').addEventListener('click', (e) => {
+    e.preventDefault();
+    grid.querySelectorAll('.table-pick').forEach(cb => cb.checked = true);
+  });
+  document.getElementById('picker-none').addEventListener('click', (e) => {
+    e.preventDefault();
+    grid.querySelectorAll('.table-pick').forEach(cb => cb.checked = false);
+  });
+}
+
+function getSelectedTables() {
+  const boxes = document.querySelectorAll('#picker-grid .table-pick');
+  if (!boxes.length) return null;
+  const checked = [...boxes].filter(cb => cb.checked).map(cb => cb.value);
+  return checked.length === boxes.length ? null : checked;
+}
+
+function showProgress(taskId) {
+  const prog = document.getElementById('bulk-progress');
+  prog.style.display = 'block';
+  const fill = document.getElementById('progress-fill');
+  const text = document.getElementById('progress-text');
+  const results = document.getElementById('bulk-results');
+
+  connectSSE(taskId, {
+    onProgress(data) {
+      fill.style.width = (data.pct || 0) + '%';
+      text.textContent = data.message || '';
+    },
+    onComplete(data) {
+      fill.style.width = '100%';
+      text.textContent = 'Complete!';
+      if (data.results) {
+        const r = data.results;
+        results.innerHTML = `
+          <div style="margin-top:16px;">
+            <span class="badge badge-success">${r.success?.length || 0} Successful</span>
+            <span class="badge badge-danger" style="margin-left:8px;">${r.failed?.length || 0} Failed</span>
+            <span class="badge badge-info" style="margin-left:8px;">${r.skipped?.length || 0} Skipped</span>
+          </div>
+        `;
+      }
+      // Refresh table data and re-render grid
+      Promise.all([api.getTables(), api.getValidationSummary()]).then(([{ tables }, summary]) => {
+        state.set('tables', tables);
+        renderReportCard(summary);
+        renderStatusGrid('status-grid', tables);
+      });
+    },
+    onError(data) {
+      text.textContent = 'Error: ' + (data.message || 'Unknown error');
+      fill.style.backgroundColor = 'var(--danger)';
+    },
   });
 }

@@ -25,7 +25,6 @@ export const api = {
   putFeedback: (name, errorId, decision, reason) =>
     request('PUT', `/feedback/${name}`, { error_id: errorId, decision, reason }),
   saveFeedback: (name) => request('POST', `/feedback/${name}/save`),
-  regenerateReports: () => request('POST', '/reports/regenerate'),
   downloadReport: (type) => `${BASE}/reports/download/${type}`,  // returns URL string
   getTableone: (key) => request('GET', `/tableone/${key}`),
   getTableoneTab: (tab) => request('GET', `/tableone/data/${tab}`),

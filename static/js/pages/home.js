@@ -1,7 +1,6 @@
 import { api } from '../api.js';
 import * as state from '../state.js';
 import { navigate } from '../router.js';
-import { connectSSE } from '../sse.js';
 
 export async function renderHome(el) {
   el.innerHTML = `
@@ -37,30 +36,7 @@ export async function renderHome(el) {
       </div>
     </div>
 
-    <!-- Analyze All -->
-    <div id="home-actions">
-      <h3>Analyze All Tables</h3>
-      <div style="display:flex;gap:12px;align-items:center;margin-bottom:12px;">
-        <label><input type="checkbox" id="chk-aggregates"> Generate Summary Aggregates</label>
-      </div>
-      <div style="margin-bottom:12px;">
-        <a href="#" id="toggle-table-picker" style="font-size:0.85rem;">Select Tables &#9662;</a>
-        <div id="table-picker" style="display:none;margin-top:8px;padding:12px;border:1px solid var(--border);border-radius:6px;">
-          <div style="margin-bottom:8px;font-size:0.8rem;">
-            <a href="#" id="picker-all">All</a> &middot; <a href="#" id="picker-none">None</a>
-          </div>
-          <div id="picker-grid" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:4px 16px;"></div>
-        </div>
-      </div>
-      <button class="btn btn-primary" id="btn-analyze-all">Analyze All Tables</button>
-      <button class="btn btn-secondary" id="btn-regenerate" style="margin-left:8px;">Regenerate All Reports</button>
-      <div id="bulk-progress" style="display:none;margin-top:16px;">
-        <div class="progress-bar"><div class="progress-fill" id="progress-fill"></div></div>
-        <div id="progress-text" style="margin-top:8px;font-size:0.85rem;opacity:0.7;"></div>
-      </div>
-      <div id="bulk-results"></div>
-    </div>
-    <div id="download-section" style="margin-top:16px;display:none;">
+    <div id="download-section" style="display:none;">
       <h3>Download Reports</h3>
       <a class="btn btn-secondary" id="dl-pdf" style="text-decoration:none;display:inline-block;">Download PDF Report</a>
       <a class="btn btn-secondary" id="dl-csv" style="text-decoration:none;display:inline-block;margin-left:8px;">Download CSV Summary</a>
@@ -80,25 +56,21 @@ export async function renderHome(el) {
         <p>Click through the tables on the Validation page. Check out the validation results and summary stats. See what's flagged.</p>
       </details>
       <details>
-        <summary>2. Mark Site-Specific Stuff</summary>
+        <summary>2. Review & Provide Feedback</summary>
         <p>In the Validation tab, enable "Review Status-Affecting Errors". For each error, decide:</p>
         <ul>
           <li><strong>Accept</strong> — Legit issue, needs fixing</li>
           <li><strong>Reject</strong> — Not a problem for your site (add a reason why)</li>
           <li><strong>Pending</strong> — You'll deal with it later</li>
         </ul>
-        <p>Hit "Save Feedback" when done.</p>
+        <p>Hit "Save Feedback" when done — the table PDF and combined report are automatically regenerated with your feedback applied.</p>
       </details>
       <details>
-        <summary>3. Regenerate the Combined Report</summary>
-        <p>Once you've reviewed, come back to this page and click "Regenerate All Reports". This creates a fresh combined report with your feedback applied.</p>
+        <summary>3. Fixed Something? Re-run Validation</summary>
+        <p>After fixing an issue in your data, go to the Validation page and use "Run Validation" at the bottom to re-validate affected tables. Reports are automatically updated.</p>
       </details>
       <details>
-        <summary>4. Need to Update Just One Table?</summary>
-        <p>Select that table from the table picker above, then click "Analyze All Tables". Just those selected tables get refreshed.</p>
-      </details>
-      <details>
-        <summary>5. Check Out Table One</summary>
+        <summary>4. Check Out Table One</summary>
         <p>Click "Table One Results" above to explore cohorts, demographics, meds, ventilation, and outcomes — all in one place.</p>
       </details>
       <details>
@@ -118,79 +90,6 @@ export async function renderHome(el) {
   // Check downloads
   checkDownloads();
 
-  // Table picker
-  initTablePicker();
-
-  // Analyze all button
-  document.getElementById('btn-analyze-all').addEventListener('click', async () => {
-    const genAgg = document.getElementById('chk-aggregates').checked;
-    const selected = getSelectedTables();
-    const payload = { generate_aggregates: genAgg };
-    if (selected) payload.tables = selected;
-    try {
-      const { task_id } = await api.analyzeAll(payload);
-      showProgress(task_id);
-    } catch (e) {
-      alert('Failed to start analysis: ' + e.message);
-    }
-  });
-
-  // Regenerate button
-  document.getElementById('btn-regenerate').addEventListener('click', async () => {
-    const btn = document.getElementById('btn-regenerate');
-    btn.disabled = true;
-    btn.textContent = 'Regenerating...';
-    try {
-      await api.regenerateReports();
-      btn.textContent = 'Done!';
-      setTimeout(() => { btn.textContent = 'Regenerate All Reports'; btn.disabled = false; }, 2000);
-      checkDownloads();
-    } catch (e) {
-      alert('Failed: ' + e.message);
-      btn.textContent = 'Regenerate All Reports';
-      btn.disabled = false;
-    }
-  });
-}
-
-async function initTablePicker() {
-  const toggle = document.getElementById('toggle-table-picker');
-  const picker = document.getElementById('table-picker');
-  const grid = document.getElementById('picker-grid');
-
-  toggle.addEventListener('click', (e) => {
-    e.preventDefault();
-    const open = picker.style.display !== 'none';
-    picker.style.display = open ? 'none' : 'block';
-    toggle.innerHTML = open ? 'Select Tables &#9662;' : 'Select Tables &#9652;';
-  });
-
-  try {
-    const { tables } = await api.getTables();
-    for (const [key, info] of Object.entries(tables)) {
-      const label = document.createElement('label');
-      label.style.fontSize = '0.85rem';
-      label.innerHTML = `<input type="checkbox" class="table-pick" value="${key}" checked> ${info.display_name}`;
-      grid.appendChild(label);
-    }
-  } catch (_) { return; }
-
-  document.getElementById('picker-all').addEventListener('click', (e) => {
-    e.preventDefault();
-    grid.querySelectorAll('.table-pick').forEach(cb => cb.checked = true);
-  });
-  document.getElementById('picker-none').addEventListener('click', (e) => {
-    e.preventDefault();
-    grid.querySelectorAll('.table-pick').forEach(cb => cb.checked = false);
-  });
-}
-
-/** Returns null if all checked (send nothing = backend default), or array of selected names. */
-function getSelectedTables() {
-  const boxes = document.querySelectorAll('#picker-grid .table-pick');
-  if (!boxes.length) return null;
-  const checked = [...boxes].filter(cb => cb.checked).map(cb => cb.value);
-  return checked.length === boxes.length ? null : checked;
 }
 
 async function initAiAll() {
@@ -294,44 +193,6 @@ function escapeHtml(str) {
   const d = document.createElement('div');
   d.textContent = str;
   return d.innerHTML;
-}
-
-function showProgress(taskId) {
-  const prog = document.getElementById('bulk-progress');
-  prog.style.display = 'block';
-  const fill = document.getElementById('progress-fill');
-  const text = document.getElementById('progress-text');
-  const results = document.getElementById('bulk-results');
-
-  connectSSE(taskId, {
-    onProgress(data) {
-      fill.style.width = (data.pct || 0) + '%';
-      text.textContent = data.message || '';
-    },
-    onComplete(data) {
-      fill.style.width = '100%';
-      text.textContent = 'Complete!';
-      if (data.results) {
-        const r = data.results;
-        results.innerHTML = `
-          <div style="margin-top:16px;">
-            <span class="badge badge-success">${r.success?.length || 0} Successful</span>
-            <span class="badge badge-danger" style="margin-left:8px;">${r.failed?.length || 0} Failed</span>
-            <span class="badge badge-info" style="margin-left:8px;">${r.skipped?.length || 0} Skipped</span>
-          </div>
-        `;
-      }
-      // Refresh table data in state
-      api.getTables().then(({ tables }) => {
-        state.set('tables', tables);
-      });
-      checkDownloads();
-    },
-    onError(data) {
-      text.textContent = 'Error: ' + (data.message || 'Unknown error');
-      fill.style.backgroundColor = 'var(--danger)';
-    },
-  });
 }
 
 function checkDownloads() {

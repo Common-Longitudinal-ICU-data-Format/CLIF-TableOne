@@ -62,34 +62,6 @@ def _regenerate_table_pdf(table_name: str, config: dict) -> bool:
         return False
 
 
-@router.post("/reports/regenerate")
-async def regenerate_reports():
-    """Regenerate per-table PDFs and the combined report."""
-    config = session.get("config")
-    if not config:
-        raise HTTPException(400, "No config loaded")
-
-    output_dir = config.get("output_dir", "output")
-
-    from modules.reports.combined_report_generator import generate_combined_report
-
-    regenerated = 0
-    for table_name in ALL_TABLES:
-        if _regenerate_table_pdf(table_name, config):
-            regenerated += 1
-
-    # Generate combined report (auto-collects feedback from disk)
-    try:
-        pdf_path = generate_combined_report(
-            output_dir, ALL_TABLES,
-            config.get('site_name'), config.get('timezone', 'UTC'),
-        )
-    except Exception as e:
-        raise HTTPException(500, f"Combined report failed: {e}")
-
-    return {"status": "ok", "regenerated": regenerated, "combined_pdf": pdf_path}
-
-
 @router.post("/reports/regenerate/{name}")
 async def regenerate_single_report(name: str):
     """Regenerate PDF for a single table (called after feedback save)."""
