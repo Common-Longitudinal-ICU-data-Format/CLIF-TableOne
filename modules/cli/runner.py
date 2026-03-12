@@ -316,6 +316,7 @@ class CLIAnalysisRunner:
             try:
                 from clifpy.utils.validator import (
                     run_relational_integrity_checks_from_cache,
+                    run_cross_table_completeness_checks_from_cache,
                     run_cross_table_plausibility_checks_from_cache,
                 )
 
@@ -349,6 +350,36 @@ class CLIAnalysisRunner:
                     f"Relational checks complete: {rel_count} checks across {len(rel_results)} tables"
                 ))
 
+                # --- Cross-table conditional completeness (K.5, cache-based) ---
+                self.log(self.formatter.progress(
+                    f"Running cross-table conditional completeness checks across {len(self._cross_table_caches)} tables (from cache)"
+                ))
+                cond_results = run_cross_table_completeness_checks_from_cache(self._cross_table_caches)
+
+                for tname, cond_checks in cond_results.items():
+                    if not cond_checks:
+                        continue
+                    serialized_cond = {k: v.to_dict() for k, v in cond_checks.items()}
+
+                    # Update in-memory validation results (merge into completeness)
+                    if tname in results['details'] and results['details'][tname].get('validation'):
+                        vr = results['details'][tname]['validation']
+                        vr.setdefault('completeness', {}).update(serialized_cond)
+
+                    # Update saved JSON file (merge into completeness)
+                    json_path = os.path.join(self.output_dir, 'final', 'clifpy', f'{tname}_dqa.json')
+                    if os.path.exists(json_path):
+                        with open(json_path, 'r') as f:
+                            saved = json.load(f)
+                        saved.setdefault('completeness', {}).update(serialized_cond)
+                        with open(json_path, 'w') as f:
+                            json.dump(saved, f, indent=2, default=str)
+
+                cond_count = sum(len(v) for v in cond_results.values())
+                self.log(self.formatter.success(
+                    f"Cross-table conditional completeness checks complete: {cond_count} checks across {len(cond_results)} tables"
+                ))
+
                 # --- Cross-table plausibility (cache-based) ---
                 self.log(self.formatter.progress(
                     f"Running cross-table plausibility checks across {len(self._cross_table_caches)} tables (from cache)"
@@ -380,7 +411,7 @@ class CLIAnalysisRunner:
                 ))
 
                 # Regenerate PDFs for all tables affected by cross-table results
-                affected_tables = set(rel_results.keys()) | set(plaus_results.keys())
+                affected_tables = set(rel_results.keys()) | set(cond_results.keys()) | set(plaus_results.keys())
                 if self.generate_pdf and affected_tables:
                     reports_dir = os.path.join(self.output_dir, 'final', 'reports')
                     for tname in affected_tables:

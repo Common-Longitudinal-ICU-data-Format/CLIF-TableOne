@@ -12,12 +12,37 @@ from server import session
 from server.services import cache_service
 from modules.utils.feedback import load_feedback
 
+import yaml
+
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api", tags=["tables"])
 
 # Cache schema metadata keyed by (path, mtime) to avoid re-reading unchanged files
 _schema_cache: dict[tuple[str, float], dict] = {}
+
+# Cache CLIF schema versions (loaded once from clifpy YAML files)
+_clif_version_cache: dict[str, str | None] = {}
+
+
+def _get_clif_version(table_name: str) -> str | None:
+    """Read the CLIF spec version from the clifpy schema YAML for a table."""
+    if table_name in _clif_version_cache:
+        return _clif_version_cache[table_name]
+    try:
+        import clifpy
+        schema_dir = Path(clifpy.__file__).parent / "schemas"
+        schema_file = schema_dir / f"{table_name}_schema.yaml"
+        if schema_file.exists():
+            with open(schema_file) as f:
+                schema = yaml.safe_load(f)
+            version = schema.get("version")
+            _clif_version_cache[table_name] = version
+            return version
+    except Exception:
+        pass
+    _clif_version_cache[table_name] = None
+    return None
 
 TABLE_DISPLAY_NAMES = {
     'patient': 'Patient',
@@ -120,6 +145,7 @@ def _save_file_metadata(tables: dict, config: dict) -> None:
     for name, info in tables.items():
         entry = {
             "display_name": info["display_name"],
+            "validated_against": f"CLIF v{v}" if (v := _get_clif_version(name)) else None,
             "file_exists": info["file_exists"],
             "file_name": info.get("file_name"),
             "file_size_bytes": info["file_size_bytes"],
@@ -154,6 +180,7 @@ async def get_tables():
         cached = cache_service.get(name)
         info = {
             "display_name": TABLE_DISPLAY_NAMES[name],
+            "validated_against": f"CLIF v{v}" if (v := _get_clif_version(name)) else None,
             "status": cache_service.status(name) if cached else "not_analyzed",
             "timestamp": cached["timestamp"] if cached else None,
             "validation_complete": cached.get("validation_complete", False) if cached else False,

@@ -56,4 +56,26 @@ class MicrobiologySusceptibilityAnalyzer(BaseTableAnalyzer):
     def check_data_quality(self) -> Dict[str, Any]:
         if self.table is None or not hasattr(self.table, 'df') or self.table.df is None:
             return {'error': 'No data available'}
-        return {}
+
+        df = self.table.df
+        quality_checks = {}
+
+        # Check for duplicate susceptibility entries (same organism + antimicrobial)
+        if all(col in df.columns for col in ['organism_id', 'antimicrobial_category']):
+            duplicates_mask = df.duplicated(subset=['organism_id', 'antimicrobial_category'], keep=False)
+            duplicates = duplicates_mask.sum()
+
+            examples = None
+            if duplicates > 0:
+                example_cols = ['organism_id', 'antimicrobial_category', 'susceptibility_category']
+                example_cols = [col for col in example_cols if col in df.columns]
+                examples = df[duplicates_mask][example_cols].head(10)
+
+            quality_checks['duplicate_susceptibility_entries'] = {
+                'count': int(duplicates),
+                'percentage': round((duplicates / len(df) * 100) if len(df) > 0 else 0, 2),
+                'status': 'pass' if duplicates == 0 else 'warning',
+                'examples': examples
+            }
+
+        return quality_checks

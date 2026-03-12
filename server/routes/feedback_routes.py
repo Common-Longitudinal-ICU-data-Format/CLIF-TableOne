@@ -1,6 +1,8 @@
 """Feedback CRUD routes."""
 
+import glob
 import logging
+import os
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 from server import session
@@ -130,3 +132,43 @@ async def save_feedback_to_disk(name: str):
         "filepath": filepath,
         "report_regenerated": report_regenerated,
     }
+
+
+@router.delete("/feedback")
+async def clear_all_feedback():
+    """Delete all feedback files, clear session state, and regenerate combined report."""
+    config = session.get("config") or {}
+    output_dir = config.get("output_dir", "output")
+    results_dir = os.path.join(output_dir, "final", "results")
+
+    # 1. Delete all *_validation_response.json files from disk
+    pattern = os.path.join(results_dir, "*_validation_response.json")
+    deleted_files = glob.glob(pattern)
+    for f in deleted_files:
+        os.remove(f)
+
+    tables_cleared = len(deleted_files)
+    logger.info("Deleted %d feedback files from %s", tables_cleared, results_dir)
+
+    # 2. Clear pending_feedback dict in session
+    session.set("pending_feedback", {})
+
+    # 3. Clear feedback from each table's cached entry
+    store = session.get_store()
+    analyzed = store.get("analyzed_tables", {})
+    for table_name, entry in analyzed.items():
+        entry.pop("feedback", None)
+        entry.pop("feedback_updated", None)
+
+    # 4. Regenerate combined report (without feedback)
+    try:
+        from server.routes.reports_routes import ALL_TABLES
+        from modules.reports.combined_report_generator import generate_combined_report
+        generate_combined_report(
+            output_dir, ALL_TABLES,
+            config.get("site_name"), config.get("timezone", "UTC"),
+        )
+    except Exception as e:
+        logger.warning("Combined report regeneration after feedback clear failed: %s", e)
+
+    return {"status": "cleared", "tables_cleared": tables_cleared}

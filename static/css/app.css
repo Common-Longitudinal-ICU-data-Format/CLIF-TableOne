@@ -814,5 +814,155 @@ input[type="checkbox"] {
   line-height: 1;
 }
 
+/* ===========================
+   Getting Started Guide
+   =========================== */
+.guide-section {
+  margin-bottom: 28px;
+}
+
+.guide-section > summary {
+  cursor: pointer;
+  padding: 4px 0;
+  margin-bottom: 16px;
+}
+
+.guide-section > summary h3 {
+  margin: 0;
+}
+
+.guide-section[open] > summary h3 {
+  color: var(--primary);
+}
+
+.guide-steps {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 16px;
+}
+
+.guide-step {
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-secondary);
+  border: 1px solid var(--card-border);
+  border-radius: var(--radius-lg);
+  padding: 14px;
+  box-shadow: var(--shadow-sm);
+}
+
+.guide-step-image {
+  width: 100%;
+  margin-bottom: 12px;
+}
+
+.guide-step-image img,
+.guide-step-image video {
+  width: 100%;
+  height: auto;
+  border-radius: var(--radius);
+  border: 1px solid var(--border);
+}
+
+.guide-step-placeholder {
+  width: 100%;
+  aspect-ratio: 16 / 10;
+  background: var(--bg-tertiary);
+  border: 2px dashed var(--border-strong);
+  border-radius: var(--radius);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 2.5rem;
+  font-weight: 700;
+  color: var(--text-muted);
+}
+
+.guide-step-text {
+  flex: 1;
+}
+
+.guide-step-number {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  background: var(--primary);
+  color: #fff;
+  font-size: 0.75rem;
+  font-weight: 700;
+  margin-bottom: 6px;
+}
+
+.guide-step-title {
+  font-size: 0.9rem;
+  font-weight: 600;
+  margin: 0 0 4px;
+  color: var(--text);
+}
+
+.guide-step-desc {
+  font-size: 0.8rem;
+  margin: 0;
+  color: var(--text-secondary);
+  line-height: 1.5;
+}
+
+@media (max-width: 700px) {
+  .guide-steps {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* ===========================
+   Info Tooltip (CSS-only)
+   =========================== */
+.info-tooltip {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  font-size: 0.75rem;
+  font-style: normal;
+  color: var(--text-muted);
+  cursor: help;
+  position: relative;
+  vertical-align: middle;
+  margin-left: 4px;
+}
+
+.info-tooltip::after {
+  content: attr(data-tooltip);
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 50%;
+  transform: translateX(-50%);
+  background: var(--bg-secondary);
+  color: var(--text);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius);
+  padding: 10px 14px;
+  font-size: 0.78rem;
+  font-weight: 400;
+  text-transform: none;
+  letter-spacing: normal;
+  white-space: pre-line;
+  line-height: 1.6;
+  width: max-content;
+  max-width: 320px;
+  box-shadow: var(--shadow-md);
+  z-index: 1000;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 0.15s ease;
+}
+
+.info-tooltip:hover::after {
+  opacity: 1;
+}
+
 /* Plotly dark background fix */
 .js-plotly-plot .plotly .main-svg { border-radius: var(--radius); }

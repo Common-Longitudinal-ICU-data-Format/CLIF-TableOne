@@ -47,6 +47,7 @@ export async function renderValidation(el) {
     renderReportCard(summary);
     renderStatusGrid('status-grid', tables);
     initTablePicker(tables);
+    renderClearFeedbackButton(tables);
   } catch (e) {
     document.getElementById('status-grid').innerHTML = '<p>Could not load table status.</p>';
   }
@@ -135,6 +136,43 @@ function renderReportCard(data) {
       popup.querySelector('.dqa-popup-close').addEventListener('click', () => popup.remove());
       popup.addEventListener('click', (ev) => { if (ev.target === popup) popup.remove(); });
     });
+  });
+}
+
+function renderClearFeedbackButton(tables) {
+  const container = document.getElementById('dqa-report-card');
+  if (!container) return;
+
+  // Check if any table has feedback
+  const hasFeedback = Object.values(tables).some(t => t.feedback_timestamp);
+  if (!hasFeedback) return;
+
+  const wrapper = document.createElement('div');
+  wrapper.style.cssText = 'margin-top:12px;text-align:right;';
+  wrapper.innerHTML = `<button class="btn" id="btn-clear-feedback" style="font-size:0.8rem;opacity:0.7;">Clear All Feedback</button>`;
+  container.appendChild(wrapper);
+
+  document.getElementById('btn-clear-feedback').addEventListener('click', async () => {
+    if (!confirm('Clear all review decisions across all tables? This cannot be undone.')) return;
+    const btn = document.getElementById('btn-clear-feedback');
+    btn.disabled = true;
+    btn.textContent = 'Clearing...';
+    try {
+      await api.clearAllFeedback();
+      const [{ tables: updated }, summary] = await Promise.all([
+        api.getTables(),
+        api.getValidationSummary(),
+      ]);
+      state.set('tables', updated);
+      renderReportCard(summary);
+      renderStatusGrid('status-grid', updated);
+      // Re-check — button should not re-appear since feedback is gone
+      renderClearFeedbackButton(updated);
+    } catch (e) {
+      alert('Failed to clear feedback: ' + e.message);
+      btn.disabled = false;
+      btn.textContent = 'Clear All Feedback';
+    }
   });
 }
 

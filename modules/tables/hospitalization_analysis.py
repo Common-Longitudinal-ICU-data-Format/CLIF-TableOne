@@ -372,7 +372,7 @@ class HospitalizationAnalyzer(BaseTableAnalyzer):
             quality_checks['duplicate_hospitalization_ids'] = {
                 'count': int(duplicates),
                 'percentage': round((duplicates / len(df) * 100) if len(df) > 0 else 0, 2),
-                'status': 'pass' if duplicates == 0 else 'warning',
+                'status': 'pass' if duplicates == 0 else 'error',
                 'examples': examples
             }
 

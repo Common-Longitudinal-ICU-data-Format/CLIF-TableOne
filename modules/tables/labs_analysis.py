@@ -184,14 +184,25 @@ class LabsAnalyzer(BaseTableAnalyzer):
             return {'error': 'No data available'}
 
         quality_checks = {}
+        df = self.table.df
 
-        # TODO: Add quality checks after verifying actual data structure
-        # Possible checks:
-        # - Future datetime checks (lab_order_dttm, lab_collect_dttm, lab_result_dttm)
-        # - Invalid lab_order_category values
-        # - Invalid lab_category values
-        # - Datetime logic checks (e.g., result before collection)
-        # - Negative or invalid lab_value_numeric ranges
+        # Check for duplicate lab entries (same hospitalization + collect time + category)
+        if all(col in df.columns for col in ['hospitalization_id', 'lab_collect_dttm', 'lab_category']):
+            duplicates_mask = df.duplicated(subset=['hospitalization_id', 'lab_collect_dttm', 'lab_category'], keep=False)
+            duplicates = duplicates_mask.sum()
+
+            examples = None
+            if duplicates > 0:
+                example_cols = ['hospitalization_id', 'lab_collect_dttm', 'lab_category']
+                example_cols = [col for col in example_cols if col in df.columns]
+                examples = df[duplicates_mask][example_cols].head(10)
+
+            quality_checks['duplicate_lab_entries'] = {
+                'count': int(duplicates),
+                'percentage': round((duplicates / len(df) * 100) if len(df) > 0 else 0, 2),
+                'status': 'pass' if duplicates == 0 else 'warning',
+                'examples': examples
+            }
 
         return quality_checks
 

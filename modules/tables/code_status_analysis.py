@@ -254,4 +254,22 @@ class CodeStatusAnalyzer(BaseTableAnalyzer):
                 'invalid_categories': invalid_categories
             }
 
+        # Check for duplicate code status entries (same patient + timestamp)
+        if all(col in df.columns for col in ['patient_id', 'start_dttm']):
+            duplicates_mask = df.duplicated(subset=['patient_id', 'start_dttm'], keep=False)
+            duplicates = duplicates_mask.sum()
+
+            examples = None
+            if duplicates > 0:
+                example_cols = ['patient_id', 'start_dttm', 'code_status_category']
+                example_cols = [col for col in example_cols if col in df.columns]
+                examples = df[duplicates_mask][example_cols].head(10)
+
+            quality_checks['duplicate_code_status_entries'] = {
+                'count': int(duplicates),
+                'percentage': round((duplicates / len(df) * 100) if len(df) > 0 else 0, 2),
+                'status': 'pass' if duplicates == 0 else 'warning',
+                'examples': examples
+            }
+
         return quality_checks

@@ -128,7 +128,29 @@ class PositionAnalyzer(BaseTableAnalyzer):
     def check_data_quality(self) -> Dict[str, Any]:
         if self.table is None or not hasattr(self.table, 'df') or self.table.df is None:
             return {'error': 'No data available'}
-        return {}
+
+        df = self.table.df
+        quality_checks = {}
+
+        # Check for duplicate position entries (same hospitalization + timestamp)
+        if all(col in df.columns for col in ['hospitalization_id', 'recorded_dttm']):
+            duplicates_mask = df.duplicated(subset=['hospitalization_id', 'recorded_dttm'], keep=False)
+            duplicates = duplicates_mask.sum()
+
+            examples = None
+            if duplicates > 0:
+                example_cols = ['hospitalization_id', 'recorded_dttm', 'position_category']
+                example_cols = [col for col in example_cols if col in df.columns]
+                examples = df[duplicates_mask][example_cols].head(10)
+
+            quality_checks['duplicate_position_entries'] = {
+                'count': int(duplicates),
+                'percentage': round((duplicates / len(df) * 100) if len(df) > 0 else 0, 2),
+                'status': 'pass' if duplicates == 0 else 'warning',
+                'examples': examples
+            }
+
+        return quality_checks
 
     def generate_position_summary(self) -> pd.DataFrame:
         """

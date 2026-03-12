@@ -2,6 +2,59 @@ import { api } from '../api.js';
 import * as state from '../state.js';
 import { navigate } from '../router.js';
 
+const GUIDE_STEPS = [
+  {
+    title: 'Review Validation Status',
+    description: 'See all CLIF tables at a glance — each card shows validation status, DQA scores, and when it was last reviewed.',
+    video: '/images/guide/step-1-overview.mp4',
+    image: '/images/guide/step-1-overview.gif',
+  },
+  {
+    title: 'Drill Into Errors',
+    description: 'Click any table to see detailed results. The "Review & Resolve" section lists each error with its category, check, and message.',
+    video: '/images/guide/step-2-review.mp4',
+    image: '/images/guide/step-2-review.gif',
+  },
+  {
+    title: 'Provide Feedback & Save',
+    description: 'Set each error to Accepted, Rejected, or Pending. Scores update live, and reports regenerate when you save.',
+    video: '/images/guide/step-3-feedback.mp4',
+    image: '/images/guide/step-3-feedback.gif',
+  },
+];
+
+function renderGuideSection(steps) {
+  const stepsHtml = steps.map((step, i) => {
+    const mediaHtml = step.video
+      ? `<video autoplay loop muted playsinline
+               onerror="this.outerHTML='<img src=&quot;${step.image}&quot; alt=&quot;${step.title}&quot; onerror=&quot;this.parentElement.innerHTML=\\'<div class=guide-step-placeholder>${i + 1}</div>\\'&quot;>'"
+         ><source src="${step.video}" type="video/mp4"></video>`
+      : `<img src="${step.image}" alt="${step.title}" loading="lazy"
+              onerror="this.parentElement.innerHTML='<div class=\\'guide-step-placeholder\\'>${i + 1}</div>'">`;
+    return `
+      <div class="guide-step">
+        <div class="guide-step-image">
+          ${mediaHtml}
+        </div>
+        <div class="guide-step-text">
+          <span class="guide-step-number">${i + 1}</span>
+          <h4 class="guide-step-title">${step.title}</h4>
+          <p class="guide-step-desc">${step.description}</p>
+        </div>
+      </div>
+    `;
+  }).join('');
+
+  return `
+    <details class="guide-section" open>
+      <summary><h3 style="display:inline;">Validation Made Easy</h3></summary>
+      <div class="guide-steps">
+        ${stepsHtml}
+      </div>
+    </details>
+  `;
+}
+
 export async function renderHome(el) {
   el.innerHTML = `
     <!-- Hero Nav Cards -->
@@ -41,6 +94,8 @@ export async function renderHome(el) {
       <a class="btn btn-secondary" id="dl-pdf" style="text-decoration:none;display:inline-block;">Download PDF Report</a>
       <a class="btn btn-secondary" id="dl-csv" style="text-decoration:none;display:inline-block;margin-left:8px;">Download CSV Summary</a>
     </div>
+
+    ${renderGuideSection(GUIDE_STEPS)}
 
     <hr>
 

@@ -118,6 +118,11 @@ async function renderValidation(table, panel) {
     if (errors.length > 0) {
       html += `<div class="card" style="margin-bottom:16px;">
         <h3>Review & Resolve (${errors.length} error(s))</h3>
+        <div style="display:flex;justify-content:space-evenly;font-size:0.8rem;margin:0 0 12px;padding:8px 12px;background:var(--bg-secondary,#f5f5f7);border-radius:6px;">
+          <span><strong style="color:var(--text);">Pending</strong> <span style="opacity:0.6;">— not reviewed</span></span>
+          <span><strong style="color:var(--success);">Accepted</strong> <span style="opacity:0.6;">— known issue, acknowledged</span></span>
+          <span><strong style="color:var(--danger);">Rejected</strong> <span style="opacity:0.6;">— incorrect or not applicable</span></span>
+        </div>
         <div id="feedback-container"></div>
         <table class="data-table" id="errors-table">
           <thead><tr><th>Feedback</th><th class="reason-col" style="display:none;">Reason</th><th>Category</th><th>Check</th><th>Column</th><th>Message</th></tr></thead>

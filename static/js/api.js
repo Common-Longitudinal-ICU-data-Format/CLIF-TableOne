@@ -25,6 +25,7 @@ export const api = {
   putFeedback: (name, errorId, decision, reason) =>
     request('PUT', `/feedback/${name}`, { error_id: errorId, decision, reason }),
   saveFeedback: (name) => request('POST', `/feedback/${name}/save`),
+  clearAllFeedback: () => request('DELETE', '/feedback'),
   downloadReport: (type) => `${BASE}/reports/download/${type}`,  // returns URL string
   tableReport: (name) => `${BASE}/reports/table/${name}`,  // returns URL string
   getTableone: (key) => request('GET', `/tableone/${key}`),

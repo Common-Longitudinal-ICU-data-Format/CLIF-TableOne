@@ -236,6 +236,7 @@ def _run_bulk_analysis(task_id: str, config: dict,
             import json as _json
             from clifpy.utils.validator import (
                 run_relational_integrity_checks_from_cache,
+                run_cross_table_completeness_checks_from_cache,
                 run_cross_table_plausibility_checks_from_cache,
             )
             store = session.get_store()
@@ -254,6 +255,23 @@ def _run_bulk_analysis(task_id: str, config: dict,
                     with open(json_path, 'r') as f:
                         saved = _json.load(f)
                     saved.setdefault('completeness', {}).update(serialized_rel)
+                    with open(json_path, 'w') as f:
+                        _json.dump(saved, f, indent=2, default=str)
+
+            cond_results = run_cross_table_completeness_checks_from_cache(cross_table_caches)
+            for tname, cond_checks in cond_results.items():
+                if not cond_checks:
+                    continue
+                serialized_cond = {k: v.to_dict() for k, v in cond_checks.items()}
+                if tname in store.get('analyzed_tables', {}):
+                    vr = store['analyzed_tables'][tname].get('validation')
+                    if vr:
+                        vr.setdefault('completeness', {}).update(serialized_cond)
+                json_path = os.path.join(output_dir, 'final', 'clifpy', f'{tname}_dqa.json')
+                if os.path.exists(json_path):
+                    with open(json_path, 'r') as f:
+                        saved = _json.load(f)
+                    saved.setdefault('completeness', {}).update(serialized_cond)
                     with open(json_path, 'w') as f:
                         _json.dump(saved, f, indent=2, default=str)
 

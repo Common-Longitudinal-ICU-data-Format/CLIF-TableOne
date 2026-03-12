@@ -790,4 +790,22 @@ class MedicationAdminContinuousAnalyzer(BaseTableAnalyzer):
 
         conn.close()
 
+        # Check for duplicate medication entries (same hospitalization + admin time + med category + MAR action)
+        if all(col in df.columns for col in ['hospitalization_id', 'admin_dttm', 'med_category', 'mar_action_category']):
+            duplicates_mask = df.duplicated(subset=['hospitalization_id', 'admin_dttm', 'med_category', 'mar_action_category'], keep=False)
+            duplicates = duplicates_mask.sum()
+
+            examples = None
+            if duplicates > 0:
+                example_cols = ['hospitalization_id', 'admin_dttm', 'med_category', 'mar_action_category', 'med_dose', 'med_dose_unit']
+                example_cols = [col for col in example_cols if col in df.columns]
+                examples = df[duplicates_mask][example_cols].head(10)
+
+            quality_checks['duplicate_med_continuous_entries'] = {
+                'count': int(duplicates),
+                'percentage': round((duplicates / len(df) * 100) if len(df) > 0 else 0, 2),
+                'status': 'pass' if duplicates == 0 else 'warning',
+                'examples': examples
+            }
+
         return quality_checks
