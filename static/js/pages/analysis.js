@@ -16,6 +16,7 @@ export async function renderAnalysis(el, params) {
     <h1>${displayName} Analysis</h1>
     <div style="margin-bottom:16px;display:flex;gap:12px;align-items:center;">
       <button class="btn btn-primary" id="btn-run-analysis">Run Analysis</button>
+      <a class="btn btn-outline" id="btn-view-pdf" href="${api.tableReport(table)}" target="_blank" style="display:none;">View PDF Report</a>
       <div id="single-progress" style="display:none;flex:1;">
         <div class="progress-bar"><div class="progress-fill" id="single-progress-fill"></div></div>
         <span id="single-progress-text" style="font-size:0.8rem;opacity:0.7;"></span>
@@ -45,6 +46,8 @@ export async function renderAnalysis(el, params) {
         onComplete() {
           fill.style.width = '100%';
           text.textContent = 'Complete!';
+          const pdfBtn = document.getElementById('btn-view-pdf');
+          if (pdfBtn) pdfBtn.style.display = '';
           // Reload analysis data
           loadAnalysisData(table, el);
         },
@@ -81,6 +84,10 @@ async function loadAnalysisData(table, el) {
 async function renderValidation(table, panel) {
   try {
     const data = await api.getValidation(table);
+
+    // Show PDF button if validation data exists
+    const pdfBtn = document.getElementById('btn-view-pdf');
+    if (pdfBtn) pdfBtn.style.display = '';
 
     // DQA Score hero
     let html = `

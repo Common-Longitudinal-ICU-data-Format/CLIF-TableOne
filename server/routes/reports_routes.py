@@ -5,7 +5,7 @@ import json
 import logging
 
 from fastapi import APIRouter, HTTPException
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, Response
 from server import session
 
 logger = logging.getLogger("clif.reports")
@@ -84,6 +84,25 @@ async def regenerate_single_report(name: str):
         pass  # Combined report failure shouldn't block single-table save
 
     return {"status": "ok", "table": name}
+
+
+@router.get("/reports/table/{name}")
+async def download_table_report(name: str):
+    """Download an individual table's validation PDF report."""
+    config = session.get("config")
+    if not config:
+        raise HTTPException(400, "No config loaded")
+
+    output_dir = config.get("output_dir", "output")
+    path = os.path.join(output_dir, 'final', 'reports', f'{name}_validation_report.pdf')
+    if not os.path.exists(path):
+        raise HTTPException(404, f"PDF report not found for {name}")
+    with open(path, "rb") as f:
+        content = f.read()
+    return Response(content, media_type="application/pdf", headers={
+        "Content-Disposition": "inline",
+        "Cache-Control": "no-store",
+    })
 
 
 @router.get("/reports/download/{report_type}")

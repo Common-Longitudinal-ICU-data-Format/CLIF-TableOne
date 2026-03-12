@@ -258,6 +258,17 @@ code { background: var(--bg-tertiary); padding: 2px 6px; border-radius: 4px; fon
   box-shadow: 0 2px 8px rgba(99,102,241,0.35);
 }
 
+.btn-outline {
+  background: transparent;
+  color: var(--primary);
+  border: 1px solid var(--primary);
+  text-decoration: none;
+}
+.btn-outline:hover {
+  background: var(--primary);
+  color: #fff;
+}
+
 .btn-back {
   background: transparent;
   color: var(--text-muted);
@@ -388,6 +399,7 @@ code { background: var(--bg-tertiary); padding: 2px 6px; border-radius: 4px; fon
   padding-left: 6px;
   border-left: 2px solid var(--primary);
 }
+
 
 /* ===========================
    Tabs
