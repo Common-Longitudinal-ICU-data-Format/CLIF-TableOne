@@ -227,7 +227,8 @@ class ProjectRunner:
                     stdout=subprocess.PIPE,
                     stderr=subprocess.STDOUT,  # Merge stderr into stdout
                     text=True,
-                    universal_newlines=True
+                    encoding='utf-8',
+                    errors='replace'
                 )
 
                 # Read output in chunks to show progress
