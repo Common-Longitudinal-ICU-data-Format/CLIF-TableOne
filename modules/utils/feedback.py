@@ -273,7 +273,7 @@ def save_feedback(feedback: Dict[str, Any], output_dir: str, table_name: str):
     filename = f"{table_name}_validation_response.json"
     filepath = os.path.join(final_dir, filename)
 
-    with open(filepath, 'w') as f:
+    with open(filepath, 'w', encoding='utf-8') as f:
         json.dump(feedback, f, indent=2, default=str)
 
     return filepath
@@ -302,7 +302,7 @@ def load_feedback(output_dir: str, table_name: str) -> Optional[Dict[str, Any]]:
         return None
 
     try:
-        with open(filepath, 'r') as f:
+        with open(filepath, 'r', encoding='utf-8') as f:
             return json.load(f)
     except (json.JSONDecodeError, IOError):
         return None
@@ -411,7 +411,7 @@ def export_feedback_report(feedback: Dict[str, Any], output_path: str = None) ->
     report_content = "\n".join(report_lines)
 
     if output_path:
-        with open(output_path, 'w') as f:
+        with open(output_path, 'w', encoding='utf-8') as f:
             f.write(report_content)
         return output_path
 

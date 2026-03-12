@@ -58,7 +58,7 @@ from modules.cli import CLIAnalysisRunner, ConsoleFormatter
 def load_config(config_path: str) -> dict:
     """Load configuration from JSON file."""
     try:
-        with open(config_path, 'r') as f:
+        with open(config_path, 'r', encoding='utf-8') as f:
             return json.load(f)
     except FileNotFoundError:
         print(f"[ERROR] Configuration file not found: {config_path}")

@@ -59,7 +59,7 @@ def _resolve_feedback(name: str, config: dict):
     import os, json
     dqa_path = os.path.join(output_dir, 'final', 'clifpy', f'{name}_dqa.json')
     if os.path.exists(dqa_path):
-        with open(dqa_path, 'r') as f:
+        with open(dqa_path, 'r', encoding='utf-8') as f:
             validation_data = json.load(f)
         return create_feedback_structure(validation_data, name)
 

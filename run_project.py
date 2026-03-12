@@ -92,7 +92,7 @@ class ProjectRunner:
             sys.exit(1)
 
         try:
-            with open(self.config_path, 'r') as f:
+            with open(self.config_path, 'r', encoding='utf-8') as f:
                 return json.load(f)
         except Exception as e:
             print(f"[ERROR] Error loading configuration: {e}")

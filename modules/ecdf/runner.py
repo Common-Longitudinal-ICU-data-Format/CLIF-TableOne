@@ -30,7 +30,7 @@ class ECDFRunner:
         if not config_path.exists():
             raise FileNotFoundError(f"Configuration file not found at {config_path}")
 
-        with open(config_path, 'r') as f:
+        with open(config_path, 'r', encoding='utf-8') as f:
             return json.load(f)
 
     def validate_config(self):
@@ -269,7 +269,7 @@ class ECDFRunner:
         report_path = self.project_root / 'output/final/ecdf_execution_report.txt'
         report_path.parent.mkdir(parents=True, exist_ok=True)
 
-        with open(report_path, 'w') as f:
+        with open(report_path, 'w', encoding='utf-8') as f:
             f.write("="*80 + "\n")
             f.write("ECDF/BINS GENERATION EXECUTION REPORT\n")
             f.write("="*80 + "\n\n")

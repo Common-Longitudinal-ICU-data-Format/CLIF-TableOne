@@ -108,7 +108,7 @@ def main(memory_monitor=None) -> bool:
     # Get the project root directory (3 levels up from this file)
     project_root = Path(__file__).parent.parent.parent
     config_path = project_root / "config" / "config.json"
-    with open(config_path, 'r') as f:
+    with open(config_path, 'r', encoding='utf-8') as f:
         config = json.load(f)
 
     checkpoint("1. Configuration Loaded")

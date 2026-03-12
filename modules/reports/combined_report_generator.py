@@ -55,7 +55,7 @@ def collect_table_results(output_dir: str, table_names: List[str]):
         json_path = os.path.join(clifpy_dir, f'{table_name}_dqa.json')
         if os.path.exists(json_path):
             try:
-                with open(json_path, 'r') as f:
+                with open(json_path, 'r', encoding='utf-8') as f:
                     results[table_name] = json.load(f)
             except Exception as e:
                 print(f"Warning: Could not load DQA results for {table_name}: {e}")
@@ -67,7 +67,7 @@ def collect_table_results(output_dir: str, table_names: List[str]):
         fb_path = os.path.join(results_dir, f'{table_name}_validation_response.json')
         if os.path.exists(fb_path):
             try:
-                with open(fb_path, 'r') as f:
+                with open(fb_path, 'r', encoding='utf-8') as f:
                     feedback_map[table_name] = json.load(f)
             except Exception:
                 feedback_map[table_name] = None

@@ -297,7 +297,7 @@ def display_medications_tab(tableone_dir):
     vaso_area_path = tableone_dir / 'vasoactive_area_curve_7d.html'
     if vaso_area_path.exists():
         st.caption("**Area Under Curve (7 days)**")
-        with open(vaso_area_path, 'r') as f:
+        with open(vaso_area_path, 'r', encoding='utf-8') as f:
             html_content = f.read()
         # Display plot with enough height to show legend
         st.components.v1.html(html_content, height=500, scrolling=True)
@@ -307,7 +307,7 @@ def display_medications_tab(tableone_dir):
     vaso_dose_path = tableone_dir / 'vasoactive_median_dose_by_hour.html'
     if vaso_dose_path.exists():
         st.caption("**Median Dose by Hour**")
-        with open(vaso_dose_path, 'r') as f:
+        with open(vaso_dose_path, 'r', encoding='utf-8') as f:
             html_content = f.read()
         st.components.v1.html(html_content, height=500, scrolling=True)
     else:
@@ -321,7 +321,7 @@ def display_medications_tab(tableone_dir):
     sedative_area_path = tableone_dir / 'sedative_area_curve_7d.html'
     if sedative_area_path.exists():
         st.caption("**Area Under Curve (7 days)**")
-        with open(sedative_area_path, 'r') as f:
+        with open(sedative_area_path, 'r', encoding='utf-8') as f:
             html_content = f.read()
         st.components.v1.html(html_content, height=500, scrolling=True)
     else:
@@ -330,7 +330,7 @@ def display_medications_tab(tableone_dir):
     sedative_dose_path = tableone_dir / 'sedative_median_dose_by_hour.html'
     if sedative_dose_path.exists():
         st.caption("**Median Dose by Hour**")
-        with open(sedative_dose_path, 'r') as f:
+        with open(sedative_dose_path, 'r', encoding='utf-8') as f:
             html_content = f.read()
         st.components.v1.html(html_content, height=500, scrolling=True)
     else:
@@ -344,7 +344,7 @@ def display_medications_tab(tableone_dir):
     paralytic_area_path = tableone_dir / 'paralytic_area_curve_7d.html'
     if paralytic_area_path.exists():
         st.caption("**Area Under Curve (7 days)**")
-        with open(paralytic_area_path, 'r') as f:
+        with open(paralytic_area_path, 'r', encoding='utf-8') as f:
             html_content = f.read()
         st.components.v1.html(html_content, height=500, scrolling=True)
     else:
@@ -353,7 +353,7 @@ def display_medications_tab(tableone_dir):
     paralytic_dose_path = tableone_dir / 'paralytic_median_dose_by_hour.html'
     if paralytic_dose_path.exists():
         st.caption("**Median Dose by Hour**")
-        with open(paralytic_dose_path, 'r') as f:
+        with open(paralytic_dose_path, 'r', encoding='utf-8') as f:
             html_content = f.read()
         st.components.v1.html(html_content, height=500, scrolling=True)
     else:
@@ -582,7 +582,7 @@ def show_tableone_results(output_dir='output'):
     report_path = tableone_dir / 'execution_report.txt'
     if report_path.exists():
         with st.expander("ℹ️ Generation Summary", expanded=False):
-            with open(report_path, 'r') as f:
+            with open(report_path, 'r', encoding='utf-8') as f:
                 report_content = f.read()
             st.text(report_content)
 

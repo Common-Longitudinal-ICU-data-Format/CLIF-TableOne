@@ -339,10 +339,10 @@ class CLIAnalysisRunner:
                     # Update saved JSON file (merge into completeness)
                     json_path = os.path.join(self.output_dir, 'final', 'clifpy', f'{tname}_dqa.json')
                     if os.path.exists(json_path):
-                        with open(json_path, 'r') as f:
+                        with open(json_path, 'r', encoding='utf-8') as f:
                             saved = json.load(f)
                         saved.setdefault('completeness', {}).update(serialized_rel)
-                        with open(json_path, 'w') as f:
+                        with open(json_path, 'w', encoding='utf-8') as f:
                             json.dump(saved, f, indent=2, default=str)
 
                 rel_count = sum(len(v) for v in rel_results.values())
@@ -369,10 +369,10 @@ class CLIAnalysisRunner:
                     # Update saved JSON file (merge into completeness)
                     json_path = os.path.join(self.output_dir, 'final', 'clifpy', f'{tname}_dqa.json')
                     if os.path.exists(json_path):
-                        with open(json_path, 'r') as f:
+                        with open(json_path, 'r', encoding='utf-8') as f:
                             saved = json.load(f)
                         saved.setdefault('completeness', {}).update(serialized_cond)
-                        with open(json_path, 'w') as f:
+                        with open(json_path, 'w', encoding='utf-8') as f:
                             json.dump(saved, f, indent=2, default=str)
 
                 cond_count = sum(len(v) for v in cond_results.values())
@@ -399,10 +399,10 @@ class CLIAnalysisRunner:
                     # Update saved JSON file (merge into plausibility)
                     json_path = os.path.join(self.output_dir, 'final', 'clifpy', f'{tname}_dqa.json')
                     if os.path.exists(json_path):
-                        with open(json_path, 'r') as f:
+                        with open(json_path, 'r', encoding='utf-8') as f:
                             saved = json.load(f)
                         saved.setdefault('plausibility', {}).update(serialized_plaus)
-                        with open(json_path, 'w') as f:
+                        with open(json_path, 'w', encoding='utf-8') as f:
                             json.dump(saved, f, indent=2, default=str)
 
                 plaus_count = sum(len(v) for v in plaus_results.values())

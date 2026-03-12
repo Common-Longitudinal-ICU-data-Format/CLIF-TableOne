@@ -30,7 +30,7 @@ def load_clif_config(config_path: str) -> Dict[str, Any]:
     if not os.path.exists(config_path):
         raise FileNotFoundError(f"Config not found: {config_path}")
 
-    with open(config_path, 'r') as f:
+    with open(config_path, 'r', encoding='utf-8') as f:
         config = json.load(f)
 
     required_keys = ['tables_path', 'file_type']
@@ -51,7 +51,7 @@ def load_outlier_config(config_path: str = 'get_ecdf/ecdf_config/outlier_config.
     if not os.path.exists(config_path):
         raise FileNotFoundError(f"Outlier config not found: {config_path}")
 
-    with open(config_path, 'r') as f:
+    with open(config_path, 'r', encoding='utf-8') as f:
         config = yaml.safe_load(f)
 
     return config
@@ -67,7 +67,7 @@ def load_lab_vital_config(config_path: str = 'get_ecdf/ecdf_config/lab_vital_con
     if not os.path.exists(config_path):
         raise FileNotFoundError(f"Lab/vital config not found: {config_path}")
 
-    with open(config_path, 'r') as f:
+    with open(config_path, 'r', encoding='utf-8') as f:
         config = yaml.safe_load(f)
 
     return config

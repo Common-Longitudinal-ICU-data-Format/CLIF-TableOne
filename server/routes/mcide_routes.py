@@ -52,7 +52,7 @@ async def get_mcide(name: str):
         for pattern in patterns:
             for stats_file in sorted(glob.glob(os.path.join(stats_dir, pattern))):
                 try:
-                    with open(stats_file, 'r') as f:
+                    with open(stats_file, 'r', encoding='utf-8') as f:
                         stats_data = json.load(f)
                     result["stats_files"].append({
                         "name": os.path.basename(stats_file).replace('.json', ''),

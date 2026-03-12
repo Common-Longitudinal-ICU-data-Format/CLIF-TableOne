@@ -152,7 +152,7 @@ class MCIDEStatsCollector:
                 # Convert to dictionary for JSON
                 stats_dict = stats.to_dicts()
                 json_path = self.stats_dir / f"{name}.json"
-                with open(json_path, 'w') as f:
+                with open(json_path, 'w', encoding='utf-8') as f:
                     json.dump(stats_dict, f, indent=2, default=str)
                 logger.info(f"✓ Saved stats JSON: {name}.json")
 
@@ -647,7 +647,7 @@ def load_config(config_path: str = '../config/config.json') -> Dict[str, Any]:
     if not config_path.exists():
         raise FileNotFoundError(f"Configuration file not found. Tried: {config_path}")
 
-    with open(config_path, 'r') as f:
+    with open(config_path, 'r', encoding='utf-8') as f:
         config = json.load(f)
 
     logger.info(f"Loaded configuration from: {config_path}")

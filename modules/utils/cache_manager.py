@@ -43,7 +43,7 @@ def _load_json_file(table_name: str, file_suffix: str, config: dict) -> Optional
         return None
 
     try:
-        with open(filepath, 'r') as f:
+        with open(filepath, 'r', encoding='utf-8') as f:
             return json.load(f)
     except Exception as e:
         print(f"Error loading {filepath}: {e}")
@@ -134,7 +134,7 @@ def get_cached_analysis(table_name: str, store: dict, config: dict) -> Optional[
     feedback_path = os.path.join(results_dir, f"{table_name}_validation_response.json")
     if os.path.exists(feedback_path):
         try:
-            with open(feedback_path, 'r') as f:
+            with open(feedback_path, 'r', encoding='utf-8') as f:
                 feedback = json.load(f)
         except Exception as e:
             print(f"Error loading feedback: {e}")
@@ -144,7 +144,7 @@ def get_cached_analysis(table_name: str, store: dict, config: dict) -> Optional[
     validation_path = os.path.join(results_dir, f"{table_name}_summary_validation.json")
     if os.path.exists(validation_path):
         try:
-            with open(validation_path, 'r') as f:
+            with open(validation_path, 'r', encoding='utf-8') as f:
                 validation = json.load(f)
         except Exception as e:
             print(f"Error loading validation: {e}")
@@ -153,7 +153,7 @@ def get_cached_analysis(table_name: str, store: dict, config: dict) -> Optional[
         clifpy_path = os.path.join(output_dir, 'clifpy', f"{table_name}_dqa.json")
         if os.path.exists(clifpy_path):
             try:
-                with open(clifpy_path, 'r') as f:
+                with open(clifpy_path, 'r', encoding='utf-8') as f:
                     validation = json.load(f)
             except Exception as e:
                 print(f"Error loading clifpy DQA: {e}")
@@ -163,7 +163,7 @@ def get_cached_analysis(table_name: str, store: dict, config: dict) -> Optional[
     summary_path = os.path.join(results_dir, f"{table_name}_summary_summary.json")
     if os.path.exists(summary_path):
         try:
-            with open(summary_path, 'r') as f:
+            with open(summary_path, 'r', encoding='utf-8') as f:
                 summary = json.load(f)
         except Exception as e:
             print(f"Error loading summary: {e}")

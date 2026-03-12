@@ -33,7 +33,7 @@ def load_config():
             "config.json not found. Please ensure it exists in the project root."
         )
 
-    with open(config_path, 'r') as f:
+    with open(config_path, 'r', encoding='utf-8') as f:
         config = json.load(f)
 
     return config

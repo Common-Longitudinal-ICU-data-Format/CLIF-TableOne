@@ -252,10 +252,10 @@ def _run_bulk_analysis(task_id: str, config: dict,
                         vr.setdefault('completeness', {}).update(serialized_rel)
                 json_path = os.path.join(output_dir, 'final', 'clifpy', f'{tname}_dqa.json')
                 if os.path.exists(json_path):
-                    with open(json_path, 'r') as f:
+                    with open(json_path, 'r', encoding='utf-8') as f:
                         saved = _json.load(f)
                     saved.setdefault('completeness', {}).update(serialized_rel)
-                    with open(json_path, 'w') as f:
+                    with open(json_path, 'w', encoding='utf-8') as f:
                         _json.dump(saved, f, indent=2, default=str)
 
             cond_results = run_cross_table_completeness_checks_from_cache(cross_table_caches)
@@ -269,10 +269,10 @@ def _run_bulk_analysis(task_id: str, config: dict,
                         vr.setdefault('completeness', {}).update(serialized_cond)
                 json_path = os.path.join(output_dir, 'final', 'clifpy', f'{tname}_dqa.json')
                 if os.path.exists(json_path):
-                    with open(json_path, 'r') as f:
+                    with open(json_path, 'r', encoding='utf-8') as f:
                         saved = _json.load(f)
                     saved.setdefault('completeness', {}).update(serialized_cond)
-                    with open(json_path, 'w') as f:
+                    with open(json_path, 'w', encoding='utf-8') as f:
                         _json.dump(saved, f, indent=2, default=str)
 
             plaus_results = run_cross_table_plausibility_checks_from_cache(cross_table_caches)
@@ -286,10 +286,10 @@ def _run_bulk_analysis(task_id: str, config: dict,
                         vr.setdefault('plausibility', {}).update(serialized_plaus)
                 json_path = os.path.join(output_dir, 'final', 'clifpy', f'{tname}_dqa.json')
                 if os.path.exists(json_path):
-                    with open(json_path, 'r') as f:
+                    with open(json_path, 'r', encoding='utf-8') as f:
                         saved = _json.load(f)
                     saved.setdefault('plausibility', {}).update(serialized_plaus)
-                    with open(json_path, 'w') as f:
+                    with open(json_path, 'w', encoding='utf-8') as f:
                         _json.dump(saved, f, indent=2, default=str)
         except Exception:
             pass

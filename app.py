@@ -246,7 +246,7 @@ TABLE_DISPLAY_NAMES = {
 def load_config(config_path: str) -> dict:
     """Load configuration from JSON file."""
     try:
-        with open(config_path, 'r') as f:
+        with open(config_path, 'r', encoding='utf-8') as f:
             return json.load(f)
     except FileNotFoundError:
         st.error(f"❌ Configuration file not found: {config_path}")
@@ -410,14 +410,14 @@ def show_home_page(config: dict, available_tables: list):
                     if os.path.exists(validation_json_path):
                         try:
                             # Load validation results
-                            with open(validation_json_path, 'r') as f:
+                            with open(validation_json_path, 'r', encoding='utf-8') as f:
                                 validation_results = json.load(f)
 
                             # Check for user feedback
                             feedback = None
                             response_file = os.path.join(results_dir, f'{table_name}_validation_response.json')
                             if os.path.exists(response_file):
-                                with open(response_file, 'r') as f:
+                                with open(response_file, 'r', encoding='utf-8') as f:
                                     feedback = json.load(f)
 
                             # Generate PDF report
@@ -1517,10 +1517,10 @@ def analyze_all_tables(config, available_tables, use_sample=False, generate_aggr
                 # Update saved JSON file (merge into completeness, not relational)
                 json_path = os.path.join(output_dir, 'final', 'clifpy', f'{tname}_dqa.json')
                 if os.path.exists(json_path):
-                    with open(json_path, 'r') as f:
+                    with open(json_path, 'r', encoding='utf-8') as f:
                         saved = _json.load(f)
                     saved.setdefault('completeness', {}).update(serialized_rel)
-                    with open(json_path, 'w') as f:
+                    with open(json_path, 'w', encoding='utf-8') as f:
                         _json.dump(saved, f, indent=2, default=str)
 
             # --- Cross-table plausibility (cache-based) ---
@@ -1540,10 +1540,10 @@ def analyze_all_tables(config, available_tables, use_sample=False, generate_aggr
                 # Update saved JSON file (merge into plausibility)
                 json_path = os.path.join(output_dir, 'final', 'clifpy', f'{tname}_dqa.json')
                 if os.path.exists(json_path):
-                    with open(json_path, 'r') as f:
+                    with open(json_path, 'r', encoding='utf-8') as f:
                         saved = _json.load(f)
                     saved.setdefault('plausibility', {}).update(serialized_plaus)
-                    with open(json_path, 'w') as f:
+                    with open(json_path, 'w', encoding='utf-8') as f:
                         _json.dump(saved, f, indent=2, default=str)
 
             # Regenerate PDFs for affected tables
@@ -1660,7 +1660,7 @@ def analyze_all_tables(config, available_tables, use_sample=False, generate_aggr
                             # CSV download button
                             csv_path = os.path.join(config.get('output_dir', 'output'), 'final', 'results', 'consolidated_validation.csv')
                             if os.path.exists(csv_path):
-                                with open(csv_path, 'r') as f:
+                                with open(csv_path, 'r', encoding='utf-8') as f:
                                     csv_data = f.read()
                                 st.download_button(
                                     label="📥 Download CSV Summary",
@@ -2753,7 +2753,7 @@ def display_summary_statistics(analyzer, summary_stats, table_name):
 
         if os.path.exists(viz_data_path):
             try:
-                with open(viz_data_path, 'r') as f:
+                with open(viz_data_path, 'r', encoding='utf-8') as f:
                     viz_data = json.load(f)
                 use_cached_data = True
             except Exception as e:
@@ -3187,7 +3187,7 @@ def display_summary_statistics(analyzer, summary_stats, table_name):
 
         if os.path.exists(viz_data_path):
             try:
-                with open(viz_data_path, 'r') as f:
+                with open(viz_data_path, 'r', encoding='utf-8') as f:
                     viz_data = json.load(f)
                 use_cached_data = True
             except Exception as e:

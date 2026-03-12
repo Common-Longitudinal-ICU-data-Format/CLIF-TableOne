@@ -380,7 +380,7 @@ class ECMOMCSAnalyzer(BaseTableAnalyzer):
         filepath = os.path.join(final_dir, f"{self.get_table_name()}_numeric_distributions.json")
 
         try:
-            with open(filepath, 'w') as f:
+            with open(filepath, 'w', encoding='utf-8') as f:
                 json.dump(serializable_dists, f, indent=2)
             print(f"Saved numeric distributions to {filepath}")
             return filepath
@@ -468,7 +468,7 @@ class ECMOMCSAnalyzer(BaseTableAnalyzer):
         filepath = os.path.join(final_dir, f"{self.get_table_name()}_visualization_data.json")
 
         try:
-            with open(filepath, 'w') as f:
+            with open(filepath, 'w', encoding='utf-8') as f:
                 json.dump(viz_data, f, indent=2)
             print(f"Saved visualization data to {filepath}")
             return filepath

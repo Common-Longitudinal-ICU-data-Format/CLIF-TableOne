@@ -310,7 +310,7 @@ class BaseTableAnalyzer(ABC):
         filename = f"{table_name}_summary{suffix}.json"
         filepath = os.path.join(self.output_dir, 'final', 'results', filename)
 
-        with open(filepath, 'w') as f:
+        with open(filepath, 'w', encoding='utf-8') as f:
             json.dump(summary, f, indent=2, default=str)
 
     def save_validation_results(self, dqa_result: Dict[str, Any]):
@@ -335,7 +335,7 @@ class BaseTableAnalyzer(ABC):
         if 'total_rows' in dqa_result:
             serializable['total_rows'] = dqa_result['total_rows']
 
-        with open(filepath, 'w') as f:
+        with open(filepath, 'w', encoding='utf-8') as f:
             json.dump(serializable, f, indent=2, default=str)
 
     def save_monthly_trend_csvs(self, dqa_result: Dict[str, Any]) -> Optional[str]:

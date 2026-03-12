@@ -79,21 +79,21 @@ def load_configs(
     if not os.path.exists(clif_config_path):
         raise FileNotFoundError(f"CLIF config not found: {clif_config_path}")
 
-    with open(clif_config_path, 'r') as f:
+    with open(clif_config_path, 'r', encoding='utf-8') as f:
         clif_config = json.load(f)
 
     # Load outlier_config.yaml
     if not os.path.exists(outlier_config_path):
         raise FileNotFoundError(f"Outlier config not found: {outlier_config_path}")
 
-    with open(outlier_config_path, 'r') as f:
+    with open(outlier_config_path, 'r', encoding='utf-8') as f:
         outlier_config = yaml.safe_load(f)
 
     # Load lab_vital_config.yaml
     if not os.path.exists(lab_vital_config_path):
         raise FileNotFoundError(f"Lab/vital config not found: {lab_vital_config_path}")
 
-    with open(lab_vital_config_path, 'r') as f:
+    with open(lab_vital_config_path, 'r', encoding='utf-8') as f:
         lab_vital_config = yaml.safe_load(f)
 
     return clif_config, outlier_config, lab_vital_config

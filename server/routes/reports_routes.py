@@ -39,13 +39,13 @@ def _regenerate_table_pdf(table_name: str, config: dict) -> bool:
         return False
 
     try:
-        with open(dqa_json_path, 'r') as f:
+        with open(dqa_json_path, 'r', encoding='utf-8') as f:
             validation_results = json.load(f)
 
         feedback = None
         response_file = os.path.join(results_dir, f'{table_name}_validation_response.json')
         if os.path.exists(response_file):
-            with open(response_file, 'r') as f:
+            with open(response_file, 'r', encoding='utf-8') as f:
                 feedback = json.load(f)
 
         pdf_path = os.path.join(reports_dir, f"{table_name}_validation_report.pdf")
