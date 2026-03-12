@@ -23,11 +23,17 @@ import io
 # This ensures emojis and Unicode characters display correctly
 if sys.platform == 'win32':
     try:
-        sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
-        sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8')
+        # Set console code page to UTF-8 so emojis/unicode render correctly
+        os.system('chcp 65001 >nul 2>&1')
+        sys.stdout.reconfigure(encoding='utf-8', errors='replace')
+        sys.stderr.reconfigure(encoding='utf-8', errors='replace')
     except (AttributeError, TypeError):
-        # Fallback if running in an environment where stdout.buffer doesn't exist
-        pass
+        # Fallback: wrap the buffer directly
+        try:
+            sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
+            sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8', errors='replace')
+        except (AttributeError, TypeError):
+            pass
 import argparse
 import subprocess
 import json
@@ -66,14 +72,14 @@ class ProjectRunner:
         # Also create a 'latest' symlink/copy
         latest_log = log_dir / 'workflow_execution_latest.log'
 
-        # Setup logging
+        # Setup logging (sys.stdout is already UTF-8 wrapped on Windows at module level)
         logging.basicConfig(
             level=logging.INFO,
             format='%(asctime)s - %(levelname)s - %(message)s',
             handlers=[
-                logging.FileHandler(log_file),
-                logging.FileHandler(latest_log, mode='w'),  # Overwrite latest
-                logging.StreamHandler(sys.stdout)  # Also print to console
+                logging.FileHandler(log_file, encoding='utf-8'),
+                logging.FileHandler(latest_log, mode='w', encoding='utf-8'),
+                logging.StreamHandler(sys.stdout)
             ]
         )
 

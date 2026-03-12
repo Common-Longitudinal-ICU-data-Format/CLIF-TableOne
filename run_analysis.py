@@ -32,11 +32,17 @@ import io
 # This ensures emojis and Unicode characters display correctly
 if sys.platform == 'win32':
     try:
-        sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
-        sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8')
+        # Set console code page to UTF-8 so emojis/unicode render correctly
+        os.system('chcp 65001 >nul 2>&1')
+        sys.stdout.reconfigure(encoding='utf-8', errors='replace')
+        sys.stderr.reconfigure(encoding='utf-8', errors='replace')
     except (AttributeError, TypeError):
-        # Fallback if running in an environment where stdout.buffer doesn't exist
-        pass
+        # Fallback: wrap the buffer directly
+        try:
+            sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
+            sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8', errors='replace')
+        except (AttributeError, TypeError):
+            pass
 import argparse
 import json
 from pathlib import Path
