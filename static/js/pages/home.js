@@ -46,12 +46,12 @@ function renderGuideSection(steps) {
   }).join('');
 
   return `
-    <details class="guide-section" open>
-      <summary><h3 style="display:inline;">Validation Made Easy</h3></summary>
+    <div class="guide-section">
+      <h3>Validation Made Easy</h3>
       <div class="guide-steps">
         ${stepsHtml}
       </div>
-    </details>
+    </div>
   `;
 }
 

@@ -210,9 +210,15 @@ code { background: var(--bg-tertiary); padding: 2px 6px; border-radius: 4px; fon
   flex: 1;
   padding: 32px 40px;
   overflow-y: auto;
-  max-width: 1100px;
+  max-width: 1600px;
   margin: 0 auto;
   width: 100%;
+}
+
+#content > *:not(.guide-section) {
+  max-width: 1100px;
+  margin-left: auto;
+  margin-right: auto;
 }
 
 /* Version badge (used in navbar) */
@@ -821,24 +827,15 @@ input[type="checkbox"] {
   margin-bottom: 28px;
 }
 
-.guide-section > summary {
-  cursor: pointer;
-  padding: 4px 0;
-  margin-bottom: 16px;
-}
-
-.guide-section > summary h3 {
-  margin: 0;
-}
-
-.guide-section[open] > summary h3 {
+.guide-section > h3 {
+  margin: 0 0 16px;
   color: var(--primary);
 }
 
 .guide-steps {
   display: grid;
   grid-template-columns: repeat(3, 1fr);
-  gap: 16px;
+  gap: 20px;
 }
 
 .guide-step {
