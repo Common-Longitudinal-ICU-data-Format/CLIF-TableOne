@@ -145,9 +145,14 @@ def get_cached_analysis(table_name: str, store: dict, config: dict) -> Optional[
     if os.path.exists(validation_path):
         try:
             with open(validation_path, 'r', encoding='utf-8') as f:
-                validation = json.load(f)
+                data = json.load(f)
+            # Validate it has DQA structure (conformance/completeness/plausibility)
+            if any(k in data for k in ('conformance', 'completeness', 'plausibility')):
+                validation = data
+            else:
+                print(f"[cache] {table_name}_summary_validation.json has wrong structure, skipping")
         except Exception as e:
-            print(f"Error loading validation: {e}")
+            print(f"Error loading validation for {table_name}: {e}")
 
     if validation is None:
         clifpy_path = os.path.join(output_dir, 'clifpy', f"{table_name}_dqa.json")
@@ -155,8 +160,11 @@ def get_cached_analysis(table_name: str, store: dict, config: dict) -> Optional[
             try:
                 with open(clifpy_path, 'r', encoding='utf-8') as f:
                     validation = json.load(f)
+                print(f"[cache] Loaded {table_name} DQA from clifpy: keys={list(validation.keys()) if validation else 'None'}")
             except Exception as e:
-                print(f"Error loading clifpy DQA: {e}")
+                print(f"Error loading clifpy DQA for {table_name}: {e}")
+        else:
+            print(f"[cache] No DQA file found for {table_name} at {clifpy_path}")
 
     # Check for summary file in results subdirectory
     summary = None
