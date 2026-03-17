@@ -225,6 +225,11 @@ class ProjectRunner:
         self.logger.info(f"Tables: {', '.join(tables) if tables else 'all'}")
 
         try:
+            # Ensure subprocess uses UTF-8 encoding (especially important on Windows)
+            env = os.environ.copy()
+            env['PYTHONUTF8'] = '1'
+            env['PYTHONIOENCODING'] = 'utf-8'
+
             # Use different approach for Windows vs Unix-like systems
             if sys.platform == 'win32':
                 # On Windows, use communicate() to avoid deadlocks
@@ -234,7 +239,8 @@ class ProjectRunner:
                     stderr=subprocess.STDOUT,  # Merge stderr into stdout
                     text=True,
                     encoding='utf-8',
-                    errors='replace'
+                    errors='replace',
+                    env=env
                 )
 
                 # Read output in chunks to show progress
@@ -258,7 +264,8 @@ class ProjectRunner:
                     stderr=subprocess.PIPE,
                     text=True,
                     bufsize=1,  # Line buffered
-                    universal_newlines=True
+                    universal_newlines=True,
+                    env=env
                 )
 
                 # Stream stdout in real-time
