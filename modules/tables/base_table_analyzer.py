@@ -46,6 +46,99 @@ class BaseTableAnalyzer(ABC):
         # Load the table
         self.load_table()
 
+        # If load_table failed (e.g. OOM), try optimized streaming fallback
+        if self.table is None and self.filetype == 'parquet':
+            self._try_lazy_fallback()
+
+    def _try_lazy_fallback(self):
+        """
+        Fallback loader for large parquet files that OOM during normal loading.
+
+        Uses Polars streaming + arrow-backed pandas to bypass the
+        DuckDB -> numpy-object-dtype pandas intermediate that causes OOM.
+
+        Fallback chain:
+          pl.scan_parquet() -> LazyFrame -> collect(streaming=True) -> Polars DF
+          -> to_arrow() -> to_pandas(types_mapper=ArrowDtype) -> arrow-backed pandas
+
+        Output is a SimpleNamespace with .df, .schema, .table_name matching
+        clifpy's BaseTable interface so all downstream code works unchanged.
+        """
+        from pathlib import Path
+        import logging
+
+        logger = logging.getLogger(__name__)
+        table_name = self.get_table_name()
+        data_path = Path(self.data_dir)
+
+        # Find the parquet file (both naming conventions)
+        file_path = data_path / f"{table_name}.{self.filetype}"
+        if not file_path.exists():
+            file_path = data_path / f"clif_{table_name}.{self.filetype}"
+        if not file_path.exists():
+            return  # File not found — not an OOM issue
+
+        try:
+            import polars as pl
+            import yaml
+            import clifpy
+
+            logger.info(f"Attempting streaming fallback for {table_name}...")
+            print(f"  ℹ️  Normal loading failed for {table_name}, trying streaming fallback...")
+
+            # Load schema from clifpy's installed schemas
+            clifpy_root = os.path.dirname(clifpy.__file__)
+            schema_path = os.path.join(clifpy_root, 'schemas', f'{table_name}_schema.yaml')
+            with open(schema_path, 'r', encoding='utf-8') as f:
+                schema = yaml.safe_load(f)
+
+            # Scan parquet lazily
+            lf = pl.scan_parquet(str(file_path))
+            original_schema = lf.collect_schema()
+            col_names = original_schema.names()
+
+            # Apply timezone to naive datetime columns (matches clifpy behavior)
+            for col_def in schema.get('columns', []):
+                col_name = col_def['name']
+                if col_name not in col_names:
+                    continue
+                if col_def.get('data_type', '').upper() not in ('DATETIME', 'TIMESTAMP'):
+                    continue
+                dtype = original_schema[col_name]
+                if hasattr(dtype, 'time_zone') and dtype.time_zone is None:
+                    lf = lf.with_columns(
+                        pl.col(col_name).dt.replace_time_zone(self.timezone)
+                    )
+
+            # Cast _id columns to string (matches clifpy behavior)
+            for col_name in col_names:
+                if col_name.endswith('_id'):
+                    lf = lf.with_columns(pl.col(col_name).cast(pl.Utf8))
+
+            # Collect with streaming to manage peak memory
+            polars_df = lf.collect(engine="streaming")
+
+            # Convert to arrow-backed pandas (~50% less memory than numpy object dtype)
+            pandas_df = polars_df.to_arrow().to_pandas(types_mapper=pd.ArrowDtype)
+            del polars_df
+
+            # Create table object matching clifpy's BaseTable interface
+            from types import SimpleNamespace
+            self.table = SimpleNamespace(
+                df=pandas_df,
+                schema=schema,
+                table_name=table_name
+            )
+
+            row_count = len(pandas_df)
+            print(f"  ✅ Loaded {table_name} via streaming fallback ({row_count:,} rows, arrow-backed)")
+            logger.info(f"Loaded {table_name} via streaming fallback ({row_count:,} rows, arrow-backed)")
+
+        except Exception as e:
+            logger.warning(f"Streaming fallback failed for {table_name}: {e}")
+            print(f"  ⚠️  Streaming fallback failed for {table_name}: {e}")
+            self.table = None
+
     def validate(self, tables=None, hosp_years=None) -> Dict[str, Any]:
         """
         Run full DQA validation (conformance, completeness, plausibility, relational).
@@ -68,7 +161,7 @@ class BaseTableAnalyzer(ABC):
         """
         from clifpy.utils.validator import run_full_dqa
 
-        table_name = getattr(self.table, 'table_name', None)
+        table_name = getattr(self.table, 'table_name', None) or self.get_table_name()
         schema_name = table_name.replace('clif_', '')  # Removes 'clif_' prefix if present
 
         return run_full_dqa(
