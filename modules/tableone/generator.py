@@ -2117,6 +2117,20 @@ def main(memory_monitor=None) -> bool:
     print(f"\n✅ Added vent_start_dttm to final_tableone_df")
     print(f"   Encounters with vent_start_dttm: {final_tableone_df['vent_start_dttm'].notna().sum():,}")
 
+    # Compute ventilator duration in hours per encounter
+    vent_start_end['vent_duration_hours'] = (
+        vent_start_end['vent_end_time'] - vent_start_end['vent_start_time']
+    ).dt.total_seconds() / 3600
+
+    # Merge into final_tableone_df
+    final_tableone_df = final_tableone_df.merge(
+        vent_start_end[['encounter_block', 'vent_duration_hours']],
+        on='encounter_block',
+        how='left'
+    )
+    final_tableone_df['vent_duration_hours'] = final_tableone_df['vent_duration_hours'].fillna(0.0)
+    print(f"   Total ventilator hours: {final_tableone_df['vent_duration_hours'].sum():,.0f}")
+
     # Memory cleanup: Delete vent_start_end after final use
     del vent_start_end
 
@@ -4573,7 +4587,16 @@ def main(memory_monitor=None) -> bool:
         # -------------------------------------------------------------------------
         imv_n = flag_sums.get('on_vent', 0)
         rows.append(("Invasive mechanical ventilation, n (%)", f"{imv_n:,} ({100*imv_n/N_enc:.1f}%)"))
-    
+
+        # Ventilator hours (total across all encounters in this subset)
+        if 'vent_duration_hours' in df.columns:
+            total_vent_hours = df['vent_duration_hours'].sum()
+            vent_hours_millions = total_vent_hours / 1_000_000
+            if vent_hours_millions >= 0.01:
+                rows.append(("Ventilator hours (millions)", f"{vent_hours_millions:.2f}"))
+            else:
+                rows.append(("Ventilator hours", f"{total_vent_hours:,.0f}"))
+
         if imv_n > 0:
             # ✅ OPTIMIZATION: Filter once, reuse
             imv_subset = df[df['on_vent'] == 1]
