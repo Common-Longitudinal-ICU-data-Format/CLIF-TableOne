@@ -1952,6 +1952,20 @@ def main(memory_monitor=None) -> bool:
     # Merge with encounter_block mapping
     resp_stitched = clif.respiratory_support.df
 
+    # Apply waterfall to fill sparse data and infer device categories from mode strings
+    print(f"\nApplying waterfall processing to respiratory support data. This can take 2-20 mins based on your system specs and cohort size......")
+    clif.respiratory_support = clif.respiratory_support.waterfall(id_col='encounter_block', verbose=True)
+    resp_stitched = clif.respiratory_support.df
+    print(f"Waterfall complete: {len(resp_stitched):,} rows for {resp_stitched['encounter_block'].nunique():,} unique encounter blocks")
+
+    # Write detailed vent hours debug log to intermediate output
+    _vent_log_path = project_root / 'output' / 'intermediate' / 'vent_hours_debug.log'
+    os.makedirs(_vent_log_path.parent, exist_ok=True)
+    _vent_log = open(_vent_log_path, 'w')
+    _vent_log.write("=" * 80 + "\n")
+    _vent_log.write("VENTILATOR HOURS COMPUTATION DEBUG LOG\n")
+    _vent_log.write("=" * 80 + "\n\n")
+
     #  Identify IMV rows
     imv_mask = resp_stitched['device_category'].str.contains("imv", case=False, na=False)
     resp_stitched_imv = resp_stitched[imv_mask].copy()
@@ -1961,6 +1975,13 @@ def main(memory_monitor=None) -> bool:
 
     # Get unique encounter IDs from resp_stitched_imv
     imv_encounters = resp_stitched_imv['encounter_block'].unique()
+
+    # Step A: Waterfall output sample (use first IMV encounter so both samples match)
+    _log_sample_enc = imv_encounters[0] if len(imv_encounters) > 0 else resp_stitched['encounter_block'].iloc[0]
+    sample = resp_stitched[resp_stitched['encounter_block'] == _log_sample_enc][['encounter_block', 'recorded_dttm', 'device_category', 'mode_category']].head(30)
+    _vent_log.write(f"--- Waterfall output sample (encounter: {_log_sample_enc}) ---\n")
+    _vent_log.write(sample.to_string(index=False) + "\n")
+    _vent_log.write("---\n\n")
 
     print(f"Number of IMV encounters: {len(imv_encounters):,}")
     strobe_counts["IMV encounters"] = len(imv_encounters)
@@ -1982,6 +2003,63 @@ def main(memory_monitor=None) -> bool:
     # print(f"\nApplying waterfall processing to respiratory support data. This can take 2-20 mins based on your system specs and cohort size...")
     # clif.respiratory_support = clif.respiratory_support.waterfall(verbose=True)
     # print(f"\n Waterfall complete: {len(clif.respiratory_support.df):,} rows for {clif.respiratory_support.df['hospitalization_id'].nunique():,} unique hospitalizations")
+
+    # ============================================================================
+    # Compute accurate IMV hours from waterfall time-series
+    # Each row's device is "in effect" until the next observation
+    # ============================================================================
+    print("\nComputing IMV hours from waterfall data...")
+    resp_stitched = resp_stitched.sort_values(['encounter_block', 'recorded_dttm'])
+
+    # Step 1: Get next observation timestamp within each encounter
+    resp_stitched['next_recorded_dttm'] = (
+        resp_stitched.groupby('encounter_block')['recorded_dttm'].shift(-1)
+    )
+
+    # Step 2: Duration this device was "in effect"
+    resp_stitched['duration_hours'] = (
+        (resp_stitched['next_recorded_dttm'] - resp_stitched['recorded_dttm'])
+        .dt.total_seconds() / 3600
+    )
+
+    # Log duration calculation for same IMV encounter as waterfall sample
+    if len(imv_encounters) > 0:
+        sample_dur = resp_stitched[resp_stitched['encounter_block'] == _log_sample_enc][
+            ['encounter_block', 'recorded_dttm', 'device_category', 'next_recorded_dttm', 'duration_hours']
+        ].head(30)
+        _vent_log.write(f"--- Duration calc sample (same encounter: {_log_sample_enc}) ---\n")
+        _vent_log.write(sample_dur.to_string(index=False) + "\n")
+        _vent_log.write("---\n\n")
+
+    # Step 3: Sum duration only for IMV rows
+    imv_hours_per_enc = (
+        resp_stitched[resp_stitched['device_category'].str.contains("imv", case=False, na=False)]
+        .groupby('encounter_block')['duration_hours']
+        .sum()
+        .reset_index(name='vent_duration_hours')
+    )
+
+    # Log per-encounter IMV hours
+    _vent_log.write(f"--- IMV hours per encounter (first 20) ---\n")
+    _vent_log.write(imv_hours_per_enc.head(20).to_string(index=False) + "\n")
+    _vent_log.write(f"\nTotal encounters with IMV hours: {len(imv_hours_per_enc):,}\n")
+    _vent_log.write(f"Total IMV hours across all encounters: {imv_hours_per_enc['vent_duration_hours'].sum():,.0f}\n")
+    _vent_log.write("---\n\n")
+
+    # Log summary stats
+    _vent_log.write("--- Summary Statistics ---\n")
+    _vent_log.write(f"IMV hours distribution per encounter:\n")
+    _vent_log.write(imv_hours_per_enc['vent_duration_hours'].describe().to_string() + "\n")
+    _vent_log.write("---\n")
+    _vent_log.close()
+    print(f"   Vent hours debug log written to: {_vent_log_path}")
+
+    # Merge into final_tableone_df
+    final_tableone_df = final_tableone_df.merge(imv_hours_per_enc, on='encounter_block', how='left')
+    final_tableone_df['vent_duration_hours'] = final_tableone_df['vent_duration_hours'].fillna(0.0)
+
+    # Cleanup temp columns
+    resp_stitched.drop(columns=['next_recorded_dttm', 'duration_hours'], inplace=True)
 
 
     # ==============================================================================
@@ -2116,20 +2194,6 @@ def main(memory_monitor=None) -> bool:
 
     print(f"\n✅ Added vent_start_dttm to final_tableone_df")
     print(f"   Encounters with vent_start_dttm: {final_tableone_df['vent_start_dttm'].notna().sum():,}")
-
-    # Compute ventilator duration in hours per encounter
-    vent_start_end['vent_duration_hours'] = (
-        vent_start_end['vent_end_time'] - vent_start_end['vent_start_time']
-    ).dt.total_seconds() / 3600
-
-    # Merge into final_tableone_df
-    final_tableone_df = final_tableone_df.merge(
-        vent_start_end[['encounter_block', 'vent_duration_hours']],
-        on='encounter_block',
-        how='left'
-    )
-    final_tableone_df['vent_duration_hours'] = final_tableone_df['vent_duration_hours'].fillna(0.0)
-    print(f"   Total ventilator hours: {final_tableone_df['vent_duration_hours'].sum():,.0f}")
 
     # Memory cleanup: Delete vent_start_end after final use
     del vent_start_end
@@ -2526,13 +2590,11 @@ def main(memory_monitor=None) -> bool:
     # ============================================================================
 
     # Use the IMV data with hours from vent start that we already created
+    # Data is already waterfall-processed from earlier; just filter to first 24h
     imv_first_24h = resp_imv_post_start[
         (resp_imv_post_start['hours_from_vent_start'] >= 0) &
         (resp_imv_post_start['hours_from_vent_start'] <= 24)
     ].copy()
-    resp_support = clifpy.tables.RespiratorySupport(data=imv_first_24h, output_directory=clifpy_dir)
-    resp_support = resp_support.waterfall(verbose=True)
-    imv_first_24h = resp_support.df.copy()
 
     print(f"\n📊 Data Summary:")
     print(f"   Total IMV records in first 24h: {len(imv_first_24h):,}")
