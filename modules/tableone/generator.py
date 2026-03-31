@@ -86,6 +86,54 @@ import seaborn as sns
 import sys
 import warnings
 
+
+def crosstab_demographics(patient_df: pd.DataFrame) -> pd.DataFrame:
+    """Cross-tabulate race × ethnicity × sex for NIH enrollment reporting.
+
+    Parameters:
+        patient_df: One row per unique patient with columns
+                    race_category, ethnicity_category, sex_category.
+
+    Returns:
+        DataFrame with race rows, (ethnicity, sex) MultiIndex columns,
+        and margin totals.
+    """
+    # CLIF 2.1 patient schema permissible values
+    race_values = [
+        'American Indian or Alaska Native',
+        'Asian',
+        'Native Hawaiian or Other Pacific Islander',
+        'Black or African American',
+        'White',
+        'Other',
+        'Unknown',
+    ]
+    ethnicity_values = ['Non-Hispanic', 'Hispanic', 'Unknown']
+    sex_values = ['Female', 'Male', 'Unknown']
+
+    df = patient_df[['race_category', 'ethnicity_category', 'sex_category']].copy()
+    df.fillna('Unknown', inplace=True)
+
+    ct = pd.crosstab(
+        df['race_category'],
+        [df['ethnicity_category'], df['sex_category']],
+        margins=True,
+        margins_name='Total',
+    )
+
+    # Build expected column ordering
+    col_tuples = [(eth, sex) for eth in ethnicity_values for sex in sex_values]
+    col_tuples.append(('Total', ''))
+    desired_columns = pd.MultiIndex.from_tuples(col_tuples)
+
+    row_order = race_values + ['Total']
+
+    ct = ct.reindex(index=row_order, columns=desired_columns, fill_value=0)
+    ct.index.name = 'Racial Categories'
+
+    return ct
+
+
 def main(memory_monitor=None) -> bool:
     """
     Main execution function for Table One generation.
@@ -1952,6 +2000,9 @@ def main(memory_monitor=None) -> bool:
     # Merge with encounter_block mapping
     resp_stitched = clif.respiratory_support.df
 
+    # Save pre-waterfall snapshot for debug logging (lightweight: just columns we'll log)
+    _pre_waterfall = resp_stitched[['encounter_block', 'recorded_dttm', 'device_category', 'mode_category']].copy()
+
     # Apply waterfall to fill sparse data and infer device categories from mode strings
     print(f"\nApplying waterfall processing to respiratory support data. This can take 2-20 mins based on your system specs and cohort size......")
     clif.respiratory_support = clif.respiratory_support.waterfall(id_col='encounter_block', verbose=True)
@@ -1976,10 +2027,19 @@ def main(memory_monitor=None) -> bool:
     # Get unique encounter IDs from resp_stitched_imv
     imv_encounters = resp_stitched_imv['encounter_block'].unique()
 
-    # Step A: Waterfall output sample (use first IMV encounter so both samples match)
+    # Pick sample encounter (first IMV encounter so all samples match)
     _log_sample_enc = imv_encounters[0] if len(imv_encounters) > 0 else resp_stitched['encounter_block'].iloc[0]
+
+    # Step A: Pre-waterfall sample
+    pre_sample = _pre_waterfall[_pre_waterfall['encounter_block'] == _log_sample_enc].head(30)
+    _vent_log.write(f"--- Pre-waterfall sample (encounter: {_log_sample_enc}) ---\n")
+    _vent_log.write(pre_sample.to_string(index=False) + "\n")
+    _vent_log.write("---\n\n")
+    del _pre_waterfall  # free memory
+
+    # Step B: Post-waterfall sample
     sample = resp_stitched[resp_stitched['encounter_block'] == _log_sample_enc][['encounter_block', 'recorded_dttm', 'device_category', 'mode_category']].head(30)
-    _vent_log.write(f"--- Waterfall output sample (encounter: {_log_sample_enc}) ---\n")
+    _vent_log.write(f"--- Post-waterfall sample (encounter: {_log_sample_enc}) ---\n")
     _vent_log.write(sample.to_string(index=False) + "\n")
     _vent_log.write("---\n\n")
 
@@ -3972,24 +4032,30 @@ def main(memory_monitor=None) -> bool:
     # Extract year from admission_dttm
     final_tableone_df['admission_year'] = final_tableone_df['admission_dttm'].dt.year
 
-    # Create outcome variables
-    final_tableone_df['hospice_outcome'] = (
-        final_tableone_df['discharge_category'].str.lower() == 'hospice'
-    ).astype(int)
+    # Create outcome variables (encounter-level, matching death_enc pattern)
+    _hospice_mask = (final_tableone_df['discharge_category'].str.lower() == 'hospice')
+    final_tableone_df['hospice_outcome'] = _hospice_mask.groupby(
+        final_tableone_df['encounter_block']
+    ).transform('any').astype(int)
 
-    final_tableone_df['expired_outcome'] = (
-        final_tableone_df['discharge_category'].str.lower() == 'expired'
-    ).astype(int)
+    _expired_mask = (final_tableone_df['discharge_category'].str.lower() == 'expired')
+    final_tableone_df['expired_outcome'] = _expired_mask.groupby(
+        final_tableone_df['encounter_block']
+    ).transform('any').astype(int)
 
     final_tableone_df['hospice_or_expired'] = (
-        final_tableone_df['discharge_category'].str.lower().isin(['hospice', 'expired'])
+        final_tableone_df['hospice_outcome'] | final_tableone_df['expired_outcome']
     ).astype(int)
 
     # ============================================================================
     # Aggregate All Metrics by Year (Single DataFrame)
     # ============================================================================
 
-    hospice_trends = final_tableone_df.groupby('admission_year').agg({
+    # Deduplicate to one row per encounter for aggregations (outcome flags are
+    # now encounter-level, so summing multi-row encounters would over-count)
+    _enc_deduped = final_tableone_df.drop_duplicates(subset=['encounter_block'])
+
+    hospice_trends = _enc_deduped.groupby('admission_year').agg({
         'encounter_block': 'count',  # Total encounters
         'hospice_outcome': 'sum',    # Hospice discharges
         'expired_outcome': 'sum',    # Deaths
@@ -4442,11 +4508,39 @@ def main(memory_monitor=None) -> bool:
     duplicates = final_tableone_df['encounter_block'].duplicated().sum()
     print(f"Duplicate encounter_blocks: {duplicates}")
 
+    # Debug: encounters where death_enc=1 but a row has neither expired nor hospice outcome
+    _mort_cols = ['patient_id', 'hospitalization_id', 'encounter_block',
+                  'admission_dttm', 'discharge_dttm', 'discharge_category',
+                  'death_enc', 'expired_outcome', 'hospice_outcome']
+    _death_rows = final_tableone_df[final_tableone_df['death_enc'] == 1][_mort_cols]
+    _problem_blocks = _death_rows.groupby('encounter_block').filter(
+        lambda g: ((g['expired_outcome'] == 0) & (g['hospice_outcome'] == 0)).any()
+    ).sort_values(['encounter_block', 'admission_dttm'])
+
+    os.makedirs(project_root / 'output/intermediate', exist_ok=True)
+    _problem_blocks.to_csv(
+        project_root / 'output/intermediate/mortality_dedup_debug.csv', index=False
+    )
+    print(f"\n🔍 Mortality dedup debug: {_problem_blocks['encounter_block'].nunique()} encounter_blocks "
+          f"with death_enc=1 but missing outcome breakdown")
+    print(f"   Saved: output/intermediate/mortality_dedup_debug.csv ({len(_problem_blocks)} rows)")
+
     if duplicates > 0:
         print("\n⚠️  Multiple rows per encounter_block found. Keeping last value...")
         tableone_df = final_tableone_df.drop_duplicates(subset=['encounter_block'], keep='last')
     else:
         tableone_df = final_tableone_df
+
+    if duplicates > 0 and len(_problem_blocks) > 0:
+        _post = tableone_df[tableone_df['encounter_block'].isin(
+            _problem_blocks['encounter_block'].unique()
+        )][_mort_cols]
+        _post.to_csv(
+            project_root / 'output/intermediate/mortality_dedup_debug_post.csv', index=False
+        )
+        print(f"   Post-dedup: {len(_post)} rows saved to mortality_dedup_debug_post.csv")
+        del _post
+    del _death_rows, _problem_blocks
 
     print(f"\nFinal tableone_df shape: {tableone_df.shape}")
 
@@ -4814,6 +4908,19 @@ def main(memory_monitor=None) -> bool:
         # Save
         table_by_year.to_csv(get_output_path('final', 'tableone', 'table_one_by_year.csv'), index=False)
         print(f"\n✅ Saved: ../output/final/tableone/table_one_by_year.csv")
+
+    # ============================================================================
+    # NIH Enrollment Report — race × ethnicity × sex cross-tabulation
+    # ============================================================================
+    print("\n" + "="*80)
+    print("GENERATING NIH ENROLLMENT REPORT")
+    print("="*80)
+
+    enrollment_report = crosstab_demographics(patient_df)
+    print(enrollment_report.to_string())
+
+    enrollment_report.to_csv(get_output_path('final', 'tableone', 'demographic_crosstab_race_ethnicity_sex.csv'))
+    print(f"\n✅ Saved: ../output/final/tableone/demographic_crosstab_race_ethnicity_sex.csv")
 
     print("\n" + "="*80)
     print("✅ TABLE ONE GENERATION COMPLETE")
