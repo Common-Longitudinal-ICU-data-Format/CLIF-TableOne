@@ -153,10 +153,10 @@ def discover_lab_category_units(
     # Scan labs with Polars (lazy evaluation)
     labs_lazy = pl.scan_parquet(labs_path)
 
-    # Get distinct (lab_category, reference_unit) pairs
+    # Get distinct (lab_category, reference_unit) pairs, normalized to lowercase/stripped
     category_units = labs_lazy.select([
-        'lab_category',
-        'reference_unit'
+        pl.col('lab_category').str.strip_chars().str.to_lowercase().alias('lab_category'),
+        pl.col('reference_unit').str.strip_chars().str.to_lowercase().alias('reference_unit')
     ]).unique()
 
     # Collect with streaming
@@ -415,18 +415,35 @@ def process_category(
     # Scan data with Polars (lazy)
     data_lazy = pl.scan_parquet(file_path)
 
+    # Normalize lab_category and reference_unit to lowercase for consistent matching
+    if table_type == 'labs':
+        data_lazy = data_lazy.with_columns(
+            pl.col(category_col).str.strip_chars().str.to_lowercase()
+        )
+        if 'reference_unit' in data_lazy.columns:
+            data_lazy = data_lazy.with_columns(
+                pl.col('reference_unit').str.strip_chars().str.to_lowercase()
+            )
+
     # Filter to selected category (and unit for labs)
     if table_type == 'labs' and unit:
         if isinstance(unit, list):
-            unit_filter = pl.col('reference_unit').is_in(unit)
-            if '(no units)' in unit:
-                unit_filter = unit_filter | pl.col('reference_unit').is_null()
+            unit_lower = [u.lower().strip() for u in unit]
+            unit_filter = pl.col('reference_unit').is_in(unit_lower)
+            if '(no units)' in unit_lower:
+                unit_filter = unit_filter | pl.col('reference_unit').is_null() | (pl.col('reference_unit').str.strip_chars() == '')
         else:
-            unit_filter = pl.col('reference_unit') == unit
-            if '(no units)' in unit:
-                unit_filter = unit_filter | pl.col('reference_unit').is_null()
+            unit_l = unit.lower().strip()
+            if unit_l == '(no units)':
+                unit_filter = (
+                    pl.col('reference_unit').is_null() |
+                    (pl.col('reference_unit').str.strip_chars() == '') |
+                    (pl.col('reference_unit') == '(no units)')
+                )
+            else:
+                unit_filter = pl.col('reference_unit') == unit_l
         data_category = data_lazy.filter(
-            (pl.col(category_col) == category) &
+            (pl.col(category_col) == category.lower().strip()) &
             unit_filter
         ).select([
             'hospitalization_id',
@@ -435,7 +452,7 @@ def process_category(
         ])
     else:
         data_category = data_lazy.filter(
-            pl.col(category_col) == category
+            pl.col(category_col) == category.lower().strip() if table_type == 'labs' else pl.col(category_col) == category
         ).select([
             'hospitalization_id',
             datetime_col,
@@ -826,12 +843,12 @@ def main():
             log_entries.append(f"[SKIP] {category} ({unit}): Category not in outlier_config.yaml")
             continue
 
-        # Check if unit matches config's reference_unit (config stores as list)
+        # Check if unit matches config's reference_unit (case-insensitive, handles list and string)
         config_units = labs_config[category].get('reference_unit', [])
-        # Handle both list and string config formats
         if isinstance(config_units, str):
             config_units = [config_units]
-        if unit not in config_units:
+        config_units_lower = [u.lower().strip() for u in config_units]
+        if unit.lower().strip() not in config_units_lower:
             log_entries.append(
                 f"[UNIT MISMATCH] {category}: Found unit '{unit}' in data, "
                 f"but config expects one of {config_units}"

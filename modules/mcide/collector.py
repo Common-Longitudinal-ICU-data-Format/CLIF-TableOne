@@ -215,8 +215,10 @@ class MCIDEStatsCollector:
 
         lf = pl.scan_parquet(table_path) if self.file_type == 'parquet' else pl.scan_csv(table_path)
 
-        # Normalize lab_category to lowercase for consistent grouping
+        # Normalize lab_category and reference_unit to lowercase for consistent grouping
         lf = lf.with_columns(pl.col('lab_category').str.to_lowercase().alias('lab_category'))
+        if 'reference_unit' in lf.columns:
+            lf = lf.with_columns(pl.col('reference_unit').str.strip_chars().str.to_lowercase().alias('reference_unit'))
 
         # MCIDE collections
         self.collect_mcide(lf, 'labs', ['lab_name', 'lab_category', 'lab_loinc_code'])

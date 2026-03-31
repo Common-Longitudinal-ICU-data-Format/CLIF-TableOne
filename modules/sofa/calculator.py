@@ -290,6 +290,9 @@ def _load_labs(
         pl.col('hospitalization_id').cast(pl.Utf8).alias('hospitalization_id')
     ])
 
+    # Normalize lab_category to lowercase for consistent matching with REQUIRED_LABS
+    labs = labs.with_columns(pl.col('lab_category').str.to_lowercase())
+
     # Filter for required categories and hospitalization_ids
     labs = labs.filter(
         pl.col('lab_category').is_in(REQUIRED_LABS) &
