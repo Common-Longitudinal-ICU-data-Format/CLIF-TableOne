@@ -65,11 +65,23 @@ def compute_per_stay_observation_counts(
     # Scan data with Polars (lazy)
     data_lazy = pl.scan_parquet(file_path)
 
+    # Normalize lab_category to lowercase for consistent matching
+    if table_type == 'labs' and category_col in data_lazy.columns:
+        data_lazy = data_lazy.with_columns(pl.col(category_col).str.to_lowercase())
+
     # Filter to selected category (and unit for labs)
-    if table_type == 'labs' and unit:
+    if table_type == 'labs':
+        if unit and unit.lower() != "(no units)":
+            unit_filter = pl.col('reference_unit').str.to_lowercase() == unit.lower()
+        else:
+            # Unitless labs (e.g., pH): match null, empty, or "(no units)"
+            unit_filter = (
+                pl.col('reference_unit').is_null() |
+                (pl.col('reference_unit').str.strip_chars() == '') |
+                (pl.col('reference_unit').str.to_lowercase() == '(no units)')
+            )
         data_filtered = data_lazy.filter(
-            (pl.col(category_col) == category) &
-            (pl.col('reference_unit') == unit)
+            (pl.col(category_col) == category) & unit_filter
         ).select([
             'hospitalization_id',
             datetime_col,
@@ -278,9 +290,15 @@ def compute_collection_statistics(
         if category not in labs_config:
             continue
 
-        # Check if unit matches config
+        # Check if unit matches config (handle both string and list formats, case-insensitive)
+        # Treat null/empty unit as "(no units)" for unitless labs like pH
+        unit_normalized = unit.lower().strip() if unit else "(no units)"
         config_unit = labs_config[category].get('reference_unit')
-        if unit != config_unit:
+        if isinstance(config_unit, list):
+            valid_units = [u.lower() for u in config_unit]
+        else:
+            valid_units = [config_unit.lower()] if config_unit else []
+        if unit_normalized not in valid_units:
             continue
 
         try:
