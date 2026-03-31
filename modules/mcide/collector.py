@@ -215,6 +215,9 @@ class MCIDEStatsCollector:
 
         lf = pl.scan_parquet(table_path) if self.file_type == 'parquet' else pl.scan_csv(table_path)
 
+        # Normalize lab_category to lowercase for consistent grouping
+        lf = lf.with_columns(pl.col('lab_category').str.to_lowercase().alias('lab_category'))
+
         # MCIDE collections
         self.collect_mcide(lf, 'labs', ['lab_name', 'lab_category', 'lab_loinc_code'])
 
@@ -225,12 +228,13 @@ class MCIDEStatsCollector:
         if self.check_columns_exist(lf, ['lab_order_name', 'lab_order_category']):
             self.collect_mcide(lf, 'labs', ['lab_order_name', 'lab_order_category'])
 
-        # Summary statistics for lab_value_numeric by category
+        # Summary statistics for lab_value_numeric by category and reference unit
         if self.check_column_exists(lf, 'lab_value_numeric'):
             logger.info("Calculating labs summary statistics...")
             try:
+                group_cols = ['lab_category', 'reference_unit'] if 'reference_unit' in lf.columns else ['lab_category']
                 stats = (
-                    lf.group_by('lab_category')
+                    lf.group_by(group_cols)
                     .agg([
                         pl.count().alias('total_obs'),
                         pl.col('lab_value_numeric').count().alias('n'),
