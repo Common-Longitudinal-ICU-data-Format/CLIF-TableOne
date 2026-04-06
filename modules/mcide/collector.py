@@ -521,18 +521,41 @@ class MCIDEStatsCollector:
         self.collect_mcide(lf, 'microbiology_susceptibility', ['organism_name', 'organism_category'])
 
     def collect_patient_assessments(self):
-        """Collect MCIDE for patient assessments table"""
+        """Patient assessments: MCIDE + summary stats for numerical_value by assessment_category and assessment_group"""
         logger.info("Processing patient assessments table...")
-        table_path = self.tables_path / f"clif_patient_assessments.{self.file_type}"
+        table_path = self.get_table_path('patient_assessments')
 
-        if not table_path.exists():
-            logger.warning(f"Patient assessments table not found: {table_path}")
+        if not table_path:
             return
 
         lf = pl.scan_parquet(table_path) if self.file_type == 'parquet' else pl.scan_csv(table_path)
 
         # MCIDE collections
         self.collect_mcide(lf, 'patient_assessments', ['assessment_name', 'assessment_category', 'assessment_group'])
+
+        # Summary statistics for numerical_value by assessment_category and assessment_group
+        if self.check_columns_exist(lf, ['numerical_value', 'assessment_category', 'assessment_group']):
+            logger.info("Calculating patient assessments summary statistics...")
+            try:
+                stats = (
+                    lf.group_by(['assessment_category', 'assessment_group'])
+                    .agg([
+                        pl.count().alias('total_obs'),
+                        pl.col('numerical_value').count().alias('n'),
+                        pl.col('numerical_value').null_count().alias('missing'),
+                        pl.col('numerical_value').min().alias('min'),
+                        pl.col('numerical_value').max().alias('max'),
+                        pl.col('numerical_value').mean().alias('mean'),
+                        pl.col('numerical_value').median().alias('median'),
+                        pl.col('numerical_value').std().alias('sd'),
+                        pl.col('numerical_value').quantile(0.25).alias('q1'),
+                        pl.col('numerical_value').quantile(0.75).alias('q3')
+                    ])
+                    .collect()
+                )
+                self.save_summary_stats(stats, 'patient_assessments_summary_by_category')
+            except Exception as e:
+                logger.error(f"Error calculating patient assessments summary stats: {e}")
 
     # def collect_patient_procedures(self):
     #     """Collect MCIDE for patient procedures table"""
@@ -603,7 +626,6 @@ class MCIDEStatsCollector:
         self.collect_hospitalization()
         self.collect_adt()
         self.collect_code_status()
-        self.collect_patient_assessments()
         # self.collect_patient_procedures()
         self.collect_respiratory_support()
 
@@ -619,6 +641,7 @@ class MCIDEStatsCollector:
         self.collect_medication_stats('intermittent')
         self.collect_crrt_stats()
         self.collect_ecmo_stats()
+        self.collect_patient_assessments()
 
         # Calculate and log runtime
         runtime = datetime.now() - start_time

@@ -3714,7 +3714,7 @@ def main(memory_monitor=None) -> bool:
         enc_with_sepsis = (final_tableone_df['sepsis_events_by_sepsis_col'] > 0).sum()
         print(f"   Total sepsis events (via sepsis col): {total_by_sepsis:,}")
         print(f"   Total sepsis events (via episode_id): {total_by_episode:,}")
-        print(f"   Encounters with ≥1 sepsis event: {enc_with_sepsis:,} / {len(final_tableone_df):,}")
+        print(f"   Encounters with >=1 sepsis event: {enc_with_sepsis:,} / {len(final_tableone_df):,}")
     except Exception as e:
         print(f"Warning: Failed to compute ASE: {e}. Proceeding without sepsis data.")
         final_tableone_df['sepsis_events_by_sepsis_col'] = 0
@@ -4658,7 +4658,6 @@ def main(memory_monitor=None) -> bool:
                                                  'on_vent', 'on_crrt', 'hospice_outcome',
                                                  'expired_outcome',
                                                  'sepsis_events_by_sepsis_col',
-                                                 'sepsis_events_by_episode_id',
                                                  'icu_episodes',
                                                  'imv_episodes']:
                 if col in df.columns:
@@ -4728,7 +4727,7 @@ def main(memory_monitor=None) -> bool:
             total_icu_eps = flag_sums['icu_episodes']
             enc_with_icu = (df['icu_episodes'] > 0).sum()
             rows.append(("ICU episodes, total n", f"{total_icu_eps:,}"))
-            rows.append(("Encounters with ≥1 ICU episode, n (%)",
+            rows.append(("Encounters with >=1 ICU episode, n (%)",
                          f"{enc_with_icu:,} ({100*enc_with_icu/N_enc:.1f}%)"))
     
         # -------------------------------------------------------------------------
@@ -4840,13 +4839,10 @@ def main(memory_monitor=None) -> bool:
         # -------------------------------------------------------------------------
         if 'sepsis_events_by_sepsis_col' in flag_sums:
             total_by_sepsis = flag_sums['sepsis_events_by_sepsis_col']
-            rows.append(("Sepsis events (CDC ASE, via sepsis col), n", f"{total_by_sepsis:,}"))
-        if 'sepsis_events_by_episode_id' in flag_sums:
-            total_by_episode = flag_sums['sepsis_events_by_episode_id']
-            rows.append(("Sepsis events (CDC ASE, via episode_id), n", f"{total_by_episode:,}"))
+            rows.append(("Sepsis events (CDC ASE), n", f"{total_by_sepsis:,}"))
         if 'sepsis_events_by_sepsis_col' in df.columns:
             enc_with_sepsis = (df['sepsis_events_by_sepsis_col'] > 0).sum()
-            rows.append(("Encounters with ≥1 sepsis event, n (%)",
+            rows.append(("Encounters with >=1 sepsis event, n (%)",
                          f"{enc_with_sepsis:,} ({100*enc_with_sepsis/N_enc:.1f}%)"))
 
         # -------------------------------------------------------------------------
@@ -4857,10 +4853,7 @@ def main(memory_monitor=None) -> bool:
 
         if 'imv_episodes' in flag_sums:
             total_imv_eps = flag_sums['imv_episodes']
-            enc_with_imv_eps = (df['imv_episodes'] > 0).sum()
             rows.append(("IMV episodes, total n", f"{total_imv_eps:,}"))
-            rows.append(("Encounters with ≥1 IMV episode, n (%)",
-                         f"{enc_with_imv_eps:,} ({100*enc_with_imv_eps/N_enc:.1f}%)"))
 
         # Ventilator hours (total across all encounters in this subset)
         if 'vent_duration_hours' in df.columns:
@@ -4959,7 +4952,54 @@ def main(memory_monitor=None) -> bool:
             for flag_col, name in nmba_present.items():
                 n = flag_sums[flag_col]
                 rows.append((f"  {name}", f"{n:,} ({100*n/N_enc:.1f}%)"))
-    
+
+        # -------------------------------------------------------------------------
+        # 13. Medications during IMV
+        # -------------------------------------------------------------------------
+        if 'on_vent' in df.columns:
+            imv_df = df[df['on_vent'] == 1]
+            N_imv = len(imv_df)
+
+            if N_imv > 0:
+                rows.append(("Medications during IMV (N={:,})".format(N_imv), ""))
+
+                # Vasopressors during IMV
+                imv_vaso_flags_present = [f'{v}_flag' for v in vaso_flags.keys() if f'{v}_flag' in imv_df.columns]
+
+                if imv_vaso_flags_present:
+                    imv_vaso_n = imv_df[imv_vaso_flags_present].max(axis=1).sum()
+                    rows.append(("  Vasopressors, n (%)", f"{imv_vaso_n:,} ({100*imv_vaso_n/N_imv:.1f}%)"))
+
+                    for vaso, name in vaso_flags.items():
+                        flag_col = f'{vaso}_flag'
+                        if flag_col in imv_df.columns:
+                            n = imv_df[flag_col].sum()
+                            if n > 0:
+                                rows.append((f"    {name}, n (%)", f"{n:,} ({100*n/N_imv:.1f}%)"))
+                                if f'{vaso}_median' in imv_df.columns:
+                                    vaso_imv_subset = imv_df[imv_df[flag_col] == 1]
+                                    vaso_dose_stats = vaso_imv_subset[[f'{vaso}_median', f'{vaso}_q1', f'{vaso}_q3']].median()
+                                    rows.append((f"      {name} dose (mcg/kg/min), median [Q1, Q3]",
+                                                f"{vaso_dose_stats.iloc[0]:.2f} [{vaso_dose_stats.iloc[1]:.2f}, {vaso_dose_stats.iloc[2]:.2f}]"))
+
+                # Sedatives and analgesics during IMV
+                imv_sed_present = {k: v for k, v in sedation_meds.items() if k in imv_df.columns}
+                if imv_sed_present:
+                    rows.append(("  Sedatives and analgesics, n (%)", ""))
+                    for flag_col, name in imv_sed_present.items():
+                        n = imv_df[flag_col].sum()
+                        if n > 0:
+                            rows.append((f"    {name}", f"{n:,} ({100*n/N_imv:.1f}%)"))
+
+                # NMBAs during IMV
+                imv_nmba_present = {k: v for k, v in nmba_meds.items() if k in imv_df.columns}
+                if imv_nmba_present:
+                    rows.append(("  Neuromuscular blocking agents, n (%)", ""))
+                    for flag_col, name in imv_nmba_present.items():
+                        n = imv_df[flag_col].sum()
+                        if n > 0:
+                            rows.append((f"    {name}", f"{n:,} ({100*n/N_imv:.1f}%)"))
+
         # Assemble DataFrame
         return pd.DataFrame(rows, columns=["Variable", "Overall"])
 
@@ -5026,6 +5066,60 @@ def main(memory_monitor=None) -> bool:
         # Save
         table_by_year.to_csv(get_output_path('final', 'tableone', 'table_one_by_year.csv'), index=False)
         print(f"\n✅ Saved: ../output/final/tableone/table_one_by_year.csv")
+
+    # ============================================================================
+    # Step 5: Generate Table Ones by Encounter Type (with year columns)
+    # ============================================================================
+
+    print("\n" + "="*80)
+    print("GENERATING TABLE ONES BY ENCOUNTER TYPE")
+    print("="*80)
+
+    encounter_type_strata = {
+        'icu': 'icu_enc',
+        'advanced_resp': 'high_support_enc',
+        'vaso': 'vaso_support_enc',
+        'deaths': 'death_enc',
+    }
+
+    for stratum_name, col in encounter_type_strata.items():
+        if col not in tableone_df.columns:
+            print(f"  ⚠️ Skipping {stratum_name}: column '{col}' not found")
+            continue
+
+        df_strat = tableone_df[tableone_df[col] == 1]
+        if len(df_strat) == 0:
+            print(f"  ⚠️ Skipping {stratum_name}: no encounters")
+            continue
+
+        pat_strat = patient_df[patient_df['patient_id'].isin(df_strat['patient_id'])]
+        print(f"\n  {stratum_name}: {len(df_strat):,} encounters, {len(pat_strat):,} patients")
+
+        # Overall for this stratum
+        tbl_strat = make_table_one_optimized(df_strat, pat_strat)
+        strat_var_order = tbl_strat['Variable'].tolist()
+        strat_results = {'Overall': tbl_strat.set_index('Variable')['Overall']}
+
+        # By year within stratum
+        if 'admission_year' in df_strat.columns:
+            strat_years = sorted(df_strat['admission_year'].dropna().unique())
+            for yr in strat_years:
+                df_yr = df_strat[df_strat['admission_year'] == yr]
+                pat_yr = pat_strat[pat_strat['patient_id'].isin(df_yr['patient_id'])]
+                if len(df_yr) > 0:
+                    tbl_yr = make_table_one_optimized(df_yr, pat_yr)
+                    strat_results[str(int(yr))] = tbl_yr.set_index('Variable')['Overall']
+
+        strat_table = (
+            pd.DataFrame(strat_results)
+            .reindex(strat_var_order)
+            .reset_index()
+            .rename(columns={'index': 'Variable'})
+        )
+
+        out_path = get_output_path('final', 'tableone', f'table_one_{stratum_name}_by_year.csv')
+        strat_table.to_csv(out_path, index=False)
+        print(f"  ✅ Saved: table_one_{stratum_name}_by_year.csv")
 
     # ============================================================================
     # NIH Enrollment Report — race × ethnicity × sex cross-tabulation
