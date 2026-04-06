@@ -248,12 +248,38 @@ class ECDFRunner:
                 print(f"\n{'='*80}")
                 print("✅ COLLECTION STATISTICS SUCCESSFUL")
                 print(f"{'='*80}")
-                return True
             else:
                 print(f"\n{'='*80}")
                 print("⚠️  COLLECTION STATISTICS GENERATED NO DATA")
                 print(f"{'='*80}")
-                return False
+
+            # Stratified collection statistics
+            try:
+                from modules.strata import load_strata_hospitalization_ids, filter_icu_windows_by_stratum
+
+                strata_hosp_ids = load_strata_hospitalization_ids()
+
+                for stratum_name, hosp_ids in strata_hosp_ids.items():
+                    filtered_windows = filter_icu_windows_by_stratum(icu_windows, hosp_ids)
+                    if len(filtered_windows) == 0:
+                        print(f"  ⚠️ Skipping collection statistics for {stratum_name}: no ICU windows")
+                        continue
+
+                    print(f"\n  Computing collection statistics for {stratum_name} "
+                          f"({len(filtered_windows):,} ICU windows)...")
+                    compute_collection_statistics(
+                        icu_windows=filtered_windows,
+                        tables_path=clif_config['tables_path'],
+                        file_type=clif_config['file_type'],
+                        lab_category_units=lab_category_units,
+                        lab_vital_config=lab_vital_config,
+                        output_dir=str(output_dir),
+                        suffix=f"_{stratum_name}"
+                    )
+            except FileNotFoundError as e:
+                print(f"\n  ⚠️ Skipping stratified collection statistics: {e}")
+
+            return True
 
         except Exception as e:
             print(f"\n{'='*80}")

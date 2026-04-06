@@ -27,7 +27,9 @@ logger = logging.getLogger(__name__)
 class MCIDEStatsCollector:
     """Collect MCIDE and summary statistics using Polars lazy scanning"""
 
-    def __init__(self, config: Dict[str, Any]):
+    def __init__(self, config: Dict[str, Any],
+                 hospitalization_ids: Optional[set] = None,
+                 stratum_name: Optional[str] = None):
         """
         Initialize the collector with configuration
 
@@ -35,24 +37,42 @@ class MCIDEStatsCollector:
         -----------
         config : dict
             Configuration dictionary with tables_path, output_dir, and filetype
+        hospitalization_ids : set, optional
+            If provided, filter all data to these hospitalization_ids only.
+        stratum_name : str, optional
+            If provided, save summary stats to a subdirectory with this name.
         """
         self.config = config
         self.tables_path = Path(config.get('tables_path', ''))
         self.file_type = config.get('filetype', 'parquet')
+        self._hospitalization_ids = hospitalization_ids
+        self._hospitalization_ids_list = list(hospitalization_ids) if hospitalization_ids else None
+        self._stratum_name = stratum_name
 
         # Set up output directories
         output_base = Path(config.get('output_dir', '../output'))
         self.output_dir = output_base / 'final' / 'tableone'
         self.mcide_dir = self.output_dir / 'mcide'
-        self.stats_dir = self.output_dir / 'summary_stats'
+        if stratum_name:
+            self.stats_dir = self.output_dir / 'summary_stats' / stratum_name
+        else:
+            self.stats_dir = self.output_dir / 'summary_stats'
 
         # Create directories if they don't exist
         self.mcide_dir.mkdir(parents=True, exist_ok=True)
         self.stats_dir.mkdir(parents=True, exist_ok=True)
 
         logger.info(f"Initialized with tables from: {self.tables_path}")
+        if stratum_name:
+            logger.info(f"Stratum: {stratum_name} ({len(hospitalization_ids):,} hospitalization_ids)")
         logger.info(f"MCIDE output: {self.mcide_dir}")
         logger.info(f"Stats output: {self.stats_dir}")
+
+    def _apply_hosp_filter(self, lf: pl.LazyFrame) -> pl.LazyFrame:
+        """Filter lazy frame to stratum hospitalization_ids if set."""
+        if self._hospitalization_ids_list is not None and 'hospitalization_id' in lf.columns:
+            return lf.filter(pl.col('hospitalization_id').is_in(self._hospitalization_ids_list))
+        return lf
 
     def get_table_path(self, table_name: str) -> Optional[Path]:
         """
@@ -214,14 +234,16 @@ class MCIDEStatsCollector:
             return
 
         lf = pl.scan_parquet(table_path) if self.file_type == 'parquet' else pl.scan_csv(table_path)
+        lf = self._apply_hosp_filter(lf)
 
         # Normalize lab_category and reference_unit to lowercase for consistent grouping
         lf = lf.with_columns(pl.col('lab_category').str.to_lowercase().alias('lab_category'))
         if 'reference_unit' in lf.columns:
             lf = lf.with_columns(pl.col('reference_unit').str.strip_chars().str.to_lowercase().alias('reference_unit'))
 
-        # MCIDE collections
-        self.collect_mcide(lf, 'labs', ['lab_name', 'lab_category', 'lab_loinc_code'])
+        # MCIDE collections (skip for stratum — only overall)
+        if not self._stratum_name:
+            self.collect_mcide(lf, 'labs', ['lab_name', 'lab_category', 'lab_loinc_code'])
 
         # Check for optional columns
         if self.check_columns_exist(lf, ['lab_specimen_name', 'lab_specimen_category']):
@@ -264,9 +286,11 @@ class MCIDEStatsCollector:
             return
 
         lf = pl.scan_parquet(table_path) if self.file_type == 'parquet' else pl.scan_csv(table_path)
+        lf = self._apply_hosp_filter(lf)
 
-        # MCIDE collections
-        self.collect_mcide(lf, 'vitals', ['vital_name', 'vital_category'])
+        # MCIDE collections (skip for stratum — only overall)
+        if not self._stratum_name:
+            self.collect_mcide(lf, 'vitals', ['vital_name', 'vital_category'])
 
         # Summary statistics for vital_value by category and name
         if self.check_columns_exist(lf, ['vital_value', 'vital_category', 'vital_name']):
@@ -305,16 +329,17 @@ class MCIDEStatsCollector:
         # Keep the full name with possible prefix for output
         full_table_name = f'clif_{table_name}' if 'clif_' in str(table_path) else table_name
         lf = pl.scan_parquet(table_path) if self.file_type == 'parquet' else pl.scan_csv(table_path)
+        lf = self._apply_hosp_filter(lf)
 
-        # MCIDE collections
-        self.collect_mcide(lf, table_name, ['med_name', 'med_category'])
+        # MCIDE collections (skip for stratum — only overall)
+        if not self._stratum_name:
+            self.collect_mcide(lf, table_name, ['med_name', 'med_category'])
 
-        # Check for optional columns
-        if self.check_columns_exist(lf, ['med_route_name', 'med_route_category']):
-            self.collect_mcide(lf, table_name, ['med_route_name', 'med_route_category'])
+            if self.check_columns_exist(lf, ['med_route_name', 'med_route_category']):
+                self.collect_mcide(lf, table_name, ['med_route_name', 'med_route_category'])
 
-        if self.check_columns_exist(lf, ['mar_action_name', 'mar_action_category']):
-            self.collect_mcide(lf, table_name, ['mar_action_name', 'mar_action_category'])
+            if self.check_columns_exist(lf, ['mar_action_name', 'mar_action_category']):
+                self.collect_mcide(lf, table_name, ['mar_action_name', 'mar_action_category'])
 
         # Summary statistics for med_dose grouped by med_category and med_dose_unit
         if self.check_columns_exist(lf, ['med_dose', 'med_dose_unit', 'med_category']):
@@ -349,9 +374,11 @@ class MCIDEStatsCollector:
             return
 
         lf = pl.scan_parquet(table_path) if self.file_type == 'parquet' else pl.scan_csv(table_path)
+        lf = self._apply_hosp_filter(lf)
 
-        # MCIDE collections
-        self.collect_mcide(lf, 'clif_crrt_therapy', ['crrt_mode_name', 'crrt_mode_category'])
+        # MCIDE collections (skip for stratum — only overall)
+        if not self._stratum_name:
+            self.collect_mcide(lf, 'clif_crrt_therapy', ['crrt_mode_name', 'crrt_mode_category'])
 
         # Summary statistics for CRRT numerical variables
         numeric_cols = [
@@ -418,9 +445,11 @@ class MCIDEStatsCollector:
             return
 
         lf = pl.scan_parquet(table_path) if self.file_type == 'parquet' else pl.scan_csv(table_path)
+        lf = self._apply_hosp_filter(lf)
 
-        # MCIDE collections
-        self.collect_mcide(lf, 'ecmo_mcs', ['device_name', 'device_category'])
+        # MCIDE collections (skip for stratum — only overall)
+        if not self._stratum_name:
+            self.collect_mcide(lf, 'ecmo_mcs', ['device_name', 'device_category'])
 
         # Summary statistics for ECMO numerical variables
         numeric_cols = ['device_rate', 'sweep', 'flow', 'fdO2']
@@ -529,9 +558,11 @@ class MCIDEStatsCollector:
             return
 
         lf = pl.scan_parquet(table_path) if self.file_type == 'parquet' else pl.scan_csv(table_path)
+        lf = self._apply_hosp_filter(lf)
 
-        # MCIDE collections
-        self.collect_mcide(lf, 'patient_assessments', ['assessment_name', 'assessment_category', 'assessment_group'])
+        # MCIDE collections (skip for stratum — only overall)
+        if not self._stratum_name:
+            self.collect_mcide(lf, 'patient_assessments', ['assessment_name', 'assessment_category', 'assessment_group'])
 
         # Summary statistics for numerical_value by assessment_category and assessment_group
         if self.check_columns_exist(lf, ['numerical_value', 'assessment_category', 'assessment_group']):
@@ -614,6 +645,33 @@ class MCIDEStatsCollector:
         self.collect_mcide(lf, 'respiratory_support', ['device_name', 'device_category'])
         self.collect_mcide(lf, 'respiratory_support', ['mode_name', 'mode_category'])
 
+    def run_stratified_summary_stats(self):
+        """Run summary stats for each encounter-type stratum."""
+        try:
+            from modules.strata import load_strata_hospitalization_ids
+            strata_hosp_ids = load_strata_hospitalization_ids()
+        except FileNotFoundError as e:
+            logger.warning(f"Skipping stratified summary stats: {e}")
+            return
+
+        for stratum_name, hosp_ids in strata_hosp_ids.items():
+            logger.info("="*80)
+            logger.info(f"Stratified summary stats: {stratum_name} ({len(hosp_ids):,} hospitalization_ids)")
+            logger.info("="*80)
+
+            stratum_collector = MCIDEStatsCollector(
+                self.config,
+                hospitalization_ids=hosp_ids,
+                stratum_name=stratum_name
+            )
+            stratum_collector.collect_labs_stats()
+            stratum_collector.collect_vitals_stats()
+            stratum_collector.collect_medication_stats('continuous')
+            stratum_collector.collect_medication_stats('intermittent')
+            stratum_collector.collect_crrt_stats()
+            stratum_collector.collect_ecmo_stats()
+            stratum_collector.collect_patient_assessments()
+
     def run_all(self):
         """Run all collections"""
         start_time = datetime.now()
@@ -642,6 +700,9 @@ class MCIDEStatsCollector:
         self.collect_crrt_stats()
         self.collect_ecmo_stats()
         self.collect_patient_assessments()
+
+        # Stratified summary stats by encounter type
+        self.run_stratified_summary_stats()
 
         # Calculate and log runtime
         runtime = datetime.now() - start_time

@@ -753,97 +753,55 @@ def process_respiratory_column(
 # Main Processing
 # ============================================================================
 
-def main():
-    """Main processing pipeline."""
+def run_ecdf_pipeline(
+    icu_windows: pl.DataFrame,
+    lab_category_units: pl.DataFrame,
+    clif_config: Dict,
+    outlier_config: Dict,
+    lab_vital_config: Dict,
+    output_dir: str,
+    label: str = "overall"
+) -> Tuple[List, List, List, List]:
+    """
+    Run the full ECDF/bins pipeline for a given set of ICU windows.
 
-    print("\n" + "="*80)
-    print("Pre-compute ECDF and Bins for ICU Lab/Vital Data")
-    print("="*80 + "\n")
+    This is the core processing loop extracted from main() so it can be
+    called once for overall and once per encounter-type stratum.
 
-    start_time = datetime.now()
-
-    # ========================================================================
-    # Load Configurations
-    # ========================================================================
-
-    print("Loading configurations...")
-    clif_config, outlier_config, lab_vital_config = load_configs()
-    print("✓ Configs loaded\n")
-
-    # ========================================================================
-    # Setup Output Directory
-    # ========================================================================
-
-    output_dir = 'output/final'
-    os.makedirs(output_dir, exist_ok=True)
-    print(f"Output directory: {output_dir}\n")
-
-    # Copy configs
-    copy_configs_to_output(output_dir)
-    print()
-
-    # Setup log file
-    log_file = os.path.join(output_dir, 'unit_mismatches.log')
+    Returns:
+        (labs_stats, vitals_stats, resp_stats, log_entries)
+    """
     log_entries = []
-
-    # ========================================================================
-    # Extract ICU Time Windows
-    # ========================================================================
-
-    icu_windows = extract_icu_time_windows(
-        clif_config['tables_path'],
-        clif_config['file_type']
-    )
-    print()
-
-    # ========================================================================
-    # Discover Lab Category-Unit Combinations
-    # ========================================================================
-
-    print("="*80)
-    print("Discovering Lab Category-Unit Combinations")
-    print("="*80)
-
-    lab_category_units = discover_lab_category_units(
-        clif_config['tables_path'],
-        clif_config['file_type']
-    )
-    print()
 
     # ========================================================================
     # Process Labs
     # ========================================================================
 
     print("="*80)
-    print("Processing Labs")
+    print(f"Processing Labs [{label}]")
     print("="*80)
 
     labs_config = lab_vital_config.get('labs', {})
     labs_outlier = outlier_config['tables']['labs']['lab_value_numeric']
 
     labs_stats = []
-    processed_categories = set()  # Track processed categories to avoid duplicates
+    processed_categories = set()
 
-    # Iterate through discovered category-unit combinations
     for row in lab_category_units.iter_rows(named=True):
         category = row['lab_category']
         unit = row['reference_unit']
 
-        # Skip if we already processed this category
         if category in processed_categories:
             continue
 
-        # Check if category exists in config
         if category not in labs_config:
             log_entries.append(f"[SKIP] {category} ({unit}): Category not in lab_vital_config.yaml")
             continue
 
-        # Check if category has outlier config
         if category not in labs_outlier:
             log_entries.append(f"[SKIP] {category} ({unit}): Category not in outlier_config.yaml")
             continue
 
-        # Check if unit matches config's reference_unit (case-insensitive, handles list and string)
         config_units = labs_config[category].get('reference_unit', [])
         if isinstance(config_units, str):
             config_units = [config_units]
@@ -855,12 +813,8 @@ def main():
             )
             continue
 
-        # Mark as processed before attempting
         processed_categories.add(category)
 
-        # Process this category-unit combination
-        # Pass the full config_units list so process_category can match all valid units
-        # (including NULL handling when "(no units)" is in the list)
         try:
             stats = process_category(
                 table_type='labs',
@@ -872,7 +826,7 @@ def main():
                 outlier_range=labs_outlier[category],
                 cat_config=labs_config[category],
                 output_dir=output_dir,
-                extreme_bins_count=5  # Labs use 5 extreme bins
+                extreme_bins_count=5
             )
             labs_stats.append(stats)
 
@@ -891,7 +845,7 @@ def main():
     # ========================================================================
 
     print("="*80)
-    print("Processing Vitals")
+    print(f"Processing Vitals [{label}]")
     print("="*80)
 
     vitals_config = lab_vital_config.get('vitals', {})
@@ -905,21 +859,20 @@ def main():
             log_entries.append(f"[SKIP] {category}: Category not in outlier_config.yaml")
             continue
 
-        # Determine extreme bins count: 5 for height/weight, 10 for others
         extreme_bins = 5 if category in ['height_cm', 'weight_kg'] else 10
 
         try:
             stats = process_category(
                 table_type='vitals',
                 category=category,
-                unit=None,  # Vitals don't use unit differentiation
+                unit=None,
                 icu_windows=icu_windows,
                 tables_path=clif_config['tables_path'],
                 file_type=clif_config['file_type'],
                 outlier_range=vitals_outlier[category],
                 cat_config=vitals_config[category],
                 output_dir=output_dir,
-                extreme_bins_count=extreme_bins  # 10 for most vitals, 5 for height/weight
+                extreme_bins_count=extreme_bins
             )
             vitals_stats.append(stats)
 
@@ -938,12 +891,11 @@ def main():
     # ========================================================================
 
     print("="*80)
-    print("Processing Respiratory Support (17 columns)")
+    print(f"Processing Respiratory Support (17 columns) [{label}]")
     print("="*80)
 
     resp_outlier = outlier_config['tables'].get('respiratory_support', {})
 
-    # List of all 17 numerical columns in respiratory_support
     resp_columns = [
         'fio2_set', 'lpm_set', 'tidal_volume_set', 'resp_rate_set',
         'pressure_control_set', 'pressure_support_set', 'flow_rate_set',
@@ -982,6 +934,116 @@ def main():
             log_entries.append(f"[ERROR] respiratory_support.{column}: {str(e)}")
 
     print()
+
+    return labs_stats, vitals_stats, resp_stats, log_entries
+
+
+def main():
+    """Main processing pipeline."""
+
+    print("\n" + "="*80)
+    print("Pre-compute ECDF and Bins for ICU Lab/Vital Data")
+    print("="*80 + "\n")
+
+    start_time = datetime.now()
+
+    # ========================================================================
+    # Load Configurations
+    # ========================================================================
+
+    print("Loading configurations...")
+    clif_config, outlier_config, lab_vital_config = load_configs()
+    print("✓ Configs loaded\n")
+
+    # ========================================================================
+    # Setup Output Directory
+    # ========================================================================
+
+    output_dir = 'output/final'
+    os.makedirs(output_dir, exist_ok=True)
+    print(f"Output directory: {output_dir}\n")
+
+    # Copy configs
+    copy_configs_to_output(output_dir)
+    print()
+
+    # Setup log file
+    log_file = os.path.join(output_dir, 'unit_mismatches.log')
+
+    # ========================================================================
+    # Extract ICU Time Windows
+    # ========================================================================
+
+    icu_windows = extract_icu_time_windows(
+        clif_config['tables_path'],
+        clif_config['file_type']
+    )
+    print()
+
+    # ========================================================================
+    # Discover Lab Category-Unit Combinations
+    # ========================================================================
+
+    print("="*80)
+    print("Discovering Lab Category-Unit Combinations")
+    print("="*80)
+
+    lab_category_units = discover_lab_category_units(
+        clif_config['tables_path'],
+        clif_config['file_type']
+    )
+    print()
+
+    # ========================================================================
+    # Run overall ECDF pipeline
+    # ========================================================================
+
+    labs_stats, vitals_stats, resp_stats, log_entries = run_ecdf_pipeline(
+        icu_windows=icu_windows,
+        lab_category_units=lab_category_units,
+        clif_config=clif_config,
+        outlier_config=outlier_config,
+        lab_vital_config=lab_vital_config,
+        output_dir=output_dir,
+        label="overall"
+    )
+
+    # ========================================================================
+    # Run stratified ECDF pipelines
+    # ========================================================================
+
+    try:
+        from modules.strata import load_strata_hospitalization_ids, filter_icu_windows_by_stratum
+
+        strata_hosp_ids = load_strata_hospitalization_ids()
+
+        for stratum_name, hosp_ids in strata_hosp_ids.items():
+            filtered_windows = filter_icu_windows_by_stratum(icu_windows, hosp_ids)
+            if len(filtered_windows) == 0:
+                print(f"  ⚠️ Skipping {stratum_name}: no ICU windows")
+                continue
+
+            print(f"\n{'='*80}")
+            print(f"STRATIFIED ECDF: {stratum_name} ({len(filtered_windows):,} ICU windows)")
+            print(f"{'='*80}\n")
+
+            stratum_output_dir = os.path.join(output_dir, stratum_name)
+            os.makedirs(stratum_output_dir, exist_ok=True)
+
+            s_labs, s_vitals, s_resp, s_log = run_ecdf_pipeline(
+                icu_windows=filtered_windows,
+                lab_category_units=lab_category_units,
+                clif_config=clif_config,
+                outlier_config=outlier_config,
+                lab_vital_config=lab_vital_config,
+                output_dir=stratum_output_dir,
+                label=stratum_name
+            )
+            log_entries.extend(s_log)
+            print(f"  ✅ {stratum_name}: {len(s_labs)} labs, {len(s_vitals)} vitals, {len(s_resp)} resp")
+
+    except FileNotFoundError as e:
+        print(f"\n  ⚠️ Skipping stratified ECDF: {e}")
 
     # ========================================================================
     # Write Log File

@@ -135,6 +135,433 @@ def crosstab_demographics(patient_df: pd.DataFrame) -> pd.DataFrame:
     return ct
 
 
+# ============================================================================
+# Extracted summary functions for stratified output generation
+# ============================================================================
+
+def generate_ventilator_settings_summary(resp_valid, vent_settings, output_dir):
+    """Generate ventilator settings summary CSVs."""
+    os.makedirs(output_dir, exist_ok=True)
+    existing_settings = [col for col in vent_settings if col in resp_valid.columns]
+    if not existing_settings or len(resp_valid) == 0:
+        return
+
+    medians = resp_valid.groupby(['device_category', 'mode_category'])[existing_settings].median()
+    q1 = resp_valid.groupby(['device_category', 'mode_category'])[existing_settings].quantile(0.25)
+    q3 = resp_valid.groupby(['device_category', 'mode_category'])[existing_settings].quantile(0.75)
+
+    medians_reset = medians.reset_index()
+    q1_reset = q1.reset_index()
+    q3_reset = q3.reset_index()
+
+    settings_summary = medians_reset[['device_category', 'mode_category']].copy()
+    for setting in existing_settings:
+        if setting in medians.columns:
+            settings_summary[setting] = (
+                medians_reset[setting].round(1).astype(str) + ' (' +
+                q1_reset[setting].round(1).astype(str) + '-' +
+                q3_reset[setting].round(1).astype(str) + ')'
+            )
+
+    rename_dict = {}
+    if 'mode_category' in settings_summary.columns:
+        rename_dict['mode_category'] = 'ventilator_setting'
+    column_mapping = {
+        'fio2_set': 'FiO2 Set', 'lpm_set': 'LPM Set',
+        'tidal_volume_set': 'Tidal Volume Set', 'resp_rate_set': 'Resp Rate Set',
+        'pressure_control_set': 'Pressure Control Set', 'peep_set': 'PEEP Set',
+        'pressure_support_set': 'Pressure Support Set', 'flow_rate_set': 'Flow Rate Set'
+    }
+    for old_name, new_name in column_mapping.items():
+        if old_name in settings_summary.columns:
+            rename_dict[old_name] = new_name
+    settings_summary = settings_summary.rename(columns=rename_dict)
+    sort_col = 'ventilator_setting' if 'ventilator_setting' in settings_summary.columns else 'mode_category'
+    settings_summary = settings_summary.sort_values(['device_category', sort_col])
+    settings_summary.to_csv(os.path.join(output_dir, 'ventilator_settings_by_device_mode.csv'), index=False)
+
+    # Counts table
+    counts_summary = resp_valid.groupby(['device_category', 'mode_category'])[existing_settings].count().reset_index()
+    counts_rename = {}
+    if 'mode_category' in counts_summary.columns:
+        counts_rename['mode_category'] = 'ventilator_setting'
+    for old_name, new_name in column_mapping.items():
+        col_n = old_name
+        if col_n in counts_summary.columns:
+            counts_rename[col_n] = new_name + ' (N)'
+    counts_summary = counts_summary.rename(columns=counts_rename)
+    sort_col = 'ventilator_setting' if 'ventilator_setting' in counts_summary.columns else 'mode_category'
+    counts_summary = counts_summary.sort_values(['device_category', sort_col])
+    counts_summary.to_csv(os.path.join(output_dir, 'ventilator_settings_counts_by_device_mode.csv'), index=False)
+
+    # Total observations
+    total_obs_df = pd.DataFrame({
+        'metric': ['total_respiratory_support_observations'],
+        'value': [len(resp_valid)]
+    })
+    total_obs_df.to_csv(os.path.join(output_dir, 'ventilator_settings_total_observations.csv'), index=False)
+
+
+def generate_tidal_volume_stats(resp_imv_post_start, output_dir):
+    """Generate tidal volume stats for volume control modes."""
+    os.makedirs(output_dir, exist_ok=True)
+    volume_control_modes = ['assist control-volume control', 'pressure-regulated volume control']
+    volume_mode_data = resp_imv_post_start[
+        resp_imv_post_start['mode_category'].isin(volume_control_modes)
+    ].copy()
+    if len(volume_mode_data) == 0 or 'tidal_volume_set' not in volume_mode_data.columns:
+        return
+
+    volume_mode_data['hour_bin'] = volume_mode_data['hours_from_vent_start'].round(0).astype(int)
+    volume_mode_data_7d = volume_mode_data[volume_mode_data['hour_bin'] <= 168].copy()
+
+    tv_stats = volume_mode_data_7d.groupby('hour_bin')['tidal_volume_set'].agg([
+        ('median', 'median'),
+        ('q25', lambda x: x.quantile(0.25)),
+        ('q75', lambda x: x.quantile(0.75)),
+        ('mean', 'mean'),
+        ('std', 'std'),
+        ('count', 'count')
+    ]).reset_index()
+    tv_stats = tv_stats[tv_stats['count'] >= 10]
+
+    tv_stats.to_csv(os.path.join(output_dir, 'tidal_volume_volume_control_modes.csv'), index=False)
+    tv_stats[['hour_bin', 'mean', 'std', 'count']].to_csv(
+        os.path.join(output_dir, 'tidal_volume_volume_control_modes_mean_sd.csv'), index=False)
+
+
+def generate_pressure_control_stats(resp_imv_post_start, output_dir):
+    """Generate pressure control stats for pressure control mode."""
+    os.makedirs(output_dir, exist_ok=True)
+    pressure_mode_data = resp_imv_post_start[
+        resp_imv_post_start['mode_category'].isin(['pressure control'])
+    ].copy()
+    if len(pressure_mode_data) == 0 or 'pressure_control_set' not in pressure_mode_data.columns:
+        return
+
+    pressure_mode_data['hour_bin'] = pressure_mode_data['hours_from_vent_start'].round(0).astype(int)
+    pressure_mode_data_7d = pressure_mode_data[pressure_mode_data['hour_bin'] <= 168].copy()
+
+    pc_stats = pressure_mode_data_7d.groupby('hour_bin')['pressure_control_set'].agg([
+        ('median', 'median'),
+        ('q25', lambda x: x.quantile(0.25)),
+        ('q75', lambda x: x.quantile(0.75)),
+        ('mean', 'mean'),
+        ('std', 'std'),
+        ('count', 'count')
+    ]).reset_index()
+    pc_stats = pc_stats[pc_stats['count'] >= 10]
+
+    pc_stats.to_csv(os.path.join(output_dir, 'pressure_control_pressure_control_mode.csv'), index=False)
+    pc_stats[['hour_bin', 'mean', 'std', 'count']].to_csv(
+        os.path.join(output_dir, 'pressure_control_pressure_control_mode_mean_sd.csv'), index=False)
+
+
+def generate_mode_proportions(resp_imv_post_start, output_dir):
+    """Generate mode proportions for first 24 hours of IMV."""
+    os.makedirs(output_dir, exist_ok=True)
+    if len(resp_imv_post_start) == 0:
+        return
+
+    imv_first_24h = resp_imv_post_start[
+        (resp_imv_post_start['hours_from_vent_start'] >= 0) &
+        (resp_imv_post_start['hours_from_vent_start'] <= 24)
+    ].copy()
+    if len(imv_first_24h) == 0:
+        return
+
+    mode_mapping = {
+        'assist control-volume control': 'Assist Control-Volume Control',
+        'pressure-regulated volume control': 'Pressure-Regulated Volume Control',
+        'simv': 'SIMV',
+        'pressure support/cpap': 'Pressure Support/CPAP',
+        'pressure support': 'Pressure Support/CPAP',
+        'cpap': 'Pressure Support/CPAP',
+        'pressure control': 'Pressure Control',
+    }
+    imv_first_24h['mode_group'] = imv_first_24h['mode_category'].str.lower().map(mode_mapping).fillna('Other')
+
+    mode_counts = imv_first_24h['mode_group'].value_counts()
+    total_obs = len(imv_first_24h)
+    mode_proportions = (mode_counts / total_obs).sort_values(ascending=False)
+
+    plot_data = pd.DataFrame({
+        'Mode': mode_proportions.index,
+        'Proportion': mode_proportions.values,
+        'Count': mode_counts[mode_proportions.index].values
+    })
+    plot_data.to_csv(os.path.join(output_dir, 'mode_proportions_first_24h.csv'), index=False)
+
+
+def generate_medications_hourly(meds_merged, total_icu_encounters, med_groups, output_dir):
+    """Generate hourly medication usage data."""
+    os.makedirs(output_dir, exist_ok=True)
+    all_meds = [med for meds in med_groups.values() for med in meds]
+
+    if len(meds_merged) == 0 or total_icu_encounters == 0:
+        return
+
+    meds_7d = meds_merged[
+        (meds_merged['med_lower'].isin(all_meds)) &
+        (meds_merged['hour_bin'].notna()) &
+        (meds_merged['hour_bin'] >= 0) &
+        (meds_merged['hour_bin'] <= 167)
+    ]
+    if len(meds_7d) == 0:
+        return
+
+    pivot = (
+        meds_7d
+        .groupby(['hour_bin', 'med_lower'])['encounter_block']
+        .nunique()
+        .unstack(fill_value=0)
+        .reindex(index=np.arange(168), columns=all_meds, fill_value=0)
+    )
+    pct_pivot = (pivot / total_icu_encounters * 100) if total_icu_encounters > 0 else pivot * 0
+
+    hourly_df = pd.DataFrame({'hour': np.arange(168)})
+    hourly_df = pd.concat([hourly_df, pivot.add_suffix('_n'), pct_pivot.add_suffix('_pct')], axis=1)
+    hourly_df.to_csv(os.path.join(output_dir, 'medications_hourly_data.csv'), index=False)
+
+
+def generate_medications_summary(meds_merged, total_icu_encounters, med_groups, output_dir):
+    """Generate medication summary statistics."""
+    os.makedirs(output_dir, exist_ok=True)
+    all_meds = [med for meds in med_groups.values() for med in meds]
+
+    if len(meds_merged) == 0 or total_icu_encounters == 0:
+        return
+
+    meds_7d = meds_merged[
+        (meds_merged['med_lower'].isin(all_meds)) &
+        (meds_merged['hour_bin'].notna()) &
+        (meds_merged['hour_bin'] >= 0) &
+        (meds_merged['hour_bin'] <= 167)
+    ]
+    if len(meds_7d) == 0:
+        return
+
+    summary_agg = (
+        meds_7d
+        .groupby('med_lower')['med_dose']
+        .agg(['count', 'median', lambda x: x.quantile(0.25), lambda x: x.quantile(0.75)])
+        .rename(columns={'count': 'n_admin', '<lambda_0>': 'q1_dose', '<lambda_1>': 'q3_dose'})
+    )
+    encounter_counts = meds_7d.groupby('med_lower')['encounter_block'].nunique()
+    dose_units = meds_7d.groupby('med_lower')['med_dose_unit'].agg(
+        lambda x: x.mode()[0] if len(x.mode()) > 0 else '')
+    med_to_group = {med: group for group, meds in med_groups.items() for med in meds}
+
+    summary_df = pd.DataFrame({
+        'medication': summary_agg.index,
+        'n_encounters': encounter_counts.values,
+        'pct_encounters': (encounter_counts / total_icu_encounters * 100).values,
+        'median_dose': summary_agg['median'].values,
+        'q1_dose': summary_agg['q1_dose'].values,
+        'q3_dose': summary_agg['q3_dose'].values,
+        'dose_unit': dose_units.values
+    })
+    summary_df['group'] = summary_df['medication'].map(med_to_group)
+    summary_df = summary_df[['group', 'medication', 'n_encounters', 'pct_encounters',
+                             'median_dose', 'q1_dose', 'q3_dose', 'dose_unit']]
+    summary_df.to_csv(os.path.join(output_dir, 'medications_summary_stats.csv'), index=False)
+
+
+def generate_comorbidities(cci_results, output_dir):
+    """Generate comorbidity prevalence per 1000 hospitalizations."""
+    os.makedirs(output_dir, exist_ok=True)
+    if len(cci_results) == 0:
+        return
+
+    total_hospitalizations = cci_results['encounter_block'].nunique()
+    exclude_columns = {'hospitalization_id', 'encounter_block', 'cci_score'}
+    comorbidity_columns = [col for col in cci_results.columns if col not in exclude_columns]
+    if not comorbidity_columns:
+        return
+
+    comorbidity_counts = cci_results[comorbidity_columns].sum()
+    comorbidity_per_1000 = (comorbidity_counts / total_hospitalizations) * 1000
+    prevalence_percent = (comorbidity_counts.values / total_hospitalizations * 100).round(2)
+
+    comorbidity_summary = pd.DataFrame({
+        'comorbidity': comorbidity_columns,
+        'n_patients': comorbidity_counts.values,
+        'prevalence_percent': prevalence_percent,
+        'per_1000_hospitalizations': comorbidity_per_1000.values.round(1)
+    }).sort_values('per_1000_hospitalizations', ascending=False).reset_index(drop=True)
+
+    comorbidity_summary.to_csv(os.path.join(output_dir, 'comorbidities_per_1000_hospitalizations.csv'), index=False)
+
+    total_comorbidities = int(comorbidity_counts.sum())
+    avg_comorbidities_per_hosp = total_comorbidities / total_hospitalizations if total_hospitalizations > 0 else 0
+    most_common_comorbidity = comorbidity_summary.iloc[0]['comorbidity']
+    most_common_per_1000 = comorbidity_summary.iloc[0]['per_1000_hospitalizations']
+
+    summary_stats_rows = [
+        ['Total hospitalizations', total_hospitalizations],
+        ['Total comorbidities across all patients', total_comorbidities],
+        ['Average comorbidities per hospitalization', f"{avg_comorbidities_per_hosp:.2f}"],
+        ['Most common comorbidity', most_common_comorbidity],
+        ['Most common: per 1000 hospitalizations', f"{most_common_per_1000:.1f}"],
+    ]
+    with open(os.path.join(output_dir, 'comorbidities_per_1000_hospitalizations_summary.csv'), 'w', newline='') as f:
+        writer = csv.writer(f)
+        writer.writerow(['Metric', 'Value'])
+        for row in summary_stats_rows:
+            writer.writerow(row)
+
+
+def generate_sofa_mortality(final_tableone_df, output_dir):
+    """Generate SOFA-mortality summary."""
+    os.makedirs(output_dir, exist_ok=True)
+    if 'sofa_total' not in final_tableone_df.columns or 'death_enc' not in final_tableone_df.columns:
+        return
+
+    enc_deduped = final_tableone_df.drop_duplicates(subset=['encounter_block'])
+    sofa_data = enc_deduped[enc_deduped['sofa_total'].notna()].copy()
+    if len(sofa_data) == 0:
+        return
+
+    sofa_mortality = sofa_data.groupby('sofa_total').agg(
+        count=('death_enc', 'count'),
+        mortality_rate=('death_enc', 'mean')
+    ).reset_index()
+    sofa_mortality.columns = ['sofa_score', 'count', 'mortality_rate']
+    sofa_mortality['mortality_rate'] = sofa_mortality['mortality_rate'] * 100
+    sofa_mortality['deaths'] = (sofa_mortality['mortality_rate'] / 100) * sofa_mortality['count']
+
+    def wilson_ci(successes, n, confidence=0.95):
+        z = stats.norm.ppf((1 + confidence) / 2)
+        p_hat = successes / n
+        denominator = 1 + z**2 / n
+        center = (p_hat + z**2 / (2*n)) / denominator
+        margin = z * np.sqrt((p_hat * (1 - p_hat) + z**2 / (4*n)) / n) / denominator
+        return center * 100, margin * 100
+
+    ci_data = [wilson_ci(deaths, n) if n > 0 else (0, 0)
+               for deaths, n in zip(sofa_mortality['deaths'], sofa_mortality['count'])]
+    sofa_mortality['ci_center'] = [x[0] for x in ci_data]
+    sofa_mortality['ci_margin'] = [x[1] for x in ci_data]
+    sofa_mortality['ci_lower'] = (sofa_mortality['mortality_rate'] - sofa_mortality['ci_margin']).clip(lower=0)
+    sofa_mortality['ci_upper'] = (sofa_mortality['mortality_rate'] + sofa_mortality['ci_margin']).clip(upper=100)
+    sofa_mortality['total_encounters'] = len(sofa_data)
+
+    sofa_export = sofa_mortality[['sofa_score', 'total_encounters', 'count', 'deaths',
+                                  'mortality_rate', 'ci_lower', 'ci_upper', 'ci_margin']].copy()
+    sofa_export.columns = ['sofa_score', 'total_encounters', 'n_encounters', 'n_deaths',
+                           'mortality_rate_percent', 'ci_lower_95', 'ci_upper_95', 'ci_margin_95']
+    sofa_export['n_encounters'] = sofa_export['n_encounters'].astype(int)
+    sofa_export['total_encounters'] = sofa_export['total_encounters'].astype(int)
+    sofa_export['n_deaths'] = sofa_export['n_deaths'].round(0).astype(int)
+    for col in ['mortality_rate_percent', 'ci_lower_95', 'ci_upper_95', 'ci_margin_95']:
+        sofa_export[col] = sofa_export[col].round(2)
+
+    sofa_export.to_csv(os.path.join(output_dir, 'sofa_mortality_summary.csv'), index=False)
+
+
+def generate_hospice_trends(final_tableone_df, output_dir):
+    """Generate hospice vs mortality trends by year."""
+    os.makedirs(output_dir, exist_ok=True)
+    required_cols = ['encounter_block', 'admission_year', 'hospice_outcome',
+                     'expired_outcome', 'hospice_or_expired']
+    if not all(c in final_tableone_df.columns for c in required_cols):
+        return
+
+    enc_deduped = final_tableone_df.drop_duplicates(subset=['encounter_block'])
+    if len(enc_deduped) == 0:
+        return
+
+    hospice_trends = enc_deduped.groupby('admission_year').agg({
+        'encounter_block': 'count',
+        'hospice_outcome': 'sum',
+        'expired_outcome': 'sum',
+        'hospice_or_expired': 'sum'
+    }).reset_index()
+    hospice_trends.columns = ['year', 'total_encounters', 'hospice', 'expired', 'hospice_or_expired']
+
+    hospice_trends['hospice_pct'] = hospice_trends['hospice'] / hospice_trends['total_encounters'] * 100
+    hospice_trends['mortality_pct'] = hospice_trends['expired'] / hospice_trends['total_encounters'] * 100
+    hospice_trends['hospice_among_eol_pct'] = (
+        hospice_trends['hospice'] / hospice_trends['hospice_or_expired'] * 100
+    )
+
+    def calc_ci(successes, n, confidence=0.95):
+        if n == 0:
+            return 0, 0
+        ci_low, ci_upp = proportion_confint(successes, n, alpha=1-confidence, method='wilson')
+        return ci_low * 100, ci_upp * 100
+
+    ci_results = [calc_ci(row['hospice'], row['hospice_or_expired'])
+                  for _, row in hospice_trends.iterrows()]
+    hospice_trends['hospice_among_eol_ci_lower'] = [x[0] for x in ci_results]
+    hospice_trends['hospice_among_eol_ci_upper'] = [x[1] for x in ci_results]
+
+    hospice_trends.to_csv(os.path.join(output_dir, 'hospice_trends_summary.csv'), index=False)
+
+
+def generate_cci_hospice_mortality(final_tableone_df, output_dir):
+    """Generate CCI-hospice-mortality comprehensive summary."""
+    os.makedirs(output_dir, exist_ok=True)
+    required_cols = ['encounter_block', 'cci_score', 'admission_year',
+                     'expired_outcome', 'hospice_or_expired', 'hospice_outcome']
+    if not all(c in final_tableone_df.columns for c in required_cols):
+        return
+
+    tableone_with_cci = final_tableone_df[required_cols].copy()
+    tableone_with_cci['cci_category'] = pd.cut(
+        tableone_with_cci['cci_score'],
+        bins=[-np.inf, 0, 2, 4, np.inf],
+        labels=['0 (No comorbidity)', '1-2 (Mild)', '3-4 (Moderate)', '5+ (Severe)']
+    )
+
+    cci_summary = tableone_with_cci.groupby(['admission_year', 'cci_category']).agg({
+        'encounter_block': 'count',
+        'hospice_outcome': 'sum',
+        'expired_outcome': 'sum',
+        'hospice_or_expired': 'sum'
+    }).reset_index()
+    cci_summary.columns = ['year', 'cci_category', 'total_encounters',
+                           'hospice_count', 'expired_count', 'hospice_or_expired_count']
+
+    cci_summary['mortality_pct'] = cci_summary['expired_count'] / cci_summary['total_encounters'] * 100
+    cci_summary['hospice_pct'] = cci_summary['hospice_count'] / cci_summary['total_encounters'] * 100
+    cci_summary['combined_eol_pct'] = cci_summary['hospice_or_expired_count'] / cci_summary['total_encounters'] * 100
+    cci_summary['hospice_among_eol_pct'] = cci_summary['hospice_count'] / cci_summary['hospice_or_expired_count'] * 100
+    cci_summary['hospice_capture_rate'] = cci_summary['hospice_count'] / cci_summary['expired_count'] * 100
+
+    def calc_ci(row):
+        if row['hospice_or_expired_count'] == 0:
+            return pd.Series({'hospice_eol_ci_lower': np.nan, 'hospice_eol_ci_upper': np.nan})
+        ci_low, ci_upp = proportion_confint(
+            row['hospice_count'], row['hospice_or_expired_count'], alpha=0.05, method='wilson')
+        return pd.Series({'hospice_eol_ci_lower': ci_low * 100, 'hospice_eol_ci_upper': ci_upp * 100})
+
+    cci_summary[['hospice_eol_ci_lower', 'hospice_eol_ci_upper']] = cci_summary.apply(calc_ci, axis=1)
+
+    cci_summary = cci_summary[['year', 'cci_category', 'total_encounters',
+                                'expired_count', 'mortality_pct', 'hospice_count', 'hospice_pct',
+                                'hospice_or_expired_count', 'combined_eol_pct',
+                                'hospice_among_eol_pct', 'hospice_eol_ci_lower', 'hospice_eol_ci_upper',
+                                'hospice_capture_rate']]
+    cci_summary.to_csv(os.path.join(output_dir, 'cci_hospice_mortality_comprehensive_summary.csv'), index=False)
+
+    # Plot data
+    categories = ['0 (No comorbidity)', '1-2 (Mild)', '3-4 (Moderate)', '5+ (Severe)']
+    plot_data = []
+    for category in categories:
+        cat_data = cci_summary[cci_summary['cci_category'] == category].sort_values('year')
+        plot_data.append(cat_data.assign(cci_category_label=category))
+    plot_data_df = pd.concat(plot_data, axis=0)
+    plot_data_df.to_csv(os.path.join(output_dir, 'cci_mortality_hospice_trends_by_year_category_plotdata.csv'), index=False)
+
+
+def generate_demographic_crosstab(patient_df, output_dir):
+    """Generate NIH enrollment report demographic crosstab."""
+    os.makedirs(output_dir, exist_ok=True)
+    enrollment_report = crosstab_demographics(patient_df)
+    enrollment_report.to_csv(os.path.join(output_dir, 'demographic_crosstab_race_ethnicity_sex.csv'))
+
+
 def main(memory_monitor=None) -> bool:
     """
     Main execution function for Table One generation.
@@ -3504,7 +3931,9 @@ def main(memory_monitor=None) -> bool:
     cci_results = (
         cci_results.merge(encounter_mapping, on="hospitalization_id")
         .drop(columns=["hospitalization_id"])
-        .drop_duplicates()
+        .groupby("encounter_block")
+        .max()
+        .reset_index()
     )
     # Join with final_tableone_df on encounter_block
     final_tableone_df = final_tableone_df.merge(cci_results, on="encounter_block", how="left")
@@ -5075,12 +5504,7 @@ def main(memory_monitor=None) -> bool:
     print("GENERATING TABLE ONES BY ENCOUNTER TYPE")
     print("="*80)
 
-    encounter_type_strata = {
-        'icu': 'icu_enc',
-        'advanced_resp': 'high_support_enc',
-        'vaso': 'vaso_support_enc',
-        'deaths': 'death_enc',
-    }
+    from modules.strata import ENCOUNTER_TYPE_STRATA as encounter_type_strata
 
     for stratum_name, col in encounter_type_strata.items():
         if col not in tableone_df.columns:
@@ -5140,6 +5564,125 @@ def main(memory_monitor=None) -> bool:
 
     os.makedirs(project_root / 'output/intermediate', exist_ok=True)
     final_tableone_df.to_parquet(project_root / 'output/intermediate/final_tableone_df.parquet')
+
+    # ============================================================================
+    # Step 6: Generate Stratified Summary CSVs by Encounter Type
+    # ============================================================================
+
+    print("\n" + "="*80)
+    print("GENERATING STRATIFIED SUMMARY CSVs BY ENCOUNTER TYPE")
+    print("="*80)
+
+    from modules.strata import ENCOUNTER_TYPE_STRATA
+
+    for stratum_name, col in ENCOUNTER_TYPE_STRATA.items():
+        if col not in final_tableone_df.columns:
+            print(f"  ⚠️ Skipping {stratum_name}: column '{col}' not found")
+            continue
+
+        strat_df = final_tableone_df[final_tableone_df[col] == 1].copy()
+        if len(strat_df) == 0:
+            print(f"  ⚠️ Skipping {stratum_name}: no encounters")
+            continue
+
+        strat_hosp_ids = set(strat_df['hospitalization_id'].unique())
+        strat_patient_ids = set(strat_df['patient_id'].unique())
+        strat_enc_blocks = set(strat_df['encounter_block'].unique())
+        strat_output_dir = str(project_root / 'output' / 'final' / 'tableone' / stratum_name)
+        os.makedirs(strat_output_dir, exist_ok=True)
+
+        n_enc = len(strat_df.drop_duplicates(subset=['encounter_block']))
+        print(f"\n  {stratum_name}: {n_enc:,} encounters → {strat_output_dir}")
+
+        # Filter intermediate DataFrames to this stratum using encounter_block
+        try:
+            strat_resp_valid = resp_valid[resp_valid['encounter_block'].isin(strat_enc_blocks)]
+        except Exception:
+            strat_resp_valid = pd.DataFrame()
+        try:
+            strat_resp_imv = resp_imv_post_start[resp_imv_post_start['encounter_block'].isin(strat_enc_blocks)]
+        except Exception:
+            strat_resp_imv = pd.DataFrame()
+        try:
+            strat_meds = meds_merged[meds_merged['encounter_block'].isin(strat_enc_blocks)]
+        except Exception:
+            strat_meds = pd.DataFrame()
+        try:
+            strat_cci = cci_results[cci_results['encounter_block'].isin(strat_enc_blocks)]
+        except Exception:
+            strat_cci = pd.DataFrame()
+        strat_patient = patient_df[patient_df['patient_id'].isin(strat_patient_ids)]
+        strat_icu_encounters = strat_df[strat_df['icu_enc'] == 1]['encounter_block'].nunique() if 'icu_enc' in strat_df.columns else 0
+
+        try:
+            generate_ventilator_settings_summary(strat_resp_valid, vent_settings, strat_output_dir)
+            print(f"    ✅ ventilator_settings")
+        except Exception as e:
+            print(f"    ❌ ventilator_settings: {e}")
+
+        try:
+            generate_tidal_volume_stats(strat_resp_imv, strat_output_dir)
+            print(f"    ✅ tidal_volume_stats")
+        except Exception as e:
+            print(f"    ❌ tidal_volume_stats: {e}")
+
+        try:
+            generate_pressure_control_stats(strat_resp_imv, strat_output_dir)
+            print(f"    ✅ pressure_control_stats")
+        except Exception as e:
+            print(f"    ❌ pressure_control_stats: {e}")
+
+        try:
+            generate_mode_proportions(strat_resp_imv, strat_output_dir)
+            print(f"    ✅ mode_proportions")
+        except Exception as e:
+            print(f"    ❌ mode_proportions: {e}")
+
+        try:
+            generate_medications_hourly(strat_meds, strat_icu_encounters, med_groups, strat_output_dir)
+            print(f"    ✅ medications_hourly")
+        except Exception as e:
+            print(f"    ❌ medications_hourly: {e}")
+
+        try:
+            generate_medications_summary(strat_meds, strat_icu_encounters, med_groups, strat_output_dir)
+            print(f"    ✅ medications_summary")
+        except Exception as e:
+            print(f"    ❌ medications_summary: {e}")
+
+        try:
+            generate_comorbidities(strat_cci, strat_output_dir)
+            print(f"    ✅ comorbidities")
+        except Exception as e:
+            print(f"    ❌ comorbidities: {e}")
+
+        try:
+            generate_sofa_mortality(strat_df, strat_output_dir)
+            print(f"    ✅ sofa_mortality")
+        except Exception as e:
+            print(f"    ❌ sofa_mortality: {e}")
+
+        try:
+            generate_hospice_trends(strat_df, strat_output_dir)
+            print(f"    ✅ hospice_trends")
+        except Exception as e:
+            print(f"    ❌ hospice_trends: {e}")
+
+        try:
+            generate_cci_hospice_mortality(strat_df, strat_output_dir)
+            print(f"    ✅ cci_hospice_mortality")
+        except Exception as e:
+            print(f"    ❌ cci_hospice_mortality: {e}")
+
+        try:
+            generate_demographic_crosstab(strat_patient, strat_output_dir)
+            print(f"    ✅ demographic_crosstab")
+        except Exception as e:
+            print(f"    ❌ demographic_crosstab: {e}")
+
+    print("\n" + "="*80)
+    print("✅ STRATIFIED SUMMARY GENERATION COMPLETE")
+    print("="*80)
 
     # Final memory cleanup
     print("\nFinal memory cleanup...")

@@ -252,7 +252,8 @@ def compute_collection_statistics(
     file_type: str,
     lab_category_units: pl.DataFrame,
     lab_vital_config: Dict[str, Any],
-    output_dir: str
+    output_dir: str,
+    suffix: str = ""
 ) -> str:
     """
     Compute collection statistics for all labs, vitals, and respiratory support.
@@ -416,7 +417,7 @@ def compute_collection_statistics(
     os.makedirs(stats_dir, exist_ok=True)
 
     # Save to CSV
-    output_path = os.path.join(stats_dir, 'collection_statistics.csv')
+    output_path = os.path.join(stats_dir, f'collection_statistics{suffix}.csv')
     stats_df.to_csv(output_path, index=False)
 
     print("="*80)
