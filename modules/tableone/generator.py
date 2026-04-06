@@ -56,6 +56,7 @@ from modules.utils.datetime_utils import standardize_datetime_columns
 
 from clifpy.clif_orchestrator import ClifOrchestrator
 from clifpy.utils import apply_outlier_handling
+from clifpy.utils.ase import compute_ase
 from clifpy.utils.comorbidity import calculate_cci
 from clifpy.utils.stitching_encounters import stitch_encounters
 from matplotlib.patches import FancyBboxPatch
@@ -1714,12 +1715,31 @@ def main(memory_monitor=None) -> bool:
     icu_summary = icu_summary[['encounter_block', 'first_icu_in_dttm',
                                'first_icu_out_dttm','first_icu_los_days']]
 
-    # Merge all_ids with icu_summary and hosp_admission_summary
+    # Count ICU episodes per encounter_block
+    # Collapse contiguous ICU stays (e.g., MICU→SICU transfer = 1 episode)
+    icu_sorted = icu_df.sort_values(['encounter_block', 'in_dttm']).copy()
+    icu_sorted['prev_out_dttm'] = icu_sorted.groupby('encounter_block')['out_dttm'].shift(1)
+    icu_sorted['gap_hours'] = (
+        (icu_sorted['in_dttm'] - icu_sorted['prev_out_dttm']).dt.total_seconds() / 3600
+    )
+    # New episode if first ICU row or gap > 1 hour from previous ICU out_dttm
+    icu_sorted['new_episode'] = icu_sorted['prev_out_dttm'].isna() | (icu_sorted['gap_hours'] > 1)
+    icu_episodes = (
+        icu_sorted.groupby('encounter_block')['new_episode']
+        .sum()
+        .astype(int)
+        .reset_index(name='icu_episodes')
+    )
+    print(f"   ICU episodes computed: {icu_episodes['icu_episodes'].sum():,} across {len(icu_episodes):,} encounters")
+
+    # Merge all_ids with icu_summary, icu_episodes, and hosp_admission_summary
     final_tableone_df = (
         final_tableone_df
         .merge(icu_summary, on='encounter_block', how='left')
+        .merge(icu_episodes, on='encounter_block', how='left')
         .merge(hosp_admission_summary, on='encounter_block', how='left')
     )
+    final_tableone_df['icu_episodes'] = final_tableone_df['icu_episodes'].fillna(0).astype(int)
     final_tableone_df['first_admission_location'] = final_tableone_df['first_admission_location'].fillna('Missing')
 
 
@@ -2114,9 +2134,27 @@ def main(memory_monitor=None) -> bool:
     _vent_log.close()
     print(f"   Vent hours debug log written to: {_vent_log_path}")
 
+    # Count IMV episodes per encounter_block
+    # Each transition from non-IMV → IMV is a new episode
+    resp_sorted = resp_stitched.sort_values(['encounter_block', 'recorded_dttm'])
+    resp_sorted['is_imv'] = resp_sorted['device_category'].str.contains('imv', case=False, na=False).astype(int)
+    resp_sorted['imv_start'] = (resp_sorted['is_imv'] == 1) & (
+        (resp_sorted.groupby('encounter_block')['is_imv'].shift(1).fillna(0) == 0)
+    )
+    imv_episodes_per_enc = (
+        resp_sorted[resp_sorted['imv_start']]
+        .groupby('encounter_block')
+        .size()
+        .reset_index(name='imv_episodes')
+    )
+    print(f"   IMV episodes computed: {imv_episodes_per_enc['imv_episodes'].sum():,} across {len(imv_episodes_per_enc):,} encounters")
+    resp_sorted.drop(columns=['is_imv', 'imv_start'], inplace=True)
+
     # Merge into final_tableone_df
     final_tableone_df = final_tableone_df.merge(imv_hours_per_enc, on='encounter_block', how='left')
     final_tableone_df['vent_duration_hours'] = final_tableone_df['vent_duration_hours'].fillna(0.0)
+    final_tableone_df = final_tableone_df.merge(imv_episodes_per_enc, on='encounter_block', how='left')
+    final_tableone_df['imv_episodes'] = final_tableone_df['imv_episodes'].fillna(0).astype(int)
 
     # Cleanup temp columns
     resp_stitched.drop(columns=['next_recorded_dttm', 'duration_hours'], inplace=True)
@@ -3634,6 +3672,54 @@ def main(memory_monitor=None) -> bool:
         print(f"Warning: Failed to load the ECMO table: {e}. Proceeding without CRRT data.")
 
 
+    # ==============================================================================
+    # # Sepsis (CDC Adult Sepsis Event)
+    # ==============================================================================
+
+    print(f"\nComputing Adult Sepsis Events (ASE)...")
+    try:
+        ase_df = compute_ase(
+            hospitalization_ids=final_hosp_ids,
+            config_path=config_path,
+            data_directory=config['tables_path'],
+            filetype=config['file_type'],
+            verbose=True
+        )
+
+        # Print sample of ASE results
+        print("\n--- ASE Results Sample (first 20 rows) ---")
+        print(ase_df.head(20).to_string())
+        print(f"--- End ASE Sample ({len(ase_df)} total rows) ---\n")
+
+        # Map hospitalization_id → encounter_block
+        ase_enc = ase_df.merge(
+            encounter_mapping[['hospitalization_id', 'encounter_block']],
+            on='hospitalization_id',
+            how='inner'
+        )
+
+        # Count sepsis events per encounter_block using both methods
+        sepsis_rows = ase_enc[ase_enc['sepsis'] == 1]
+        counts_by_sepsis = sepsis_rows.groupby('encounter_block').size().reset_index(name='sepsis_events_by_sepsis_col')
+        counts_by_episode = sepsis_rows.groupby('encounter_block')['episode_id'].count().reset_index(name='sepsis_events_by_episode_id')
+
+        sepsis_counts = counts_by_sepsis.merge(counts_by_episode, on='encounter_block', how='outer')
+
+        final_tableone_df = final_tableone_df.merge(sepsis_counts, on='encounter_block', how='left')
+        final_tableone_df['sepsis_events_by_sepsis_col'] = final_tableone_df['sepsis_events_by_sepsis_col'].fillna(0).astype(int)
+        final_tableone_df['sepsis_events_by_episode_id'] = final_tableone_df['sepsis_events_by_episode_id'].fillna(0).astype(int)
+
+        total_by_sepsis = final_tableone_df['sepsis_events_by_sepsis_col'].sum()
+        total_by_episode = final_tableone_df['sepsis_events_by_episode_id'].sum()
+        enc_with_sepsis = (final_tableone_df['sepsis_events_by_sepsis_col'] > 0).sum()
+        print(f"   Total sepsis events (via sepsis col): {total_by_sepsis:,}")
+        print(f"   Total sepsis events (via episode_id): {total_by_episode:,}")
+        print(f"   Encounters with ≥1 sepsis event: {enc_with_sepsis:,} / {len(final_tableone_df):,}")
+    except Exception as e:
+        print(f"Warning: Failed to compute ASE: {e}. Proceeding without sepsis data.")
+        final_tableone_df['sepsis_events_by_sepsis_col'] = 0
+        final_tableone_df['sepsis_events_by_episode_id'] = 0
+
 
     # ==============================================================================
     # # Patient Assessments
@@ -4569,8 +4655,12 @@ def main(memory_monitor=None) -> bool:
         for col in df.columns:
             if col.endswith('_flag') or col in ['icu_enc', 'death_enc', 'high_support_enc', 
                                                  'vaso_support_enc', 'other_critically_ill', 
-                                                 'on_vent', 'on_crrt', 'hospice_outcome', 
-                                                 'expired_outcome']:
+                                                 'on_vent', 'on_crrt', 'hospice_outcome',
+                                                 'expired_outcome',
+                                                 'sepsis_events_by_sepsis_col',
+                                                 'sepsis_events_by_episode_id',
+                                                 'icu_episodes',
+                                                 'imv_episodes']:
                 if col in df.columns:
                     flag_sums[col] = df[col].sum()
     
@@ -4633,6 +4723,13 @@ def main(memory_monitor=None) -> bool:
             if flag in flag_sums:
                 n = flag_sums[flag]
                 rows.append((f"  {label}, n (%)", f"{n:,} ({100*n/N_enc:.1f}%)"))
+
+        if 'icu_episodes' in flag_sums:
+            total_icu_eps = flag_sums['icu_episodes']
+            enc_with_icu = (df['icu_episodes'] > 0).sum()
+            rows.append(("ICU episodes, total n", f"{total_icu_eps:,}"))
+            rows.append(("Encounters with ≥1 ICU episode, n (%)",
+                         f"{enc_with_icu:,} ({100*enc_with_icu/N_enc:.1f}%)"))
     
         # -------------------------------------------------------------------------
         # 4. Mortality (use pre-computed sums)
@@ -4737,12 +4834,33 @@ def main(memory_monitor=None) -> bool:
         if 'on_crrt' in flag_sums:
             crrt_n = flag_sums['on_crrt']
             rows.append(("CRRT, n (%)", f"{crrt_n:,} ({100*crrt_n/N_enc:.1f}%)"))
-    
+
+        # -------------------------------------------------------------------------
+        # 8b. Sepsis (CDC Adult Sepsis Event)
+        # -------------------------------------------------------------------------
+        if 'sepsis_events_by_sepsis_col' in flag_sums:
+            total_by_sepsis = flag_sums['sepsis_events_by_sepsis_col']
+            rows.append(("Sepsis events (CDC ASE, via sepsis col), n", f"{total_by_sepsis:,}"))
+        if 'sepsis_events_by_episode_id' in flag_sums:
+            total_by_episode = flag_sums['sepsis_events_by_episode_id']
+            rows.append(("Sepsis events (CDC ASE, via episode_id), n", f"{total_by_episode:,}"))
+        if 'sepsis_events_by_sepsis_col' in df.columns:
+            enc_with_sepsis = (df['sepsis_events_by_sepsis_col'] > 0).sum()
+            rows.append(("Encounters with ≥1 sepsis event, n (%)",
+                         f"{enc_with_sepsis:,} ({100*enc_with_sepsis/N_enc:.1f}%)"))
+
         # -------------------------------------------------------------------------
         # 9. Mechanical Ventilation
         # -------------------------------------------------------------------------
         imv_n = flag_sums.get('on_vent', 0)
         rows.append(("Invasive mechanical ventilation, n (%)", f"{imv_n:,} ({100*imv_n/N_enc:.1f}%)"))
+
+        if 'imv_episodes' in flag_sums:
+            total_imv_eps = flag_sums['imv_episodes']
+            enc_with_imv_eps = (df['imv_episodes'] > 0).sum()
+            rows.append(("IMV episodes, total n", f"{total_imv_eps:,}"))
+            rows.append(("Encounters with ≥1 IMV episode, n (%)",
+                         f"{enc_with_imv_eps:,} ({100*enc_with_imv_eps/N_enc:.1f}%)"))
 
         # Ventilator hours (total across all encounters in this subset)
         if 'vent_duration_hours' in df.columns:
