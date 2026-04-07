@@ -55,9 +55,10 @@ def _resolve_feedback(name: str, config: dict):
     if cached and cached.get("validation"):
         return create_feedback_structure(cached["validation"], name)
 
-    # 4. Try creating from DQA JSON on disk
+    # 4. Try creating from validation JSON report on disk
     import os, json
-    dqa_path = os.path.join(output_dir, 'final', 'clifpy', f'{name}_dqa.json')
+    from modules.utils.output_paths import validation_json_reports_dir
+    dqa_path = str(validation_json_reports_dir() / f'{name}_dqa.json')
     if os.path.exists(dqa_path):
         with open(dqa_path, 'r', encoding='utf-8') as f:
             validation_data = json.load(f)
@@ -137,9 +138,10 @@ async def save_feedback_to_disk(name: str):
 @router.delete("/feedback")
 async def clear_all_feedback():
     """Delete all feedback files, clear session state, and regenerate combined report."""
+    from modules.utils.output_paths import validation_feedback_dir
     config = session.get("config") or {}
     output_dir = config.get("output_dir", "output")
-    results_dir = os.path.join(output_dir, "final", "results")
+    results_dir = str(validation_feedback_dir())
 
     # 1. Delete all *_validation_response.json files from disk
     pattern = os.path.join(results_dir, "*_validation_response.json")

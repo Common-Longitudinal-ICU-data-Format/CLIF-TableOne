@@ -49,14 +49,18 @@ class MCIDEStatsCollector:
         self._hospitalization_ids_list = list(hospitalization_ids) if hospitalization_ids else None
         self._stratum_name = stratum_name
 
-        # Set up output directories
-        output_base = Path(config.get('output_dir', '../output'))
-        self.output_dir = output_base / 'final' / 'tableone'
-        self.mcide_dir = self.output_dir / 'mcide'
-        if stratum_name:
-            self.stats_dir = self.output_dir / 'summary_stats' / stratum_name
-        else:
-            self.stats_dir = self.output_dir / 'summary_stats'
+        # Set up output directories using the centralized output_paths helpers.
+        # MCIDE always lives under the overall cohort (it is not stratified).
+        # Summary stats are split: overall vs strata/<name>.
+        from modules.utils.output_paths import (
+            mcide_dir as _mcide_dir,
+            summary_stats_dir as _summary_stats_dir,
+            tableone_dir as _tableone_dir,
+        )
+        self.mcide_dir = _mcide_dir()
+        self.stats_dir = _summary_stats_dir(stratum=stratum_name)
+        # Kept for backwards-compat with internal references that may use it.
+        self.output_dir = _tableone_dir()
 
         # Create directories if they don't exist
         self.mcide_dir.mkdir(parents=True, exist_ok=True)

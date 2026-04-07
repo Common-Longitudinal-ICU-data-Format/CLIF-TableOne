@@ -600,24 +600,24 @@ def main(memory_monitor=None) -> bool:
             path = path / part
         return str(path)
 
-    output_base_dir = project_root / "output" / "final"
-    # Add all required subdirectories, including 'tableone/figures'
-    subdirs = [
-        'tableone',
-        'tableone/figures',
-        'tableone/mcide',
-        'tableone/summary_stats',
-        'reports',
-        'results',
-        'clifpy'
-    ]
-    for subdir in subdirs:
-        dir_path = output_base_dir / subdir
-        dir_path.mkdir(parents=True, exist_ok=True)
-    output_dir = output_base_dir / 'tableone'
-    mcide_dir = get_output_path('final', 'tableone', 'mcide')
-    clifpy_dir = get_output_path('final', 'clifpy')
-    summary_stats_dir = get_output_path('final', 'tableone', 'summary_stats')
+    # Build the full output/final/ tree (overall, strata, validation, meta, ...).
+    from modules.utils.output_paths import (
+        ensure_output_tree,
+        tableone_dir as _tableone_dir,
+        figures_dir as _figures_dir,
+        mcide_dir as _mcide_dir,
+        summary_stats_dir as _summary_stats_dir,
+        validation_json_reports_dir as _validation_json_reports_dir,
+    )
+    ensure_output_tree()
+
+    # CSV outputs (table_one_overall.csv, mortality_rates.csv, etc.)
+    output_dir = str(_tableone_dir())
+    # PNG/HTML/PDF outputs (consort, venn, upset, sankey, ...)
+    figures_dir = str(_figures_dir())
+    mcide_dir = str(_mcide_dir())
+    clifpy_dir = str(_validation_json_reports_dir())
+    summary_stats_dir = str(_summary_stats_dir())
 
     print(f"\n=� Configuration:")
     print(f"   Data directory: {config['tables_path']}")
@@ -1329,7 +1329,7 @@ def main(memory_monitor=None) -> bool:
         data_directory=config['tables_path'],
         filetype=config['file_type'],
         timezone=config['timezone'],
-        output_directory=get_output_path('final', 'clifpy')
+        output_directory=clifpy_dir
     )
 
 
@@ -1716,7 +1716,7 @@ def main(memory_monitor=None) -> bool:
     # ==============================================================================
 
     strobe_counts_df = pd.DataFrame(list(strobe_counts.items()), columns=['count_name', 'count_value'])
-    strobe_counts_df.to_csv(get_output_path('final', 'tableone', 'strobe_counts.csv'), index=False)
+    strobe_counts_df.to_csv(os.path.join(output_dir, 'strobe_counts.csv'), index=False)
     # Calculate mortality rates
     mortality_rates = {
         'ICU Hospitalizations': final_cohort.loc[final_cohort['icu_enc'] == 1, 'death_enc'].mean() * 100,
@@ -1726,7 +1726,7 @@ def main(memory_monitor=None) -> bool:
         'All Critically Ill Adults': final_cohort['death_enc'].mean() * 100,
     }
     mortality_rates_df = pd.DataFrame(list(mortality_rates.items()), columns=['count_name', 'count_value'])
-    mortality_rates_df.to_csv(get_output_path('final', 'tableone', 'mortality_rates.csv'), index=False)
+    mortality_rates_df.to_csv(os.path.join(output_dir, 'mortality_rates.csv'), index=False)
 
     cohort_df = encounter_mapping.copy()
     cohort_df = cohort_df[cohort_df['encounter_block'].isin(final_cohort['encounter_block'])]
@@ -1811,14 +1811,13 @@ def main(memory_monitor=None) -> bool:
         # Do NOT draw arrows from the four groups to the all critically ill adults box
 
         plt.tight_layout()
-        plt.savefig(get_output_path('final', 'tableone', 'consort_flow_diagram.png'), dpi=300, bbox_inches='tight', facecolor='white', edgecolor='none')
+        plt.savefig(os.path.join(figures_dir, 'consort_flow_diagram.png'), dpi=300, bbox_inches='tight', facecolor='white', edgecolor='none')
         plt.close()
 
 
     warnings.filterwarnings('ignore', category=FutureWarning, module='upsetplot')
 
-    # Create output directory if it doesn't exist
-    os.makedirs(get_output_path('final', 'tableone'), exist_ok=True)
+    # Output directories already created by ensure_output_tree() above
 
     # Prepare final_cohort data for UpSet and venn plots
     summary_df = final_cohort[['encounter_block', 'icu_enc', 'death_enc', 'high_support_enc', 'vaso_support_enc']].drop_duplicates()
@@ -1836,7 +1835,7 @@ def main(memory_monitor=None) -> bool:
     summary_df['Died'] = summary_df['Died'].fillna(0).astype(bool)
     summary_df['Advanced O2 Support'] = summary_df['Advanced O2 Support'].fillna(0).astype(bool)
     summary_df['Vasoactive Support'] = summary_df['Vasoactive Support'].fillna(0).astype(bool)
-    summary_df.to_csv(get_output_path('final', 'tableone', 'upset_data.csv'), index=False)
+    summary_df.to_csv(os.path.join(output_dir, 'upset_data.csv'), index=False)
 
     # ========== UpSet Plot ==========
     fig = plt.figure(figsize=(16, 12))
@@ -1863,7 +1862,7 @@ def main(memory_monitor=None) -> bool:
                      ax.get_xticklabels() + ax.get_yticklabels()):
             item.set_fontsize(12)
 
-    plt.savefig(get_output_path('final', 'tableone', 'cohort_intersect_upset_plot.png'), dpi=300, bbox_inches='tight')
+    plt.savefig(os.path.join(figures_dir, 'cohort_intersect_upset_plot.png'), dpi=300, bbox_inches='tight')
     plt.close()
 
     # ========== Venn Diagrams ==========
@@ -1885,9 +1884,9 @@ def main(memory_monitor=None) -> bool:
     fig = plt.figure(figsize=(12, 10))
     venny4py(sets=sets_dict, dpi=300)
     plt.suptitle('4-way Venn Diagram', fontsize=16, y=0.98)
-    plt.savefig(get_output_path('final', 'tableone', 'venn_all_4_groups.png'), dpi=300, bbox_inches='tight')
+    plt.savefig(os.path.join(figures_dir, 'venn_all_4_groups.png'), dpi=300, bbox_inches='tight')
     plt.close('all')
-    print("✅ Saved: ../output/final/tableone/venn_all_4_groups.png")
+    print(f"✅ Saved: {os.path.join(figures_dir, 'venn_all_4_groups.png')}")
 
     # Create the diagram
     create_consort_diagram(strobe_counts, mortality_rates)
@@ -1967,7 +1966,7 @@ def main(memory_monitor=None) -> bool:
     #     outcome_df=outcome_df,
     #     max_locations=7,
     #     title="ICU Patient Flow and Outcomes (Sample 300 encounters)",
-    #     output_file=f"{output_dir}/figures/sankey_matplotlib_icu.png",
+    #     output_file=f"{figures_dir}/sankey_matplotlib_icu.png",
     #     figsize=(16, 8)
     # )
     # 
@@ -1978,7 +1977,7 @@ def main(memory_monitor=None) -> bool:
         outcome_df=outcome_df,
         max_locations=7,
         title="ICU Patient Flow and Outcomes",
-        output_file=f"{output_dir}/figures/sankey_matplotlib_icu.png",
+        output_file=f"{figures_dir}/sankey_matplotlib_icu.png",
         figsize=(16, 8)
     )
 
@@ -1993,7 +1992,7 @@ def main(memory_monitor=None) -> bool:
         outcome_df=outcome_df,
         max_locations=8,
         title="Other critically ill patients Patient Flow and Outcomes",
-        output_file=f"{output_dir}/figures/sankey_matplotlib_others.png",
+        output_file=f"{figures_dir}/sankey_matplotlib_others.png",
         figsize=(16, 8)
     )
 
@@ -2006,7 +2005,7 @@ def main(memory_monitor=None) -> bool:
         outcome_df=outcome_df,
         max_locations=8,
         title="Patients receiving advanced o2 support",
-        output_file=f"{output_dir}/figures/sankey_matplotlib_high_o2_support.png",
+        output_file=f"{figures_dir}/sankey_matplotlib_high_o2_support.png",
         figsize=(16, 8)
     )
 
@@ -2019,7 +2018,7 @@ def main(memory_monitor=None) -> bool:
         outcome_df=outcome_df,
         max_locations=8,
         title="Patients receiving Vasoactives",
-        output_file=f"{output_dir}/figures/sankey_matplotlib_vaso_support.png",
+        output_file=f"{figures_dir}/sankey_matplotlib_vaso_support.png",
         figsize=(16, 8)
     )
 
@@ -2050,7 +2049,7 @@ def main(memory_monitor=None) -> bool:
             outcome_df=outcome_df,
             max_locations=8,
             title="Advanced O2 Support: Starting in Procedural/Other",
-            output_file=f"{output_dir}/figures/sankey_matplotlib_high_o2_proc_other.png",
+            output_file=f"{figures_dir}/sankey_matplotlib_high_o2_proc_other.png",
             figsize=(16, 8)
         )
     else:
@@ -2076,7 +2075,7 @@ def main(memory_monitor=None) -> bool:
             outcome_df=outcome_df,
             max_locations=8,
             title="Vasoactive Support: Starting in Procedural/Other",
-            output_file=f"{output_dir}/figures/sankey_matplotlib_vaso_proc_other.png",
+            output_file=f"{figures_dir}/sankey_matplotlib_vaso_proc_other.png",
             figsize=(16, 8)
         )
     else:
@@ -2291,19 +2290,20 @@ def main(memory_monitor=None) -> bool:
     # Save to CSV Files
     # ============================================================================
 
-    output_dir = get_output_path('final', 'tableone')
-
     # Save counts
-    df_counts.to_csv(f'{output_dir}code_status_counts_by_encounter_type.csv')
-    print(f"✅ Saved: {output_dir}code_status_counts_by_encounter_type.csv")
+    _counts_path = os.path.join(output_dir, 'code_status_counts_by_encounter_type.csv')
+    df_counts.to_csv(_counts_path)
+    print(f"✅ Saved: {_counts_path}")
 
     # Save percentages
-    df_percentages.to_csv(f'{output_dir}code_status_percentages_by_encounter_type.csv')
-    print(f"✅ Saved: {output_dir}code_status_percentages_by_encounter_type.csv")
+    _pct_path = os.path.join(output_dir, 'code_status_percentages_by_encounter_type.csv')
+    df_percentages.to_csv(_pct_path)
+    print(f"✅ Saved: {_pct_path}")
 
     # Save missingness summary
-    df_missingness.to_csv(f'{output_dir}code_status_missingness_summary.csv')
-    print(f"✅ Saved: {output_dir}code_status_missingness_summary.csv")
+    _miss_path = os.path.join(output_dir, 'code_status_missingness_summary.csv')
+    df_missingness.to_csv(_miss_path)
+    print(f"✅ Saved: {_miss_path}")
 
     # ============================================================================
     # Create Combined Summary File (Optional)
@@ -2324,16 +2324,17 @@ def main(memory_monitor=None) -> bool:
             })
 
     df_combined = pd.DataFrame(combined_summary)
-    df_combined.to_csv(f'{output_dir}code_status_combined_summary.csv', index=False)
-    print(f"✅ Saved: {output_dir}code_status_combined_summary.csv")
+    _combined_path = os.path.join(output_dir, 'code_status_combined_summary.csv')
+    df_combined.to_csv(_combined_path, index=False)
+    print(f"✅ Saved: {_combined_path}")
 
     print("\n" + "="*80)
     print("SAVED AGGREGATED DATA (NO PATIENT-LEVEL INFORMATION)")
     print("="*80)
-    print(f"1. {output_dir}code_status_counts_by_encounter_type.csv")
-    print(f"2. {output_dir}code_status_percentages_by_encounter_type.csv")
-    print(f"3. {output_dir}code_status_missingness_summary.csv")
-    print(f"4. {output_dir}code_status_combined_summary.csv")
+    print(f"1. {_counts_path}")
+    print(f"2. {_pct_path}")
+    print(f"3. {_miss_path}")
+    print(f"4. {_combined_path}")
 
     # ============================================================================
     # Load the saved aggregated data (can be done in a separate session)
@@ -2432,7 +2433,7 @@ def main(memory_monitor=None) -> bool:
     ax2.set_ylim(0, 100)
 
     plt.tight_layout()
-    plt.savefig(f'{output_dir}/code_status_stacked_bar_with_missingness_excl_missing_cat.png',
+    plt.savefig(os.path.join(figures_dir, 'code_status_stacked_bar_with_missingness_excl_missing_cat.png'),
                 dpi=300, bbox_inches='tight')
     plt.close()
 
@@ -2574,27 +2575,11 @@ def main(memory_monitor=None) -> bool:
     _vent_log.close()
     print(f"   Vent hours debug log written to: {_vent_log_path}")
 
-    # Count IMV episodes per encounter_block
-    # Each transition from non-IMV → IMV is a new episode
-    resp_sorted = resp_stitched.sort_values(['encounter_block', 'recorded_dttm'])
-    resp_sorted['is_imv'] = resp_sorted['device_category'].str.contains('imv', case=False, na=False).astype(int)
-    resp_sorted['imv_start'] = (resp_sorted['is_imv'] == 1) & (
-        (resp_sorted.groupby('encounter_block')['is_imv'].shift(1).fillna(0) == 0)
-    )
-    imv_episodes_per_enc = (
-        resp_sorted[resp_sorted['imv_start']]
-        .groupby('encounter_block')
-        .size()
-        .reset_index(name='imv_episodes')
-    )
-    print(f"   IMV episodes computed: {imv_episodes_per_enc['imv_episodes'].sum():,} across {len(imv_episodes_per_enc):,} encounters")
-    resp_sorted.drop(columns=['is_imv', 'imv_start'], inplace=True)
+    # NOTE: IMV episode counting removed pending a proper extubation definition.
 
     # Merge into final_tableone_df
     final_tableone_df = final_tableone_df.merge(imv_hours_per_enc, on='encounter_block', how='left')
     final_tableone_df['vent_duration_hours'] = final_tableone_df['vent_duration_hours'].fillna(0.0)
-    final_tableone_df = final_tableone_df.merge(imv_episodes_per_enc, on='encounter_block', how='left')
-    final_tableone_df['imv_episodes'] = final_tableone_df['imv_episodes'].fillna(0).astype(int)
 
     # Cleanup temp columns
     resp_stitched.drop(columns=['next_recorded_dttm', 'duration_hours'], inplace=True)
@@ -2855,7 +2840,7 @@ def main(memory_monitor=None) -> bool:
     tv_stats = tv_stats[tv_stats['count'] >= 10]
 
     # Save CSV for Tidal Volume data (median/IQR/mean/SD)
-    tv_csv_path = get_output_path('final', 'tableone', 'tidal_volume_volume_control_modes.csv')
+    tv_csv_path = os.path.join(output_dir, 'tidal_volume_volume_control_modes.csv')
     tv_stats.to_csv(tv_csv_path, index=False)
     print(f"✅ Saved CSV: {tv_csv_path}")
 
@@ -2872,7 +2857,7 @@ def main(memory_monitor=None) -> bool:
     ax.grid(True, alpha=0.3)
     ax.set_xlim(0, 168)
     plt.tight_layout()
-    tv_png_path = get_output_path('final', 'tableone', 'tidal_volume_volume_control_modes.png')
+    tv_png_path = os.path.join(figures_dir, 'tidal_volume_volume_control_modes.png')
     plt.savefig(tv_png_path, dpi=300, bbox_inches='tight')
     plt.close()
     print(f"\n✅ Saved: {tv_png_path}")
@@ -2890,12 +2875,12 @@ def main(memory_monitor=None) -> bool:
     ax.grid(True, alpha=0.3)
     ax.set_xlim(0, 168)
     plt.tight_layout()
-    tv_mean_png_path = get_output_path('final', 'tableone', 'tidal_volume_volume_control_modes_mean_sd.png')
+    tv_mean_png_path = os.path.join(figures_dir, 'tidal_volume_volume_control_modes_mean_sd.png')
     plt.savefig(tv_mean_png_path, dpi=300, bbox_inches='tight')
     plt.close()
     print(f"✅ Saved: {tv_mean_png_path}")
 
-    tv_mean_sd_csv_path = get_output_path('final', 'tableone', 'tidal_volume_volume_control_modes_mean_sd.csv')
+    tv_mean_sd_csv_path = os.path.join(output_dir, 'tidal_volume_volume_control_modes_mean_sd.csv')
     tv_stats[['hour_bin', 'mean', 'std', 'count']].to_csv(tv_mean_sd_csv_path, index=False)
     print(f"✅ Saved CSV: {tv_mean_sd_csv_path}")
 
@@ -2920,7 +2905,7 @@ def main(memory_monitor=None) -> bool:
     pc_stats = pc_stats[pc_stats['count'] >= 10]
 
     # Save CSV for Pressure Control data (median/IQR/mean/SD)
-    pc_csv_path = get_output_path('final', 'tableone', 'pressure_control_pressure_control_mode.csv')
+    pc_csv_path = os.path.join(output_dir, 'pressure_control_pressure_control_mode.csv')
     pc_stats.to_csv(pc_csv_path, index=False)
     print(f"✅ Saved CSV: {pc_csv_path}")
 
@@ -2937,7 +2922,7 @@ def main(memory_monitor=None) -> bool:
     ax.grid(True, alpha=0.3)
     ax.set_xlim(0, 168)
     plt.tight_layout()
-    pc_png_path = get_output_path('final', 'tableone', 'pressure_control_pressure_control_mode.png')
+    pc_png_path = os.path.join(figures_dir, 'pressure_control_pressure_control_mode.png')
     plt.savefig(pc_png_path, dpi=300, bbox_inches='tight')
     plt.close()
     print(f"✅ Saved: {pc_png_path}")
@@ -2955,12 +2940,12 @@ def main(memory_monitor=None) -> bool:
     ax.grid(True, alpha=0.3)
     ax.set_xlim(0, 168)
     plt.tight_layout()
-    pc_mean_png_path = get_output_path('final', 'tableone', 'pressure_control_pressure_control_mode_mean_sd.png')
+    pc_mean_png_path = os.path.join(figures_dir, 'pressure_control_pressure_control_mode_mean_sd.png')
     plt.savefig(pc_mean_png_path, dpi=300, bbox_inches='tight')
     plt.close()
     print(f"✅ Saved: {pc_mean_png_path}")
 
-    pc_mean_sd_csv_path = get_output_path('final', 'tableone', 'pressure_control_pressure_control_mode_mean_sd.csv')
+    pc_mean_sd_csv_path = os.path.join(output_dir, 'pressure_control_pressure_control_mode_mean_sd.csv')
     pc_stats[['hour_bin', 'mean', 'std', 'count']].to_csv(pc_mean_sd_csv_path, index=False)
     print(f"✅ Saved CSV: {pc_mean_sd_csv_path}")
 
@@ -3061,8 +3046,9 @@ def main(memory_monitor=None) -> bool:
     print("="*80)
     print(settings_summary.to_string(index=False))
 
-    settings_summary.to_csv(get_output_path('final', 'tableone', 'ventilator_settings_by_device_mode.csv'), index=False)
-    print(f"\n✅ Saved: ../output/final/tableone/ventilator_settings_by_device_mode.csv")
+    _vsbdm_path = os.path.join(output_dir, 'ventilator_settings_by_device_mode.csv')
+    settings_summary.to_csv(_vsbdm_path, index=False)
+    print(f"\n✅ Saved: {_vsbdm_path}")
 
     # ============================================================================
     # BONUS: Also create counts table (same optimization)
@@ -3107,8 +3093,9 @@ def main(memory_monitor=None) -> bool:
     print("\nObservation Counts by Device and Mode:")
     print(counts_summary.to_string(index=False))
 
-    counts_summary.to_csv(get_output_path('final', 'tableone', 'ventilator_settings_counts_by_device_mode.csv'), index=False)
-    print(f"\n✅ Saved: ../output/final/tableone/ventilator_settings_counts_by_device_mode.csv")
+    _vscbdm_path = os.path.join(output_dir, 'ventilator_settings_counts_by_device_mode.csv')
+    counts_summary.to_csv(_vscbdm_path, index=False)
+    print(f"\n✅ Saved: {_vscbdm_path}")
 
     # Save total observations count for table reconstruction
     total_resp_obs = len(resp_valid)  # Total respiratory support observations
@@ -3116,8 +3103,9 @@ def main(memory_monitor=None) -> bool:
         'metric': ['total_respiratory_support_observations'],
         'value': [total_resp_obs]
     })
-    total_obs_df.to_csv(get_output_path('final', 'tableone', 'ventilator_settings_total_observations.csv'), index=False)
-    print(f"✅ Saved total observations count ({total_resp_obs:,}): ../output/final/tableone/ventilator_settings_total_observations.csv")
+    _vsto_path = os.path.join(output_dir, 'ventilator_settings_total_observations.csv')
+    total_obs_df.to_csv(_vsto_path, index=False)
+    print(f"✅ Saved total observations count ({total_resp_obs:,}): {_vsto_path}")
 
     print("\n" + "="*80)
     print("VENTILATOR MODE PROPORTIONS - FIRST 24 HOURS OF IMV")
@@ -3188,8 +3176,9 @@ def main(memory_monitor=None) -> bool:
     print(plot_data.to_string(index=False))
 
     # Save the data
-    plot_data.to_csv(get_output_path('final', 'tableone', 'mode_proportions_first_24h.csv'), index=False)
-    print(f"\n✅ Saved: ../output/final/tableone/mode_proportions_first_24h.csv")
+    _mp24_path = os.path.join(output_dir, 'mode_proportions_first_24h.csv')
+    plot_data.to_csv(_mp24_path, index=False)
+    print(f"\n✅ Saved: {_mp24_path}")
 
     # ============================================================================
     # 5. Generate Ventilator Settings Table (Combined Image)
@@ -3203,7 +3192,7 @@ def main(memory_monitor=None) -> bool:
         from .ventilator_table import plot_ventilator_table
 
         # Generate the table with the full respiratory support dataset count
-        save_path = get_output_path('final', 'tableone', 'ventilator_settings_table.png')
+        save_path = os.path.join(figures_dir, 'ventilator_settings_table.png')
         total_resp_obs = len(resp_stitched)  # Use full respiratory support dataset for the table
         fig = plot_ventilator_table(save_path=save_path, total_observations=total_resp_obs)
         print(f"✅ Ventilator settings table image generated successfully")
@@ -3266,11 +3255,11 @@ def main(memory_monitor=None) -> bool:
     ax.grid(axis='y', alpha=0.3)
 
     plt.tight_layout()
-    plt.savefig(get_output_path('final', 'tableone', 'mode_proportions_first_24h_vertical.png'),
-               dpi=300, bbox_inches='tight')
+    _mp24v_path = os.path.join(figures_dir, 'mode_proportions_first_24h_vertical.png')
+    plt.savefig(_mp24v_path, dpi=300, bbox_inches='tight')
     plt.close('all')
 
-    print(f"✅ Saved: ../output/final/tableone/mode_proportions_first_24h_vertical.png")
+    print(f"✅ Saved: {_mp24v_path}")
 
     # Memory cleanup: Clear respiratory detailed analysis
     print("Clearing respiratory detailed analysis data from memory...")
@@ -3658,8 +3647,9 @@ def main(memory_monitor=None) -> bool:
         pct_pivot.add_suffix('_pct')
     ], axis=1)
 
-    hourly_df.to_csv(get_output_path('final', 'tableone', 'medications_hourly_data.csv'), index=False)
-    print(f"✅ Saved: ../output/final/tableone/medications_hourly_data.csv")
+    _mhd_path = os.path.join(output_dir, 'medications_hourly_data.csv')
+    hourly_df.to_csv(_mhd_path, index=False)
+    print(f"✅ Saved: {_mhd_path}")
 
     # ============================================================================
     # Plotly plotting functions (interactive area plots)
@@ -3726,18 +3716,18 @@ def main(memory_monitor=None) -> bool:
         pio.write_html(fig, output_path_html)
         # fig.show()  # REMOVED: Don't auto-open browser
 
-    # Generate all 3 interactive plots (save as HTML)
+    # Generate all 3 interactive plots (save as HTML in figures/)
     plotly_medication_group(
-        'vasoactive', med_groups['vasoactive'], hourly_df, 
-        get_output_path('final', 'tableone', 'vasoactive_area_curve_7d.html')
+        'vasoactive', med_groups['vasoactive'], hourly_df,
+        os.path.join(figures_dir, 'vasoactive_area_curve_7d.html')
     )
     plotly_medication_group(
-        'sedative', med_groups['sedative'], hourly_df, 
-        get_output_path('final', 'tableone', 'sedative_area_curve_7d.html')
+        'sedative', med_groups['sedative'], hourly_df,
+        os.path.join(figures_dir, 'sedative_area_curve_7d.html')
     )
     plotly_medication_group(
         'paralytic', med_groups['paralytic'], hourly_df,
-        get_output_path('final', 'tableone', 'paralytic_area_curve_7d.html')
+        os.path.join(figures_dir, 'paralytic_area_curve_7d.html')
     )
 
     print("\n✅ All medication plots (plotly) created and saved as HTML!")
@@ -3829,15 +3819,15 @@ def main(memory_monitor=None) -> bool:
     # Generate and save plots for each medication group (lines: median dose over time)
     plot_median_dose_line_by_hour(
         'vasoactive', med_groups['vasoactive'], meds_7d,
-        get_output_path('final', 'tableone', 'vasoactive_median_dose_by_hour.html')
+        os.path.join(figures_dir, 'vasoactive_median_dose_by_hour.html')
     )
     plot_median_dose_line_by_hour(
         'sedative', med_groups['sedative'], meds_7d,
-        get_output_path('final', 'tableone', 'sedative_median_dose_by_hour.html')
+        os.path.join(figures_dir, 'sedative_median_dose_by_hour.html')
     )
     plot_median_dose_line_by_hour(
         'paralytic', med_groups['paralytic'], meds_7d,
-        get_output_path('final', 'tableone', 'paralytic_median_dose_by_hour.html')
+        os.path.join(figures_dir, 'paralytic_median_dose_by_hour.html')
     )
 
     print("\n✅ All median dose line plots by hour (plotly) created and saved as HTML!")
@@ -3877,8 +3867,9 @@ def main(memory_monitor=None) -> bool:
     summary_df = summary_df[['group', 'medication', 'n_encounters', 'pct_encounters', 
                              'median_dose', 'q1_dose', 'q3_dose', 'dose_unit']]
 
-    summary_df.to_csv(get_output_path('final', 'tableone', 'medications_summary_stats.csv'), index=False)
-    print(f"✅ Saved: ../output/final/tableone/medications_summary_stats.csv")
+    _mss_path = os.path.join(output_dir, 'medications_summary_stats.csv')
+    summary_df.to_csv(_mss_path, index=False)
+    print(f"✅ Saved: {_mss_path}")
 
     # Memory cleanup: Clear medication processing data
     print("Clearing medication processing data from memory...")
@@ -3988,7 +3979,7 @@ def main(memory_monitor=None) -> bool:
     # Step 7: Save both table and summary statistics to CSV
 
     # First, write the comorbidity table to CSV
-    out_csv = get_output_path('final', 'tableone', 'comorbidities_per_1000_hospitalizations.csv')
+    out_csv = os.path.join(output_dir, 'comorbidities_per_1000_hospitalizations.csv')
     comorbidity_summary.to_csv(out_csv, index=False)
 
     # Write summary statistics to a second csv, and then append to same file as lines at the end
@@ -4002,7 +3993,7 @@ def main(memory_monitor=None) -> bool:
     ]
 
     # Save the summary stats to a separate CSV for clarity (and also appending to the main comorbidity file for convenience)
-    summary_csv = get_output_path('final', 'tableone', 'comorbidities_per_1000_hospitalizations_summary.csv')
+    summary_csv = os.path.join(output_dir, 'comorbidities_per_1000_hospitalizations_summary.csv')
     with open(summary_csv, 'w', newline='') as f:
         writer = csv.writer(f)
         writer.writerow(['Metric', 'Value'])
@@ -4034,7 +4025,7 @@ def main(memory_monitor=None) -> bool:
     ax.grid(axis='x', linestyle='-', alpha=0.3)
     ax.set_axisbelow(True)
     plt.tight_layout()
-    plt.savefig(get_output_path('final', 'tableone', 'comorbidities_per_1000_barplot.png'), dpi=300, bbox_inches='tight', facecolor='white')
+    plt.savefig(os.path.join(figures_dir, 'comorbidities_per_1000_barplot.png'), dpi=300, bbox_inches='tight', facecolor='white')
     plt.close()
 
 
@@ -4468,7 +4459,7 @@ def main(memory_monitor=None) -> bool:
     plt.subplots_adjust(bottom=0.15)  # Make room for patient counts
 
     # Save the figure
-    plt.savefig(get_output_path('final', 'tableone', 'sofa_mortality_histogram.png'),
+    plt.savefig(os.path.join(figures_dir, 'sofa_mortality_histogram.png'),
                 dpi=300, bbox_inches='tight', facecolor='white')
     plt.close()
 
@@ -4516,7 +4507,7 @@ def main(memory_monitor=None) -> bool:
     sofa_export['ci_margin_95'] = sofa_export['ci_margin_95'].round(2)
 
     # Save to CSV
-    output_path = get_output_path('final', 'tableone', 'sofa_mortality_summary.csv')
+    output_path = os.path.join(output_dir, 'sofa_mortality_summary.csv')
     sofa_export.to_csv(output_path, index=False)
 
     print(f"\n=== SOFA Mortality Summary Saved ===")
@@ -4621,9 +4612,9 @@ def main(memory_monitor=None) -> bool:
     # Save Results DataFrame
     # ============================================================================
 
-    output_dir = get_output_path('final', 'tableone')
-    hospice_trends.to_csv(f'{output_dir}/hospice_trends_summary.csv', index=False)
-    print(f"✅ Saved: {output_dir}/hospice_trends_summary.csv")
+    _hts_path = os.path.join(output_dir, 'hospice_trends_summary.csv')
+    hospice_trends.to_csv(_hts_path, index=False)
+    print(f"✅ Saved: {_hts_path}")
 
     # ============================================================================
     # Create Combined Figure
@@ -4764,7 +4755,7 @@ def main(memory_monitor=None) -> bool:
                  fontsize=16, fontweight='bold', pad=15)
 
     plt.tight_layout()
-    plt.savefig(f'{output_dir}/hospice_mortality_combined_trends.png',
+    plt.savefig(os.path.join(figures_dir, 'hospice_mortality_combined_trends.png'),
                 dpi=300, bbox_inches='tight', facecolor='white', edgecolor='none')
     plt.close()
 
@@ -4852,9 +4843,9 @@ def main(memory_monitor=None) -> bool:
     ]]
 
     # Save comprehensive summary
-    output_dir = get_output_path('final', 'tableone')
-    cci_summary.to_csv(f'{output_dir}/cci_hospice_mortality_comprehensive_summary.csv', index=False)
-    print(f"✅ Saved: {output_dir}/cci_hospice_mortality_comprehensive_summary.csv")
+    _cci_summary_path = os.path.join(output_dir, 'cci_hospice_mortality_comprehensive_summary.csv')
+    cci_summary.to_csv(_cci_summary_path, index=False)
+    print(f"✅ Saved: {_cci_summary_path}")
 
     # Save the plotting data ("data behind the figure") to a separate CSV file
     # This replicates the data used for each panel in the grid:
@@ -4869,8 +4860,9 @@ def main(memory_monitor=None) -> bool:
 
     plot_data_df = pd.concat(plot_data, axis=0)
 
-    plot_data_df.to_csv(f'{output_dir}/cci_mortality_hospice_trends_by_year_category_plotdata.csv', index=False)
-    print(f"✅ Saved plotting data for figure: {output_dir}/cci_mortality_hospice_trends_by_year_category_plotdata.csv")
+    _cci_plot_path = os.path.join(output_dir, 'cci_mortality_hospice_trends_by_year_category_plotdata.csv')
+    plot_data_df.to_csv(_cci_plot_path, index=False)
+    print(f"✅ Saved plotting data for figure: {_cci_plot_path}")
 
     # Display summary statistics
     print("\n" + "="*80)
@@ -4999,7 +4991,7 @@ def main(memory_monitor=None) -> bool:
     plt.suptitle('Mortality vs Hospice Trends by Comorbidity Burden',
                  fontsize=18, fontweight='bold', y=0.995)
     plt.tight_layout()
-    plt.savefig(f'{output_dir}/cci_mortality_hospice_comprehensive.png',
+    plt.savefig(os.path.join(figures_dir, 'cci_mortality_hospice_comprehensive.png'),
                 dpi=300, bbox_inches='tight', facecolor='white', edgecolor='none')
     plt.close()
 
@@ -5100,8 +5092,7 @@ def main(memory_monitor=None) -> bool:
                                                  'on_vent', 'on_crrt', 'hospice_outcome',
                                                  'expired_outcome',
                                                  'sepsis_events_by_sepsis_col',
-                                                 'icu_episodes',
-                                                 'imv_episodes']:
+                                                 'icu_episodes']:
                 if col in df.columns:
                     flag_sums[col] = df[col].sum()
     
@@ -5293,10 +5284,6 @@ def main(memory_monitor=None) -> bool:
         imv_n = flag_sums.get('on_vent', 0)
         rows.append(("Invasive mechanical ventilation, n (%)", f"{imv_n:,} ({100*imv_n/N_enc:.1f}%)"))
 
-        if 'imv_episodes' in flag_sums:
-            total_imv_eps = flag_sums['imv_episodes']
-            rows.append(("IMV episodes, total n", f"{total_imv_eps:,}"))
-
         # Ventilator hours (total across all encounters in this subset)
         if 'vent_duration_hours' in df.columns:
             total_vent_hours = df['vent_duration_hours'].sum()
@@ -5463,8 +5450,9 @@ def main(memory_monitor=None) -> bool:
     print(tbl_overall.to_string(index=False))
 
     # Save
-    tbl_overall.to_csv(get_output_path('final', 'tableone', 'table_one_overall.csv'), index=False)
-    print(f"\n✅ Saved: ../output/final/tableone/table_one_overall.csv")
+    _t1o_path = os.path.join(output_dir, 'table_one_overall.csv')
+    tbl_overall.to_csv(_t1o_path, index=False)
+    print(f"\n✅ Saved: {_t1o_path}")
 
     # ============================================================================
     # Step 4: Generate by Year (Optimized)
@@ -5506,8 +5494,9 @@ def main(memory_monitor=None) -> bool:
         print(table_by_year.to_string(index=False))
     
         # Save
-        table_by_year.to_csv(get_output_path('final', 'tableone', 'table_one_by_year.csv'), index=False)
-        print(f"\n✅ Saved: ../output/final/tableone/table_one_by_year.csv")
+        _t1by_path = os.path.join(output_dir, 'table_one_by_year.csv')
+        table_by_year.to_csv(_t1by_path, index=False)
+        print(f"\n✅ Saved: {_t1by_path}")
 
     # ============================================================================
     # Step 5: Generate Table Ones by Encounter Type (with year columns)
@@ -5554,9 +5543,11 @@ def main(memory_monitor=None) -> bool:
             .rename(columns={'index': 'Variable'})
         )
 
-        out_path = get_output_path('final', 'tableone', f'table_one_{stratum_name}_by_year.csv')
+        out_path = os.path.join(str(_tableone_dir(stratum=stratum_name)),
+                                  f'table_one_{stratum_name}_by_year.csv')
+        os.makedirs(os.path.dirname(out_path), exist_ok=True)
         strat_table.to_csv(out_path, index=False)
-        print(f"  ✅ Saved: table_one_{stratum_name}_by_year.csv")
+        print(f"  ✅ Saved: {out_path}")
 
     # ============================================================================
     # NIH Enrollment Report — race × ethnicity × sex cross-tabulation
@@ -5568,8 +5559,9 @@ def main(memory_monitor=None) -> bool:
     enrollment_report = crosstab_demographics(patient_df)
     print(enrollment_report.to_string())
 
-    enrollment_report.to_csv(get_output_path('final', 'tableone', 'demographic_crosstab_race_ethnicity_sex.csv'))
-    print(f"\n✅ Saved: ../output/final/tableone/demographic_crosstab_race_ethnicity_sex.csv")
+    _dx_path = os.path.join(output_dir, 'demographic_crosstab_race_ethnicity_sex.csv')
+    enrollment_report.to_csv(_dx_path)
+    print(f"\n✅ Saved: {_dx_path}")
 
     print("\n" + "="*80)
     print("✅ TABLE ONE GENERATION COMPLETE")
@@ -5601,7 +5593,7 @@ def main(memory_monitor=None) -> bool:
         strat_hosp_ids = set(strat_df['hospitalization_id'].unique())
         strat_patient_ids = set(strat_df['patient_id'].unique())
         strat_enc_blocks = set(strat_df['encounter_block'].unique())
-        strat_output_dir = str(project_root / 'output' / 'final' / 'tableone' / stratum_name)
+        strat_output_dir = str(_tableone_dir(stratum=stratum_name))
         os.makedirs(strat_output_dir, exist_ok=True)
 
         n_enc = len(strat_df.drop_duplicates(subset=['encounter_block']))

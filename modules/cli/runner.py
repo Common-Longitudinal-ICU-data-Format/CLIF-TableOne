@@ -12,6 +12,7 @@ from modules.tables import (
     PatientProceduresAnalyzer, PositionAnalyzer, RespiratorySupportAnalyzer,
     VitalsAnalyzer
 )
+from modules.tables.base_table_analyzer import scrub_dqa_pii
 from .formatters import ConsoleFormatter
 from .pdf_generator import ValidationPDFGenerator
 
@@ -156,7 +157,8 @@ class CLIAnalysisRunner:
                 # Generate PDF report
                 if self.generate_pdf:
                     try:
-                        reports_dir = os.path.join(self.output_dir, 'final', 'reports')
+                        from modules.utils.output_paths import PDF_REPORTS
+                        reports_dir = str(PDF_REPORTS)
                         os.makedirs(reports_dir, exist_ok=True)
 
                         pdf_path = os.path.join(reports_dir, f"{table_name}_validation_report.pdf")
@@ -207,7 +209,8 @@ class CLIAnalysisRunner:
 
                 # Save summary CSVs
                 try:
-                    results_dir = os.path.join(self.output_dir, 'final', 'results')
+                    from modules.utils.output_paths import validation_consolidated_dir
+                    results_dir = str(validation_consolidated_dir())
                     os.makedirs(results_dir, exist_ok=True)
 
                     # Save patient demographics summary
@@ -282,7 +285,8 @@ class CLIAnalysisRunner:
         # Header
         self.log(self.formatter.header("[HOSPITAL] CLIF TABLE ONE ANALYSIS"), force=True)
         self.log(f"{self.formatter.FOLDER} Data Directory: {self.data_dir}", force=True)
-        self.log(f"{self.formatter.FILE} Output Directory: {os.path.join(self.output_dir, 'final', 'reports')} (reports), {os.path.join(self.output_dir, 'final', 'results')} (results)", force=True)
+        from modules.utils.output_paths import PDF_REPORTS as _PDF_REPORTS_DISPLAY, validation_consolidated_dir as _validation_consolidated_display
+        self.log(f"{self.formatter.FILE} Output Directory: {_PDF_REPORTS_DISPLAY} (reports), {_validation_consolidated_display()} (validation consolidated)", force=True)
         self.log(f"[LIST] Tables: {', '.join(tables)}", force=True)
         self.log(f"[SEARCH] Validation: {'[OK]' if run_validation else '[X]'}", force=True)
         self.log(f"[STATS] Summary: {'[OK]' if run_summary else '[X]'}", force=True)
@@ -337,11 +341,13 @@ class CLIAnalysisRunner:
                         vr.setdefault('completeness', {}).update(serialized_rel)
 
                     # Update saved JSON file (merge into completeness)
-                    json_path = os.path.join(self.output_dir, 'final', 'clifpy', f'{tname}_dqa.json')
+                    from modules.utils.output_paths import validation_json_reports_dir
+                    json_path = str(validation_json_reports_dir() / f'{tname}_dqa.json')
                     if os.path.exists(json_path):
                         with open(json_path, 'r', encoding='utf-8') as f:
                             saved = json.load(f)
                         saved.setdefault('completeness', {}).update(serialized_rel)
+                        saved = scrub_dqa_pii(saved)
                         with open(json_path, 'w', encoding='utf-8') as f:
                             json.dump(saved, f, indent=2, default=str)
 
@@ -367,11 +373,13 @@ class CLIAnalysisRunner:
                         vr.setdefault('completeness', {}).update(serialized_cond)
 
                     # Update saved JSON file (merge into completeness)
-                    json_path = os.path.join(self.output_dir, 'final', 'clifpy', f'{tname}_dqa.json')
+                    from modules.utils.output_paths import validation_json_reports_dir
+                    json_path = str(validation_json_reports_dir() / f'{tname}_dqa.json')
                     if os.path.exists(json_path):
                         with open(json_path, 'r', encoding='utf-8') as f:
                             saved = json.load(f)
                         saved.setdefault('completeness', {}).update(serialized_cond)
+                        saved = scrub_dqa_pii(saved)
                         with open(json_path, 'w', encoding='utf-8') as f:
                             json.dump(saved, f, indent=2, default=str)
 
@@ -397,11 +405,13 @@ class CLIAnalysisRunner:
                         vr.setdefault('plausibility', {}).update(serialized_plaus)
 
                     # Update saved JSON file (merge into plausibility)
-                    json_path = os.path.join(self.output_dir, 'final', 'clifpy', f'{tname}_dqa.json')
+                    from modules.utils.output_paths import validation_json_reports_dir
+                    json_path = str(validation_json_reports_dir() / f'{tname}_dqa.json')
                     if os.path.exists(json_path):
                         with open(json_path, 'r', encoding='utf-8') as f:
                             saved = json.load(f)
                         saved.setdefault('plausibility', {}).update(serialized_plaus)
+                        saved = scrub_dqa_pii(saved)
                         with open(json_path, 'w', encoding='utf-8') as f:
                             json.dump(saved, f, indent=2, default=str)
 
@@ -413,7 +423,8 @@ class CLIAnalysisRunner:
                 # Regenerate PDFs for all tables affected by cross-table results
                 affected_tables = set(rel_results.keys()) | set(cond_results.keys()) | set(plaus_results.keys())
                 if self.generate_pdf and affected_tables:
-                    reports_dir = os.path.join(self.output_dir, 'final', 'reports')
+                    from modules.utils.output_paths import PDF_REPORTS as _PDF_REPORTS
+                    reports_dir = str(_PDF_REPORTS)
                     for tname in affected_tables:
                         if tname in results['details'] and results['details'][tname].get('validation'):
                             pdf_path = os.path.join(reports_dir, f"{tname}_validation_report.pdf")
@@ -500,9 +511,10 @@ class CLIAnalysisRunner:
 
                 # Report MCIDE results
                 if mcide_success > 0:
+                    from modules.utils.output_paths import mcide_dir as _mcide_dir_display, summary_stats_dir as _ssd_display
                     self.log(self.formatter.success(f"[SUCCESS] MCIDE statistics collected for {mcide_success} table(s)"))
-                    self.log(f"  [LIST] MCIDE files: {os.path.join(self.output_dir, 'final', 'tableone', 'mcide')}")
-                    self.log(f"  [STATS] Stats files: {os.path.join(self.output_dir, 'final', 'tableone', 'summary_stats')}")
+                    self.log(f"  [LIST] MCIDE files: {_mcide_dir_display()}")
+                    self.log(f"  [STATS] Stats files: {_ssd_display()}")
 
                 if mcide_failed:
                     self.log(self.formatter.warning(f"[WARNING] MCIDE collection failed for: {', '.join(mcide_failed)}"))
@@ -528,9 +540,10 @@ class CLIAnalysisRunner:
                 error = results['details'][table].get('error', 'Unknown error')
                 self.log(f"  - {table}: {error}", force=True)
 
+        from modules.utils.output_paths import PDF_REPORTS as _PDF_REPORTS_FINAL, validation_consolidated_dir as _validation_consolidated_final
         self.log(f"\n{self.formatter.FOLDER} Results saved to:", force=True)
-        self.log(f"  [REPORT] Reports: {os.path.join(self.output_dir, 'final', 'reports')}", force=True)
-        self.log(f"  [STATS] Results: {os.path.join(self.output_dir, 'final', 'results')}", force=True)
+        self.log(f"  [REPORT] Reports: {_PDF_REPORTS_FINAL}", force=True)
+        self.log(f"  [STATS] Validation consolidated: {_validation_consolidated_final()}", force=True)
 
         # Generate combined report if multiple tables were analyzed and validation was run
         if len(results['tables_analyzed']) > 1 and run_validation and self.generate_pdf:

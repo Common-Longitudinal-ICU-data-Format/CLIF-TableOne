@@ -17,6 +17,7 @@ from modules.tables import (
     PatientProceduresAnalyzer, PositionAnalyzer, RespiratorySupportAnalyzer,
     VitalsAnalyzer,
 )
+from modules.tables.base_table_analyzer import scrub_dqa_pii
 
 router = APIRouter(prefix="/api", tags=["analysis"])
 
@@ -91,7 +92,6 @@ def _extract_cross_table_cache(analyzer):
 
 def _save_and_generate_pdf(analyzer, table_name, validation_results, config):
     """Save validation JSON and generate per-table PDF."""
-    output_dir = config.get('output_dir', 'output')
     if validation_results:
         try:
             analyzer.save_validation_results(validation_results)
@@ -99,10 +99,10 @@ def _save_and_generate_pdf(analyzer, table_name, validation_results, config):
             pass
         try:
             from modules.cli import ValidationPDFGenerator
-            reports_dir = os.path.join(output_dir, 'final', 'reports')
-            os.makedirs(reports_dir, exist_ok=True)
+            from modules.utils.output_paths import PDF_REPORTS
+            PDF_REPORTS.mkdir(parents=True, exist_ok=True)
             pdf_gen = ValidationPDFGenerator()
-            pdf_path = os.path.join(reports_dir, f"{table_name}_validation_report.pdf")
+            pdf_path = str(PDF_REPORTS / f"{table_name}_validation_report.pdf")
             if pdf_gen.is_available():
                 pdf_gen.generate_validation_pdf(
                     validation_results, table_name, pdf_path,
@@ -250,11 +250,13 @@ def _run_bulk_analysis(task_id: str, config: dict,
                     vr = store['analyzed_tables'][tname].get('validation')
                     if vr:
                         vr.setdefault('completeness', {}).update(serialized_rel)
-                json_path = os.path.join(output_dir, 'final', 'clifpy', f'{tname}_dqa.json')
+                from modules.utils.output_paths import validation_json_reports_dir as _dpt
+                json_path = str(_dpt() / f'{tname}_dqa.json')
                 if os.path.exists(json_path):
                     with open(json_path, 'r', encoding='utf-8') as f:
                         saved = _json.load(f)
                     saved.setdefault('completeness', {}).update(serialized_rel)
+                    saved = scrub_dqa_pii(saved)
                     with open(json_path, 'w', encoding='utf-8') as f:
                         _json.dump(saved, f, indent=2, default=str)
 
@@ -267,11 +269,13 @@ def _run_bulk_analysis(task_id: str, config: dict,
                     vr = store['analyzed_tables'][tname].get('validation')
                     if vr:
                         vr.setdefault('completeness', {}).update(serialized_cond)
-                json_path = os.path.join(output_dir, 'final', 'clifpy', f'{tname}_dqa.json')
+                from modules.utils.output_paths import validation_json_reports_dir as _dpt
+                json_path = str(_dpt() / f'{tname}_dqa.json')
                 if os.path.exists(json_path):
                     with open(json_path, 'r', encoding='utf-8') as f:
                         saved = _json.load(f)
                     saved.setdefault('completeness', {}).update(serialized_cond)
+                    saved = scrub_dqa_pii(saved)
                     with open(json_path, 'w', encoding='utf-8') as f:
                         _json.dump(saved, f, indent=2, default=str)
 
@@ -284,11 +288,13 @@ def _run_bulk_analysis(task_id: str, config: dict,
                     vr = store['analyzed_tables'][tname].get('validation')
                     if vr:
                         vr.setdefault('plausibility', {}).update(serialized_plaus)
-                json_path = os.path.join(output_dir, 'final', 'clifpy', f'{tname}_dqa.json')
+                from modules.utils.output_paths import validation_json_reports_dir as _dpt
+                json_path = str(_dpt() / f'{tname}_dqa.json')
                 if os.path.exists(json_path):
                     with open(json_path, 'r', encoding='utf-8') as f:
                         saved = _json.load(f)
                     saved.setdefault('plausibility', {}).update(serialized_plaus)
+                    saved = scrub_dqa_pii(saved)
                     with open(json_path, 'w', encoding='utf-8') as f:
                         _json.dump(saved, f, indent=2, default=str)
         except Exception:

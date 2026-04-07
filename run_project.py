@@ -61,8 +61,9 @@ class ProjectRunner:
 
     def setup_logging(self):
         """Setup comprehensive logging to capture all workflow output."""
-        # Create logs directory
-        log_dir = Path('output/final/logs')
+        # Create logs directory under meta/
+        from modules.utils.output_paths import workflow_logs_dir
+        log_dir = workflow_logs_dir()
         log_dir.mkdir(parents=True, exist_ok=True)
 
         # Create log file with timestamp
@@ -129,7 +130,8 @@ class ProjectRunner:
         ]
 
         # Path to consolidated validation results
-        consolidated_csv = Path('output/final/results/consolidated_validation.csv')
+        from modules.utils.output_paths import validation_consolidated_dir
+        consolidated_csv = validation_consolidated_dir() / 'consolidated_validation.csv'
 
         if not consolidated_csv.exists():
             return False, "Validation results file not found"
@@ -171,7 +173,7 @@ class ProjectRunner:
                     f"   {'; '.join(error_parts)}\n\n"
                     f"   Table One generation requires these tables to have at least 'partial' status.\n\n"
                     f"[REPORT] Review the validation report for details:\n"
-                    f"   output/final/reports/combined_validation_report.pdf\n\n"
+                    f"   output/final/validation/pdf_reports/combined_validation_report.pdf\n\n"
                     f"   Use --continue-on-error to proceed anyway (not recommended)."
                 )
                 return False, message
@@ -530,15 +532,17 @@ class ProjectRunner:
         # Output locations
         print_and_log(f"\n[FOLDER] Output Locations:")
         print_and_log(f"   [LOG] Workflow Log:    {self.log_file}")
-        print_and_log(f"   [LOG] Latest Log:      output/final/logs/workflow_execution_latest.log")
+        print_and_log(f"   [LOG] Latest Log:      output/final/meta/workflow_logs/workflow_execution_latest.log")
         if self.results['validation']:
-            print_and_log(f"   Validation Reports: output/final/reports/")
-            print_and_log(f"   Combined Report:    output/final/reports/combined_validation_report.pdf")
-            print_and_log(f"   Validation Results: output/final/results/")
+            print_and_log(f"   Validation Reports: output/final/validation/pdf_reports/")
+            print_and_log(f"   Combined Report:    output/final/validation/pdf_reports/combined_validation_report.pdf")
+            print_and_log(f"   Validation Results: output/final/validation/consolidated/")
         if self.results['tableone']:
-            print_and_log(f"   Table One:          output/final/tableone/")
+            print_and_log(f"   Table One (overall): output/final/overall/tableone/")
+            print_and_log(f"   Table One (strata):  output/final/strata/<icu|advanced_resp|vaso|deaths>/tableone/")
         if self.results['get_ecdf']:
-            print_and_log(f"   ECDF Data:          output/final/ecdf/, output/final/bins/")
+            print_and_log(f"   ECDF Data (overall): output/final/overall/{{ecdf,bins}}/")
+            print_and_log(f"   ECDF Data (strata):  output/final/strata/<...>/{{ecdf,bins}}/")
 
         self.logger.info("="*80)
         self.logger.info(f"Workflow execution log saved to: {self.log_file}")
@@ -698,7 +702,7 @@ class ProjectRunner:
             print("[ERROR] App Launch Blocked")
             print("="*80)
             print("\nCritical tables validation failed. Cannot launch app.")
-            print("Review validation report: output/final/reports/combined_validation_report.pdf")
+            print("Review validation report: output/final/validation/pdf_reports/combined_validation_report.pdf")
             print("\nUse --continue-on-error flag to bypass this check (not recommended)\n")
 
         return overall_success

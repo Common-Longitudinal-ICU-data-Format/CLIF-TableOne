@@ -46,8 +46,9 @@ def collect_table_results(output_dir: str, table_names: List[str]):
     - results: dict mapping table_name -> serialized DQA result dict (or None)
     - feedback_map: dict mapping table_name -> feedback dict (or None)
     """
-    clifpy_dir = os.path.join(output_dir, 'final', 'clifpy')
-    results_dir = os.path.join(output_dir, 'final', 'results')
+    from modules.utils.output_paths import validation_json_reports_dir, validation_feedback_dir
+    clifpy_dir = str(validation_json_reports_dir())
+    results_dir = str(validation_feedback_dir())
     results = {}
     feedback_map = {}
 
@@ -470,15 +471,16 @@ def generate_combined_report(output_dir: str, table_names: List[str],
             print("Warning: No analyzed tables found. Run validation first.")
             return None
 
-        reports_dir = os.path.join(output_dir, 'final', 'reports')
-        os.makedirs(reports_dir, exist_ok=True)
-        pdf_path = os.path.join(reports_dir, 'combined_validation_report.pdf')
+        from modules.utils.output_paths import PDF_REPORTS, validation_consolidated_dir
+        reports_dir = PDF_REPORTS
+        reports_dir.mkdir(parents=True, exist_ok=True)
+        pdf_path = str(reports_dir / 'combined_validation_report.pdf')
         generate_combined_pdf(table_results, pdf_path, site_name, timezone,
                               feedback_map=feedback_map)
 
-        results_dir = os.path.join(output_dir, 'final', 'results')
-        os.makedirs(results_dir, exist_ok=True)
-        csv_path = os.path.join(results_dir, 'consolidated_validation.csv')
+        results_dir = validation_consolidated_dir()
+        results_dir.mkdir(parents=True, exist_ok=True)
+        csv_path = str(results_dir / 'consolidated_validation.csv')
         generate_consolidated_csv(table_results, csv_path, timezone, feedback_map=feedback_map)
 
         return pdf_path

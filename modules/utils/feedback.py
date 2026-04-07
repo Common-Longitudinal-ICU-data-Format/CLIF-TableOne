@@ -265,8 +265,9 @@ def save_feedback(feedback: Dict[str, Any], output_dir: str, table_name: str):
     )
     feedback['timestamp'] = datetime.now().isoformat()
 
-    # Ensure output directory exists
-    final_dir = os.path.join(output_dir, 'final', 'results')
+    # Ensure output directory exists (feedback now lives under validation/feedback/)
+    from modules.utils.output_paths import validation_feedback_dir
+    final_dir = str(validation_feedback_dir())
     os.makedirs(final_dir, exist_ok=True)
 
     # Save to file
@@ -295,8 +296,9 @@ def load_feedback(output_dir: str, table_name: str) -> Optional[Dict[str, Any]]:
     dict or None
         Loaded feedback structure or None if file doesn't exist
     """
+    from modules.utils.output_paths import validation_feedback_dir
     filename = f"{table_name}_validation_response.json"
-    filepath = os.path.join(output_dir, 'final', 'results', filename)
+    filepath = str(validation_feedback_dir() / filename)
 
     if not os.path.exists(filepath):
         return None

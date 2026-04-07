@@ -27,7 +27,8 @@ class VitalsAnalyzer(BaseTableAnalyzer):
             return
 
         try:
-            clifpy_output_dir = os.path.join(self.output_dir, "final", "clifpy")
+            from modules.utils.output_paths import validation_json_reports_dir
+            clifpy_output_dir = str(validation_json_reports_dir())
             os.makedirs(clifpy_output_dir, exist_ok=True)
 
             self.table = Vitals.from_file(

@@ -17,14 +17,15 @@ def check_mcide_results_available(output_dir: str = 'output') -> bool:
     Parameters:
     -----------
     output_dir : str
-        Base output directory
+        Base output directory (kept for backwards compatibility — ignored).
 
     Returns:
     --------
     bool
         True if MCIDE CSV files exist
     """
-    mcide_dir = os.path.join(output_dir, 'final', 'tableone', 'mcide')
+    from modules.utils.output_paths import mcide_dir as _mcide_dir
+    mcide_dir = str(_mcide_dir())
 
     if not os.path.exists(mcide_dir):
         return False

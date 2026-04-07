@@ -126,12 +126,17 @@ def get_cached_analysis(table_name: str, store: dict, config: dict) -> Optional[
     """
     initialize_cache(store)
 
-    output_dir = _get_output_dir(config)
-    results_dir = os.path.join(output_dir, 'results')
+    from modules.utils.output_paths import (
+        validation_json_reports_dir, validation_consolidated_dir, validation_feedback_dir,
+    )
 
-    # Check for validation response file (has feedback and adjusted status) in results subdirectory
+    per_table_dir = str(validation_json_reports_dir())
+    consolidated_dir = str(validation_consolidated_dir())
+    feedback_dir = str(validation_feedback_dir())
+
+    # Check for validation response file (has feedback and adjusted status)
     feedback = None
-    feedback_path = os.path.join(results_dir, f"{table_name}_validation_response.json")
+    feedback_path = os.path.join(feedback_dir, f"{table_name}_validation_response.json")
     if os.path.exists(feedback_path):
         try:
             with open(feedback_path, 'r', encoding='utf-8') as f:
@@ -139,9 +144,9 @@ def get_cached_analysis(table_name: str, store: dict, config: dict) -> Optional[
         except Exception as e:
             print(f"Error loading feedback: {e}")
 
-    # Check for raw validation file in results subdirectory, then fallback to clifpy/ DQA file
+    # Check for raw validation file in validation/consolidated/, then fallback to validation/json_reports/ DQA file
     validation = None
-    validation_path = os.path.join(results_dir, f"{table_name}_summary_validation.json")
+    validation_path = os.path.join(consolidated_dir, f"{table_name}_summary_validation.json")
     if os.path.exists(validation_path):
         try:
             with open(validation_path, 'r', encoding='utf-8') as f:
@@ -155,20 +160,20 @@ def get_cached_analysis(table_name: str, store: dict, config: dict) -> Optional[
             print(f"Error loading validation for {table_name}: {e}")
 
     if validation is None:
-        clifpy_path = os.path.join(output_dir, 'clifpy', f"{table_name}_dqa.json")
+        clifpy_path = os.path.join(per_table_dir, f"{table_name}_dqa.json")
         if os.path.exists(clifpy_path):
             try:
                 with open(clifpy_path, 'r', encoding='utf-8') as f:
                     validation = json.load(f)
-                print(f"[cache] Loaded {table_name} DQA from clifpy: keys={list(validation.keys()) if validation else 'None'}")
+                print(f"[cache] Loaded {table_name} DQA from validation/json_reports: keys={list(validation.keys()) if validation else 'None'}")
             except Exception as e:
-                print(f"Error loading clifpy DQA for {table_name}: {e}")
+                print(f"Error loading validation/json_reports DQA for {table_name}: {e}")
         else:
             print(f"[cache] No DQA file found for {table_name} at {clifpy_path}")
 
-    # Check for summary file in results subdirectory
+    # Check for summary file in dqa/consolidated/
     summary = None
-    summary_path = os.path.join(results_dir, f"{table_name}_summary_summary.json")
+    summary_path = os.path.join(consolidated_dir, f"{table_name}_summary_summary.json")
     if os.path.exists(summary_path):
         try:
             with open(summary_path, 'r', encoding='utf-8') as f:
@@ -176,10 +181,9 @@ def get_cached_analysis(table_name: str, store: dict, config: dict) -> Optional[
         except Exception as e:
             print(f"Error loading summary: {e}")
 
-    # Check for CSV validation artifacts
-    validation_csv_exists = _file_exists(table_name, '.csv', config) or \
-                           os.path.exists(os.path.join(output_dir, f'validation_errors_{table_name}.csv'))
-    missing_csv_exists = os.path.exists(os.path.join(output_dir, f'missing_data_stats_{table_name}.csv'))
+    # Check for CSV validation artifacts (now in validation/json_reports/)
+    validation_csv_exists = os.path.exists(os.path.join(per_table_dir, f'validation_errors_{table_name}.csv'))
+    missing_csv_exists = os.path.exists(os.path.join(per_table_dir, f'missing_data_stats_{table_name}.csv'))
 
     # Determine if anything exists
     has_validation = validation is not None or validation_csv_exists
@@ -188,22 +192,26 @@ def get_cached_analysis(table_name: str, store: dict, config: dict) -> Optional[
     if not has_validation and not has_summary and feedback is None:
         return None
 
-    # Get timestamp from most recent file in results subdirectory
+    # Get timestamp from most recent file
     timestamps = []
-    for suffix in ['_validation_response.json', '_summary_validation.json', '_summary_summary.json']:
-        filepath = os.path.join(results_dir, f"{table_name}{suffix}")
+    for suffix, dirpath in [
+        ('_validation_response.json', feedback_dir),
+        ('_summary_validation.json', consolidated_dir),
+        ('_summary_summary.json', consolidated_dir),
+    ]:
+        filepath = os.path.join(dirpath, f"{table_name}{suffix}")
         ts = _get_file_timestamp(filepath)
         if ts:
             timestamps.append(ts)
 
-    # Add clifpy/ DQA file timestamp
-    clifpy_ts = _get_file_timestamp(os.path.join(output_dir, 'clifpy', f"{table_name}_dqa.json"))
+    # Add validation/json_reports/ DQA file timestamp
+    clifpy_ts = _get_file_timestamp(os.path.join(per_table_dir, f"{table_name}_dqa.json"))
     if clifpy_ts:
         timestamps.append(clifpy_ts)
 
-    # Add CSV file timestamps
+    # Add CSV file timestamps (now in validation/json_reports/)
     for csv_file in [f'validation_errors_{table_name}.csv', f'missing_data_stats_{table_name}.csv']:
-        filepath = os.path.join(output_dir, csv_file)
+        filepath = os.path.join(per_table_dir, csv_file)
         ts = _get_file_timestamp(filepath)
         if ts:
             timestamps.append(ts)

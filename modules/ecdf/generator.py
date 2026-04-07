@@ -24,15 +24,21 @@ Output structure:
     │   ├── clif_config.json
     │   ├── lab_vital_config.yaml
     │   └── outlier_config.yaml
-    ├── ecdf/
-    │   ├── labs/{category}_{unit}.parquet
-    │   ├── vitals/{category}.parquet
-    │   └── respiratory_support/{column}.parquet
-    ├── bins/
-    │   ├── labs/{category}_{unit}.parquet
-    │   ├── vitals/{category}.parquet
-    │   └── respiratory_support/{column}.parquet
-    └── unit_mismatches.log
+    ├── overall/
+    │   ├── ecdf/
+    │   │   ├── labs/{category}_{unit}.parquet
+    │   │   ├── vitals/{category}.parquet
+    │   │   └── respiratory_support/{column}.parquet
+    │   └── bins/
+    │       ├── labs/{category}_{unit}.parquet
+    │       ├── vitals/{category}.parquet
+    │       └── respiratory_support/{column}.parquet
+    ├── strata/
+    │   ├── icu/{ecdf,bins}/...
+    │   ├── advanced_resp/{ecdf,bins}/...
+    │   ├── vaso/{ecdf,bins}/...
+    │   └── deaths/{ecdf,bins}/...
+    └── meta/unit_mismatches.log
 """
 
 import json
@@ -48,6 +54,15 @@ from datetime import datetime
 
 # Import binning functions from the same module
 from .utils import create_all_bins
+from modules.utils.output_paths import (
+    CONFIGS,
+    OVERALL,
+    STRATA,
+    META,
+    cohort_dir,
+    meta_dir,
+    ensure_output_tree,
+)
 
 
 # ============================================================================
@@ -100,12 +115,17 @@ def load_configs(
 
 
 def copy_configs_to_output(
-    output_dir: str,
+    output_dir: str = None,
     clif_config_path: str = None,
     outlier_config_path: str = None,
     lab_vital_config_path: str = None
 ):
-    """Copy configuration files to output directory."""
+    """Copy configuration files to the top-level output/final/configs/ directory.
+
+    The ``output_dir`` argument is accepted for backwards compatibility but is
+    ignored — configs are always written to the canonical CONFIGS directory
+    so they can be discovered without knowing the cohort layout.
+    """
     # Get project root and set default paths
     project_root = Path(__file__).parent.parent.parent
 
@@ -116,12 +136,12 @@ def copy_configs_to_output(
     if lab_vital_config_path is None:
         lab_vital_config_path = Path(__file__).parent / 'config' / 'lab_vital_config.yaml'
 
-    config_dir = os.path.join(output_dir, 'configs')
-    os.makedirs(config_dir, exist_ok=True)
+    config_dir = CONFIGS
+    config_dir.mkdir(parents=True, exist_ok=True)
 
-    shutil.copy(str(clif_config_path), os.path.join(config_dir, 'config.json'))
-    shutil.copy(str(outlier_config_path), os.path.join(config_dir, 'outlier_config.yaml'))
-    shutil.copy(str(lab_vital_config_path), os.path.join(config_dir, 'lab_vital_config.yaml'))
+    shutil.copy(str(clif_config_path), str(config_dir / 'config.json'))
+    shutil.copy(str(outlier_config_path), str(config_dir / 'outlier_config.yaml'))
+    shutil.copy(str(lab_vital_config_path), str(config_dir / 'lab_vital_config.yaml'))
 
     print(f"✓ Copied configs to {config_dir}")
 
@@ -959,16 +979,19 @@ def main():
     # Setup Output Directory
     # ========================================================================
 
-    output_dir = 'output/final'
-    os.makedirs(output_dir, exist_ok=True)
+    # Build the full output/final/ tree (overall, strata, validation, meta, ...)
+    ensure_output_tree()
+
+    # The "overall" cohort is now its own subdirectory inside output/final/
+    output_dir = str(OVERALL)
     print(f"Output directory: {output_dir}\n")
 
-    # Copy configs
-    copy_configs_to_output(output_dir)
+    # Copy configs (always written to the top-level configs/ — argument ignored)
+    copy_configs_to_output()
     print()
 
-    # Setup log file
-    log_file = os.path.join(output_dir, 'unit_mismatches.log')
+    # Setup log file (now lives under meta/)
+    log_file = str(meta_dir() / 'unit_mismatches.log')
 
     # ========================================================================
     # Extract ICU Time Windows
@@ -1027,7 +1050,7 @@ def main():
             print(f"STRATIFIED ECDF: {stratum_name} ({len(filtered_windows):,} ICU windows)")
             print(f"{'='*80}\n")
 
-            stratum_output_dir = os.path.join(output_dir, stratum_name)
+            stratum_output_dir = str(STRATA / stratum_name)
             os.makedirs(stratum_output_dir, exist_ok=True)
 
             s_labs, s_vitals, s_resp, s_log = run_ecdf_pipeline(
@@ -1095,14 +1118,13 @@ def main():
     print()
     print(f"Total processing time: {duration:.1f} seconds")
     print()
-    print(f"Output saved to: {output_dir}/")
-    print("  - configs/")
-    print("  - ecdf/labs/*.parquet (with unit in filename)")
-    print("  - ecdf/vitals/*.parquet")
-    print("  - bins/labs/*.parquet (with unit in filename)")
-    print("  - bins/vitals/*.parquet")
+    print(f"Output saved to: output/final/")
+    print(f"  - configs/                         (run config snapshot)")
+    print(f"  - overall/ecdf/{{labs,vitals,respiratory_support}}/*.parquet")
+    print(f"  - overall/bins/{{labs,vitals,respiratory_support}}/*.parquet")
+    print(f"  - strata/{{icu,advanced_resp,vaso,deaths}}/{{ecdf,bins}}/...")
     if log_entries:
-        print(f"  - unit_mismatches.log ({len(log_entries)} entries)")
+        print(f"  - meta/unit_mismatches.log ({len(log_entries)} entries)")
     print()
     print("="*80)
     print("✅ Done!")

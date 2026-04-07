@@ -102,16 +102,29 @@ class ECDFRunner:
 
     def validate_outputs(self):
         """Validate that expected output files were created."""
+        from modules.utils.output_paths import (
+            CONFIGS, STATS, ecdf_dir, bins_dir, meta_dir, STRATA_NAMES,
+        )
+
         expected_dirs = [
-            self.project_root / 'output/final/configs',
-            self.project_root / 'output/final/ecdf/labs',
-            self.project_root / 'output/final/ecdf/vitals',
-            self.project_root / 'output/final/ecdf/respiratory_support',
-            self.project_root / 'output/final/bins/labs',
-            self.project_root / 'output/final/bins/vitals',
-            self.project_root / 'output/final/bins/respiratory_support',
-            self.project_root / 'output/final/stats',
+            CONFIGS,
+            ecdf_dir(table_type='labs'),
+            ecdf_dir(table_type='vitals'),
+            ecdf_dir(table_type='respiratory_support'),
+            bins_dir(table_type='labs'),
+            bins_dir(table_type='vitals'),
+            bins_dir(table_type='respiratory_support'),
+            STATS,
         ]
+        for stratum in STRATA_NAMES:
+            expected_dirs.extend([
+                ecdf_dir(stratum, 'labs'),
+                ecdf_dir(stratum, 'vitals'),
+                ecdf_dir(stratum, 'respiratory_support'),
+                bins_dir(stratum, 'labs'),
+                bins_dir(stratum, 'vitals'),
+                bins_dir(stratum, 'respiratory_support'),
+            ])
 
         missing_dirs = []
         existing_dirs = []
@@ -134,15 +147,18 @@ class ECDFRunner:
         if existing_dirs:
             print(f"\n✅ Generated directories ({len(existing_dirs)}):")
             for dir_path, file_count in existing_dirs:
-                print(f"   {Path(dir_path).name:30s} ({file_count} files)")
+                # Show last two path parts for clarity (e.g. "overall/labs", "icu/ecdf")
+                short = '/'.join(Path(dir_path).parts[-3:])
+                print(f"   {short:40s} ({file_count} files)")
 
         if missing_dirs:
             print(f"\n⚠️  Missing expected directories ({len(missing_dirs)}):")
             for dir_path in missing_dirs:
-                print(f"   {Path(dir_path).name}")
+                short = '/'.join(Path(dir_path).parts[-3:])
+                print(f"   {short}")
 
         # Check for log file
-        log_file = self.project_root / 'output/final/unit_mismatches.log'
+        log_file = meta_dir() / 'unit_mismatches.log'
         if log_file.exists():
             print(f"\n📋 Log file: {log_file}")
 
@@ -233,8 +249,10 @@ class ECDFRunner:
                 clif_config['file_type']
             )
 
-            # Compute statistics
-            output_dir = self.project_root / 'output/final'
+            # Compute statistics. compute_collection_statistics() builds
+            # `<output_dir>/stats/collection_statistics.csv`, so we pass the
+            # final directory itself (stats lives at the top level).
+            output_dir = self.project_root / 'output' / 'final'
             stats_path = compute_collection_statistics(
                 icu_windows=icu_windows,
                 tables_path=clif_config['tables_path'],
@@ -292,7 +310,8 @@ class ECDFRunner:
 
     def generate_report(self, success, validation_passed, total_time):
         """Generate a summary report."""
-        report_path = self.project_root / 'output/final/ecdf_execution_report.txt'
+        from modules.utils.output_paths import meta_dir
+        report_path = meta_dir() / 'ecdf_execution_report.txt'
         report_path.parent.mkdir(parents=True, exist_ok=True)
 
         with open(report_path, 'w', encoding='utf-8') as f:
@@ -311,18 +330,20 @@ class ECDFRunner:
             f.write("="*80 + "\n\n")
 
             f.write("output/final/\n")
-            f.write("├── configs/           # Configuration files\n")
-            f.write("├── ecdf/             # ECDF parquet files\n")
-            f.write("│   ├── labs/\n")
-            f.write("│   ├── vitals/\n")
-            f.write("│   └── respiratory_support/\n")
-            f.write("├── bins/             # Bin parquet files\n")
-            f.write("│   ├── labs/\n")
-            f.write("│   ├── vitals/\n")
-            f.write("│   └── respiratory_support/\n")
-            f.write("├── stats/            # Collection statistics CSV\n")
+            f.write("├── configs/                       # Configuration files\n")
+            f.write("├── overall/\n")
+            f.write("│   ├── ecdf/{labs,vitals,respiratory_support}/   # Overall ECDF parquets\n")
+            f.write("│   └── bins/{labs,vitals,respiratory_support}/   # Overall bin parquets\n")
+            f.write("├── strata/\n")
+            f.write("│   ├── icu/{ecdf,bins}/...        # Stratified ECDF/bins\n")
+            f.write("│   ├── advanced_resp/{ecdf,bins}/...\n")
+            f.write("│   ├── vaso/{ecdf,bins}/...\n")
+            f.write("│   └── deaths/{ecdf,bins}/...\n")
+            f.write("├── stats/                         # Collection statistics CSV\n")
             f.write("│   └── collection_statistics.csv\n")
-            f.write("└── unit_mismatches.log\n")
+            f.write("└── meta/\n")
+            f.write("    ├── ecdf_execution_report.txt\n")
+            f.write("    └── unit_mismatches.log\n")
 
         print(f"\n📊 Execution report saved: {report_path}")
 

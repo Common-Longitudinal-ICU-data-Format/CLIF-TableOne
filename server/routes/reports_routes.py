@@ -26,11 +26,12 @@ def _regenerate_table_pdf(table_name: str, config: dict) -> bool:
     Returns True if the PDF was regenerated successfully.
     """
     from modules.cli import ValidationPDFGenerator
+    from modules.utils.output_paths import validation_json_reports_dir, validation_feedback_dir, PDF_REPORTS
 
     output_dir = config.get("output_dir", "output")
-    clifpy_dir = os.path.join(output_dir, 'final', 'clifpy')
-    results_dir = os.path.join(output_dir, 'final', 'results')
-    reports_dir = os.path.join(output_dir, 'final', 'reports')
+    clifpy_dir = str(validation_json_reports_dir())
+    results_dir = str(validation_feedback_dir())
+    reports_dir = str(PDF_REPORTS)
     os.makedirs(reports_dir, exist_ok=True)
 
     dqa_json_path = os.path.join(clifpy_dir, f'{table_name}_dqa.json')
@@ -93,8 +94,9 @@ async def download_table_report(name: str):
     if not config:
         raise HTTPException(400, "No config loaded")
 
+    from modules.utils.output_paths import PDF_REPORTS
     output_dir = config.get("output_dir", "output")
-    path = os.path.join(output_dir, 'final', 'reports', f'{name}_validation_report.pdf')
+    path = str(PDF_REPORTS / f'{name}_validation_report.pdf')
     if not os.path.exists(path):
         raise HTTPException(404, f"PDF report not found for {name}")
     with open(path, "rb") as f:
@@ -112,16 +114,17 @@ async def download_report(report_type: str):
     if not config:
         raise HTTPException(400, "No config loaded")
 
+    from modules.utils.output_paths import PDF_REPORTS, validation_consolidated_dir
     output_dir = config.get("output_dir", "output")
 
     if report_type == "pdf":
-        path = os.path.join(output_dir, 'final', 'reports', 'combined_validation_report.pdf')
+        path = str(PDF_REPORTS / 'combined_validation_report.pdf')
         if not os.path.exists(path):
             raise HTTPException(404, "Combined PDF not found")
         return FileResponse(path, filename="combined_validation_report.pdf", media_type="application/pdf")
 
     if report_type == "csv":
-        path = os.path.join(output_dir, 'final', 'results', 'consolidated_validation.csv')
+        path = str(validation_consolidated_dir() / 'consolidated_validation.csv')
         if not os.path.exists(path):
             raise HTTPException(404, "Consolidated CSV not found")
         return FileResponse(path, filename="consolidated_validation.csv", media_type="text/csv")

@@ -15,10 +15,11 @@ router = APIRouter(prefix="/api", tags=["mcide"])
 @router.get("/mcide/{name}")
 async def get_mcide(name: str):
     """Return MCIDE CSV data and summary stats as JSON for a table."""
+    from modules.utils.output_paths import mcide_dir as _mcide_dir, summary_stats_dir as _summary_stats_dir
     config = session.get("config") or {}
     output_dir = config.get("output_dir", "output")
-    mcide_dir = os.path.join(output_dir, 'final', 'tableone', 'mcide')
-    stats_dir = os.path.join(output_dir, 'final', 'tableone', 'summary_stats')
+    mcide_dir = str(_mcide_dir())
+    stats_dir = str(_summary_stats_dir())
 
     if not os.path.exists(mcide_dir):
         raise HTTPException(404, "No MCIDE data available")

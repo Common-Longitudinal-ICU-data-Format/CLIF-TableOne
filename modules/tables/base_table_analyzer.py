@@ -11,6 +11,26 @@ import pandas as pd
 import os
 
 
+# Keys that must NEVER be persisted to validation/json_reports/*_dqa.json because
+# they contain raw identifier values (PHI risk). Stripped recursively before write.
+_DQA_PII_KEYS = frozenset({'sample_orphan_ids', 'sample_ids'})
+
+
+def scrub_dqa_pii(obj):
+    """Recursively return a copy of *obj* with PII id-sample keys removed.
+
+    Drops any dict key in :data:`_DQA_PII_KEYS` at any depth. The input is
+    not mutated. Used by every code path that writes a validation JSON report.
+    """
+    if isinstance(obj, dict):
+        return {k: scrub_dqa_pii(v) for k, v in obj.items() if k not in _DQA_PII_KEYS}
+    if isinstance(obj, list):
+        return [scrub_dqa_pii(v) for v in obj]
+    if isinstance(obj, tuple):
+        return tuple(scrub_dqa_pii(v) for v in obj)
+    return obj
+
+
 class BaseTableAnalyzer(ABC):
     """Base class for all table-specific analyzers."""
 
@@ -36,12 +56,23 @@ class BaseTableAnalyzer(ABC):
         self.output_dir = output_dir or 'output'
         self.table = None
 
-        # Ensure output directories exist with new structure
+        # Ensure output directories exist with new structure (overall/strata/validation/...)
+        from modules.utils.output_paths import (
+            ensure_output_tree,
+            validation_json_reports_dir,
+            validation_consolidated_dir,
+            validation_feedback_dir,
+            validation_monthly_trends_dir,
+            PDF_REPORTS,
+        )
         os.makedirs(os.path.join(self.output_dir, 'intermediate'), exist_ok=True)
-        os.makedirs(os.path.join(self.output_dir, 'final'), exist_ok=True)
-        os.makedirs(os.path.join(self.output_dir, 'final', 'reports'), exist_ok=True)
-        os.makedirs(os.path.join(self.output_dir, 'final', 'results'), exist_ok=True)
-        os.makedirs(os.path.join(self.output_dir, 'final', 'clifpy'), exist_ok=True)
+        ensure_output_tree()
+        # Concrete dirs we will write into below
+        validation_json_reports_dir().mkdir(parents=True, exist_ok=True)
+        validation_consolidated_dir().mkdir(parents=True, exist_ok=True)
+        validation_feedback_dir().mkdir(parents=True, exist_ok=True)
+        validation_monthly_trends_dir().mkdir(parents=True, exist_ok=True)
+        PDF_REPORTS.mkdir(parents=True, exist_ok=True)
 
         # Load the table
         self.load_table()
@@ -396,24 +427,28 @@ class BaseTableAnalyzer(ABC):
             df.to_feather(filepath)
 
     def save_summary_data(self, summary: Dict[str, Any], suffix: str = ''):
-        """Save summary data (e.g. summary statistics) to output directory."""
+        """Save summary data (e.g. summary statistics) to validation/consolidated/."""
         import json
+        from modules.utils.output_paths import validation_consolidated_dir
 
         table_name = self.get_table_name()
         filename = f"{table_name}_summary{suffix}.json"
-        filepath = os.path.join(self.output_dir, 'final', 'results', filename)
+        out_dir = validation_consolidated_dir()
+        out_dir.mkdir(parents=True, exist_ok=True)
+        filepath = str(out_dir / filename)
 
         with open(filepath, 'w', encoding='utf-8') as f:
             json.dump(summary, f, indent=2, default=str)
 
     def save_validation_results(self, dqa_result: Dict[str, Any]):
-        """Save DQA validation results (from run_full_dqa) to JSON."""
+        """Save DQA validation results (from run_full_dqa) to validation/json_reports/."""
         import json
+        from modules.utils.output_paths import validation_json_reports_dir
 
         table_name = self.get_table_name()
-        out_dir = os.path.join(self.output_dir, 'final', 'clifpy')
-        os.makedirs(out_dir, exist_ok=True)
-        filepath = os.path.join(out_dir, f"{table_name}_dqa.json")
+        out_dir = validation_json_reports_dir()
+        out_dir.mkdir(parents=True, exist_ok=True)
+        filepath = str(out_dir / f"{table_name}_dqa.json")
 
         serializable = {
             'table_name': dqa_result.get('table_name', table_name),
@@ -428,28 +463,32 @@ class BaseTableAnalyzer(ABC):
         if 'total_rows' in dqa_result:
             serializable['total_rows'] = dqa_result['total_rows']
 
+        # Strip PII id-sample keys (sample_orphan_ids, sample_ids) before write
+        serializable = scrub_dqa_pii(serializable)
+
         with open(filepath, 'w', encoding='utf-8') as f:
             json.dump(serializable, f, indent=2, default=str)
 
     def save_monthly_trend_csvs(self, dqa_result: Dict[str, Any]) -> Optional[str]:
-        """Extract monthly trends from P.6 result and save as CSVs."""
+        """Extract monthly trends from P.6 result and save as CSVs to validation/monthly_trends/."""
+        from modules.utils.output_paths import validation_monthly_trends_dir
         p6 = dqa_result.get('plausibility', {}).get('category_temporal_consistency', {})
         monthly_trends = p6.get('metrics', {}).get('monthly_trends', {})
         if not monthly_trends:
             return None
 
         table_name = self.get_table_name()
-        trends_dir = os.path.join(self.output_dir, 'final', 'clifpy', 'monthly_trends')
-        os.makedirs(trends_dir, exist_ok=True)
+        trends_dir = validation_monthly_trends_dir()
+        trends_dir.mkdir(parents=True, exist_ok=True)
 
         for cat_col, records in monthly_trends.items():
             if not records:
                 continue
-            filepath = os.path.join(trends_dir, f"{table_name}_{cat_col}_monthly.csv")
+            filepath = str(trends_dir / f"{table_name}_{cat_col}_monthly.csv")
             df = pd.DataFrame(records)
             df.to_csv(filepath, index=False)
 
-        return trends_dir
+        return str(trends_dir)
 
     def get_table_name(self) -> str:
         """Get the table name from the analyzer class."""

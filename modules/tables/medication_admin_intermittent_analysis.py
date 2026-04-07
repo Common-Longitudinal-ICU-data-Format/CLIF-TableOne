@@ -59,7 +59,8 @@ class MedicationAdminIntermittentAnalyzer(BaseTableAnalyzer):
             self.table = None
             return
 
-        clifpy_output_dir = os.path.join(self.output_dir, "final", "clifpy")
+        from modules.utils.output_paths import validation_json_reports_dir
+        clifpy_output_dir = str(validation_json_reports_dir())
         os.makedirs(clifpy_output_dir, exist_ok=True)
 
         try:
@@ -445,7 +446,8 @@ class MedicationAdminIntermittentAnalyzer(BaseTableAnalyzer):
         plt.tight_layout()
 
         # Save the plot
-        final_dir = os.path.join(self.output_dir, 'final', 'results')
+        from modules.utils.output_paths import validation_consolidated_dir
+        final_dir = str(validation_consolidated_dir())
         os.makedirs(final_dir, exist_ok=True)
 
         plot_path = os.path.join(final_dir, 'medication_intermittent_dose_distributions.png')
@@ -490,7 +492,8 @@ class MedicationAdminIntermittentAnalyzer(BaseTableAnalyzer):
             return None
 
         # Save to CSV
-        final_dir = os.path.join(self.output_dir, 'final', 'results')
+        from modules.utils.output_paths import validation_consolidated_dir
+        final_dir = str(validation_consolidated_dir())
         os.makedirs(final_dir, exist_ok=True)
 
         output_path = os.path.join(final_dir, 'medication_intermittent_name_category_mappings.csv')
@@ -563,7 +566,8 @@ class MedicationAdminIntermittentAnalyzer(BaseTableAnalyzer):
         }
 
         # Save to CSV
-        final_dir = os.path.join(self.output_dir, 'final', 'results')
+        from modules.utils.output_paths import validation_consolidated_dir
+        final_dir = str(validation_consolidated_dir())
         os.makedirs(final_dir, exist_ok=True)
 
         output_path = os.path.join(final_dir, 'medication_intermittent_group_hospitalizations.csv')

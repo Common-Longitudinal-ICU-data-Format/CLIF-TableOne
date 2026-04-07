@@ -135,10 +135,10 @@ def _table_schema_meta(path: str, mtime: float, filetype: str) -> dict:
 
 
 def _save_file_metadata(tables: dict, config: dict) -> None:
-    """Save file metadata snapshot to output/final/file_metadata.json."""
+    """Save file metadata snapshot to output/final/meta/file_metadata.json."""
     output_dir = config.get("output_dir", "output")
     filetype = config.get("file_type", "parquet")
-    final_dir = Path(output_dir) / "final"
+    final_dir = Path(output_dir) / "final" / "meta"
     final_dir.mkdir(parents=True, exist_ok=True)
 
     enriched_tables = {}

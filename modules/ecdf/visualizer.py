@@ -274,7 +274,7 @@ def create_combined_plot(
 # ============================================================================
 
 def discover_files(
-    base_dir: str = 'output/final',
+    base_dir: str = 'output/final/overall',
     table_type: Optional[str] = None
 ) -> List[Tuple[str, str, Optional[str]]]:
     """
@@ -329,8 +329,8 @@ def process_category(
     table_type: str,
     category: str,
     unit: Optional[str],
-    base_dir: str = 'output/final',
-    output_dir: str = 'output/final/plots'
+    base_dir: str = 'output/final/overall',
+    output_dir: str = 'output/final/overall/figures/distributions'
 ) -> bool:
     """
     Process a single category: load data and create visualization.
@@ -369,8 +369,10 @@ def process_category(
     bins_df = pl.read_parquet(bins_path)
     ecdf_df = pl.read_parquet(ecdf_path)
 
-    # Load config for normal range
-    config = load_lab_vital_config(os.path.join(base_dir, 'configs/lab_vital_config.yaml'))
+    # Load config for normal range. Configs live at output/final/configs/,
+    # which is the SIBLING of base_dir (which is output/final/overall/).
+    config_path = os.path.join(os.path.dirname(base_dir), 'configs', 'lab_vital_config.yaml')
+    config = load_lab_vital_config(config_path)
 
     normal_range = None
     if table_type in config and category in config[table_type]:
@@ -424,13 +426,13 @@ def main():
     parser.add_argument(
         '--base-dir',
         type=str,
-        default='output/final',
-        help='Base directory with ECDF data'
+        default='output/final/overall',
+        help='Base directory with ECDF data (cohort root)'
     )
     parser.add_argument(
         '--output-dir',
         type=str,
-        default='output/final/plots',
+        default='output/final/overall/figures/distributions',
         help='Output directory for plots'
     )
 

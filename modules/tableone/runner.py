@@ -111,13 +111,13 @@ class TableOneRunner:
     def validate_outputs(self):
         """Validate that expected output files were created."""
         expected_files = [
-            'output/final/tableone/table_one_overall.csv',
-            'output/final/tableone/table_one_by_year.csv',
-            'output/final/tableone/consort_flow_diagram.png',
-            'output/final/tableone/cohort_intersect_upset_plot.png',
-            'output/final/tableone/venn_all_4_groups.png',
-            'output/final/tableone/medications_summary_stats.csv',
-            'output/final/tableone/comorbidities_per_1000_hospitalizations.csv',
+            'output/final/overall/tableone/table_one_overall.csv',
+            'output/final/overall/tableone/table_one_by_year.csv',
+            'output/final/overall/figures/consort_flow_diagram.png',
+            'output/final/overall/figures/cohort_intersect_upset_plot.png',
+            'output/final/overall/figures/venn_all_4_groups.png',
+            'output/final/overall/tableone/medications_summary_stats.csv',
+            'output/final/overall/tableone/comorbidities_per_1000_hospitalizations.csv',
             'output/intermediate/final_tableone_df.parquet'
         ]
 
@@ -191,7 +191,8 @@ class TableOneRunner:
         """Generate a summary report."""
         summary = self.memory_monitor.get_summary()
 
-        report_path = self.project_root / 'output' / 'final' / 'tableone' / 'execution_report.txt'
+        from modules.utils.output_paths import meta_dir
+        report_path = meta_dir() / 'tableone_execution_report.txt'
         report_path.parent.mkdir(parents=True, exist_ok=True)
 
         with open(report_path, 'w', encoding='utf-8') as f:

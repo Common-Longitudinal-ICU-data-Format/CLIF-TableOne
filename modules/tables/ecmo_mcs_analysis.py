@@ -38,7 +38,8 @@ class ECMOMCSAnalyzer(BaseTableAnalyzer):
                 return
 
             # Clifpy saves files directly to output_directory, so pass the final subdirectory
-            clifpy_output_dir = os.path.join(self.output_dir, "final", "clifpy")
+            from modules.utils.output_paths import validation_json_reports_dir
+            clifpy_output_dir = str(validation_json_reports_dir())
             os.makedirs(clifpy_output_dir, exist_ok=True)
 
             self.table = EcmoMcs.from_file(
@@ -62,12 +63,14 @@ class ECMOMCSAnalyzer(BaseTableAnalyzer):
             self.table = None
 
     def _move_clifpy_csvs_to_final(self):
-        """Move any CSV files created by clifpy from output/ to output/final/"""
+        """Move any CSV files created by clifpy from output/ to output/final/validation/json_reports/."""
         import os
         import shutil
+        from modules.utils.output_paths import validation_json_reports_dir
 
         parent_dir = self.output_dir
-        final_dir = os.path.join(parent_dir, 'final')
+        final_dir = str(validation_json_reports_dir())
+        os.makedirs(final_dir, exist_ok=True)
 
         if not os.path.exists(parent_dir):
             return
@@ -82,7 +85,7 @@ class ECMOMCSAnalyzer(BaseTableAnalyzer):
                         dest = os.path.join(final_dir, filename)
                         try:
                             shutil.move(source, dest)
-                            print(f"Moved {filename} to final/")
+                            print(f"Moved {filename} to validation/json_reports/")
                         except Exception as e:
                             print(f"Could not move {filename}: {e}")
                         break
@@ -374,7 +377,8 @@ class ECMOMCSAnalyzer(BaseTableAnalyzer):
             }
 
         # Save to file
-        final_dir = os.path.join(self.output_dir, 'final')
+        from modules.utils.output_paths import validation_consolidated_dir
+        final_dir = str(validation_consolidated_dir())
         os.makedirs(final_dir, exist_ok=True)
 
         filepath = os.path.join(final_dir, f"{self.get_table_name()}_numeric_distributions.json")
@@ -462,7 +466,8 @@ class ECMOMCSAnalyzer(BaseTableAnalyzer):
                                 }
 
         # Save to file
-        final_dir = os.path.join(self.output_dir, 'final')
+        from modules.utils.output_paths import validation_consolidated_dir
+        final_dir = str(validation_consolidated_dir())
         os.makedirs(final_dir, exist_ok=True)
 
         filepath = os.path.join(final_dir, f"{self.get_table_name()}_visualization_data.json")
