@@ -17,7 +17,6 @@ from modules.tables import (
     PatientProceduresAnalyzer, PositionAnalyzer, RespiratorySupportAnalyzer,
     VitalsAnalyzer,
 )
-from modules.tables.base_table_analyzer import scrub_dqa_pii
 
 router = APIRouter(prefix="/api", tags=["analysis"])
 
@@ -256,7 +255,6 @@ def _run_bulk_analysis(task_id: str, config: dict,
                     with open(json_path, 'r', encoding='utf-8') as f:
                         saved = _json.load(f)
                     saved.setdefault('completeness', {}).update(serialized_rel)
-                    saved = scrub_dqa_pii(saved)
                     with open(json_path, 'w', encoding='utf-8') as f:
                         _json.dump(saved, f, indent=2, default=str)
 
@@ -275,7 +273,6 @@ def _run_bulk_analysis(task_id: str, config: dict,
                     with open(json_path, 'r', encoding='utf-8') as f:
                         saved = _json.load(f)
                     saved.setdefault('completeness', {}).update(serialized_cond)
-                    saved = scrub_dqa_pii(saved)
                     with open(json_path, 'w', encoding='utf-8') as f:
                         _json.dump(saved, f, indent=2, default=str)
 
@@ -294,7 +291,6 @@ def _run_bulk_analysis(task_id: str, config: dict,
                     with open(json_path, 'r', encoding='utf-8') as f:
                         saved = _json.load(f)
                     saved.setdefault('plausibility', {}).update(serialized_plaus)
-                    saved = scrub_dqa_pii(saved)
                     with open(json_path, 'w', encoding='utf-8') as f:
                         _json.dump(saved, f, indent=2, default=str)
         except Exception:
