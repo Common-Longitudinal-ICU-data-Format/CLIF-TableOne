@@ -64,11 +64,18 @@ class MemoryMonitor:
 class TableOneRunner:
     """Runner for Table One generation with memory monitoring and validation."""
 
-    def __init__(self, config=None):
-        """Initialize Table One runner with configuration."""
+    def __init__(self, config=None, cohort_mode='critical_illness'):
+        """Initialize Table One runner with configuration.
+
+        Args:
+            config: Optional config dict. Loaded from config/config.json if None.
+            cohort_mode: 'critical_illness' (default) or 'ward'. Drives which Table
+                One pipeline runs and where outputs are written.
+        """
         self.config = config or self.load_config()
         self.memory_monitor = None
         self.project_root = Path(__file__).parent.parent.parent
+        self.cohort_mode = cohort_mode
 
     def load_config(self):
         """Load configuration from config.json."""
@@ -110,16 +117,40 @@ class TableOneRunner:
 
     def validate_outputs(self):
         """Validate that expected output files were created."""
+        # Build cohort-aware expected file list using output_paths helpers so the
+        # paths stay in sync with the layout in modules/utils/output_paths.py.
+        if self.cohort_mode == 'ward':
+            from modules.utils.output_paths import (
+                ward_tableone_dir as _t1_dir,
+                ward_figures_dir as _fig_dir,
+            )
+            parquet_name = 'final_tableone_ward_df.parquet'
+        else:
+            from modules.utils.output_paths import (
+                tableone_dir as _t1_dir,
+                figures_dir as _fig_dir,
+            )
+            parquet_name = 'final_tableone_df.parquet'
+
+        # Compute paths relative to project_root for the existence check below.
+        def _rel(p):
+            return str(p.relative_to(self.project_root))
+
         expected_files = [
-            'output/final/overall/tableone/table_one_overall.csv',
-            'output/final/overall/tableone/table_one_by_year.csv',
-            'output/final/overall/figures/consort_flow_diagram.png',
-            'output/final/overall/figures/cohort_intersect_upset_plot.png',
-            'output/final/overall/figures/venn_all_4_groups.png',
-            'output/final/overall/tableone/medications_summary_stats.csv',
-            'output/final/overall/tableone/comorbidities_per_1000_hospitalizations.csv',
-            'output/intermediate/final_tableone_df.parquet'
+            _rel(_t1_dir() / 'table_one_overall.csv'),
+            _rel(_t1_dir() / 'table_one_by_year.csv'),
+            _rel(_fig_dir() / 'consort_flow_diagram.png'),
+            _rel(_fig_dir() / 'cohort_intersect_upset_plot.png'),
+            _rel(_fig_dir() / 'venn_all_4_groups.png'),
+            _rel(_t1_dir() / 'comorbidities_per_1000_hospitalizations.csv'),
+            f'output/intermediate/{parquet_name}',
         ]
+        # medications_summary_stats.csv is only generated in critical-illness mode
+        # (the medication-from-ICU plot block is skipped in ward mode per Decision 3).
+        if self.cohort_mode != 'ward':
+            expected_files.insert(
+                5, _rel(_t1_dir() / 'medications_summary_stats.csv')
+            )
 
         missing_files = []
         existing_files = []
@@ -162,7 +193,7 @@ class TableOneRunner:
         try:
             # Import and execute the main function with memory monitoring
             from .generator import main
-            success = main(memory_monitor=self.memory_monitor)
+            success = main(memory_monitor=self.memory_monitor, cohort_mode=self.cohort_mode)
 
             self.memory_monitor.checkpoint("Script Complete")
 
@@ -192,7 +223,14 @@ class TableOneRunner:
         summary = self.memory_monitor.get_summary()
 
         from modules.utils.output_paths import meta_dir
-        report_path = meta_dir() / 'tableone_execution_report.txt'
+        # Cohort-aware execution report filename so the ward run doesn't overwrite
+        # the critical-illness execution report (or vice versa).
+        report_filename = (
+            'tableone_ward_execution_report.txt'
+            if self.cohort_mode == 'ward'
+            else 'tableone_execution_report.txt'
+        )
+        report_path = meta_dir() / report_filename
         report_path.parent.mkdir(parents=True, exist_ok=True)
 
         with open(report_path, 'w', encoding='utf-8') as f:
@@ -245,7 +283,8 @@ class TableOneRunner:
             bool: True if successful, False otherwise
         """
         print("\n" + "="*80)
-        print("TABLE ONE GENERATION WITH MEMORY MONITORING")
+        cohort_label = "WARD" if self.cohort_mode == 'ward' else "CRITICAL ILLNESS"
+        print(f"TABLE ONE GENERATION WITH MEMORY MONITORING — {cohort_label} COHORT")
         print("="*80 + "\n")
 
         if profile_mode:

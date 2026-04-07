@@ -55,6 +55,7 @@ class ProjectRunner:
         self.results = {
             'validation': None,
             'tableone': None,
+            'tableone_ward': None,
             'get_ecdf': None,
             'overall_success': False
         }
@@ -402,6 +403,97 @@ class ProjectRunner:
             }
             return False
 
+    def run_tableone_ward(self):
+        """
+        Run Ward Table One generation in an isolated subprocess.
+
+        Subprocess isolation guarantees memory from the critical-illness run is
+        fully released before the ward run starts, so peak memory equals the
+        larger of the two cohorts (not the sum). Required for 16GB systems.
+
+        Returns
+        -------
+        bool
+            True if ward table one generation succeeded
+        """
+        self.print_header("STEP 2b: WARD TABLE ONE GENERATION (ISOLATED SUBPROCESS)")
+
+        self.logger.info("Running Ward Table One generation in isolated subprocess...")
+        self.logger.info("(memory from any prior in-process Table One run is released before this starts)")
+
+        cmd = [sys.executable, 'run_tableone_ward.py']
+        self.logger.info(f"Running: {' '.join(cmd)}")
+
+        try:
+            env = os.environ.copy()
+            env['PYTHONUTF8'] = '1'
+            env['PYTHONIOENCODING'] = 'utf-8'
+
+            if sys.platform == 'win32':
+                process = subprocess.Popen(
+                    cmd,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT,
+                    text=True,
+                    encoding='utf-8',
+                    errors='replace',
+                    env=env
+                )
+                while True:
+                    output = process.stdout.readline()
+                    if output == '' and process.poll() is not None:
+                        break
+                    if output:
+                        line = output.rstrip()
+                        if line:
+                            print(line)
+                            self.logger.info(line)
+                exit_code = process.poll()
+            else:
+                process = subprocess.Popen(
+                    cmd,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    text=True,
+                    bufsize=1,
+                    universal_newlines=True,
+                    env=env
+                )
+                for line in process.stdout:
+                    line = line.rstrip()
+                    if line:
+                        print(line)
+                        self.logger.info(line)
+                stderr_output = process.stderr.read()
+                if stderr_output:
+                    for line in stderr_output.strip().split('\n'):
+                        if line:
+                            print(line, file=sys.stderr)
+                            self.logger.error(line)
+                exit_code = process.wait()
+
+            success = (exit_code == 0)
+
+            if success:
+                self.logger.info("✅ Ward Table One generation completed successfully")
+            else:
+                self.logger.warning(f"⚠️  Ward Table One generation failed (exit code {exit_code})")
+
+            self.results['tableone_ward'] = {
+                'success': success,
+                'exit_code': exit_code,
+            }
+
+            return success
+
+        except Exception as e:
+            self.logger.exception(f"[ERROR] Ward Table One generation failed: {e}")
+            self.results['tableone_ward'] = {
+                'success': False,
+                'error': str(e)
+            }
+            return False
+
     def run_get_ecdf(self, visualize=False):
         """
         Run ECDF generation using the new modular structure.
@@ -511,7 +603,12 @@ class ProjectRunner:
         # Table One results
         if self.results['tableone']:
             tbl_status = "[SUCCESS]" if self.results['tableone']['success'] else "[FAILED]"
-            print_and_log(f"Table One:         {tbl_status}")
+            print_and_log(f"Table One (CI):    {tbl_status}")
+
+        # Ward Table One results
+        if self.results['tableone_ward']:
+            ward_status = "[SUCCESS]" if self.results['tableone_ward']['success'] else "[FAILED]"
+            print_and_log(f"Table One (Ward):  {ward_status}")
 
         # Get ECDF results
         if self.results['get_ecdf']:
@@ -540,6 +637,9 @@ class ProjectRunner:
         if self.results['tableone']:
             print_and_log(f"   Table One (overall): output/final/overall/tableone/")
             print_and_log(f"   Table One (strata):  output/final/strata/<icu|advanced_resp|vaso|deaths>/tableone/")
+        if self.results['tableone_ward']:
+            print_and_log(f"   Ward Table One:      output/final/overall_ward/tableone/")
+            print_and_log(f"   Ward strata:         output/final/overall_ward/strata/<icu|advanced_resp|vaso|deaths>/tableone/")
         if self.results['get_ecdf']:
             print_and_log(f"   ECDF Data (overall): output/final/overall/{{ecdf,bins}}/")
             print_and_log(f"   ECDF Data (strata):  output/final/strata/<...>/{{ecdf,bins}}/")
@@ -580,7 +680,7 @@ class ProjectRunner:
         except Exception as e:
             print(f"\n[ERROR] Error launching app: {e}")
 
-    def run(self, validate=True, tableone=True, get_ecdf=False, **kwargs):
+    def run(self, validate=True, tableone=True, ward_tableone=False, get_ecdf=False, **kwargs):
         """
         Run the complete workflow.
 
@@ -589,7 +689,9 @@ class ProjectRunner:
         validate : bool
             Run validation step
         tableone : bool
-            Run table one generation step
+            Run critical-illness table one generation step
+        ward_tableone : bool
+            Run ward table one generation step (in isolated subprocess for memory)
         get_ecdf : bool
             Run get ECDF bins step
         **kwargs : dict
@@ -609,9 +711,10 @@ class ProjectRunner:
         self.logger.info(f"Data Directory: {self.config.get('tables_path', 'NOT SET')}")
         self.logger.info(f"Site Name: {self.config.get('site_name', 'NOT SET')}")
         self.logger.info(f"Workflow Steps:")
-        self.logger.info(f"  1. Validation: {'[OK]' if validate else '[X]'}")
-        self.logger.info(f"  2. Table One:  {'[OK]' if tableone else '[X]'}")
-        self.logger.info(f"  3. Get ECDF:   {'[OK]' if get_ecdf else '[X]'}")
+        self.logger.info(f"  1. Validation:        {'[OK]' if validate else '[X]'}")
+        self.logger.info(f"  2. Table One (CI):    {'[OK]' if tableone else '[X]'}")
+        self.logger.info(f"  2b. Table One (Ward): {'[OK]' if ward_tableone else '[X]'}")
+        self.logger.info(f"  3. Get ECDF:          {'[OK]' if get_ecdf else '[X]'}")
         self.logger.info("="*80)
 
         # Step 1: Validation
@@ -640,10 +743,17 @@ class ProjectRunner:
                 self.generate_summary_report()
                 return False
 
-        # Step 2: Table One Generation
+        # Step 2: Critical-illness Table One Generation
         if tableone:
-            print("\n[DEBUG] Starting Table One generation...")
+            print("\n[DEBUG] Starting Table One generation (critical-illness)...")
             tbl_success = self.run_tableone()
+
+        # Step 2b: Ward Table One Generation (isolated subprocess)
+        # Independent of critical-illness Table One — has its own cohort and writes
+        # to output/final/overall_ward/ + final_tableone_ward_df.parquet.
+        if ward_tableone:
+            print("\n[DEBUG] Starting Ward Table One generation (isolated subprocess)...")
+            self.run_tableone_ward()
 
         # Step 3: Get ECDF Bins
         if get_ecdf:
@@ -669,8 +779,13 @@ class ProjectRunner:
                 warnings_shown = False
 
                 if self.results['tableone'] and not self.results['tableone'].get('success', False):
-                    print("\n⚠️  Warning: Table One generation failed")
+                    print("\n⚠️  Warning: Table One (critical-illness) generation failed")
                     print("   The app will launch but Table One data will not be available")
+                    warnings_shown = True
+
+                if self.results['tableone_ward'] and not self.results['tableone_ward'].get('success', False):
+                    print("\n⚠️  Warning: Ward Table One generation failed")
+                    print("   The app will launch but Ward Table One data will not be available")
                     warnings_shown = True
 
                 if self.results['get_ecdf'] and not self.results['get_ecdf'].get('success', False):
@@ -717,10 +832,13 @@ def main():
 Examples:
   %(prog)s                                    # Full workflow (validation + tableone)
   %(prog)s --validate-only                    # Only validation
-  %(prog)s --tableone-only                    # Only table one
+  %(prog)s --tableone-only                    # Only critical-illness table one
+  %(prog)s --ward-only                        # Only ward table one (isolated subprocess)
   %(prog)s --get-ecdf-only                    # Only get ECDF bins
   %(prog)s --get-ecdf-only --visualize        # Get ECDF + HTML visualizations
-  %(prog)s --get-ecdf                         # Full workflow + get ECDF
+  %(prog)s --ward                             # Full workflow + ward table one
+  %(prog)s --get-ecdf --ward                  # Full workflow + ward table one + ECDF
+  %(prog)s --tableone-only --ward             # Both critical-illness and ward table ones
   %(prog)s --tables patient adt               # Validate specific tables
         """
     )
@@ -730,7 +848,13 @@ Examples:
     workflow_group.add_argument('--validate-only', action='store_true',
                                 help='Only run validation step')
     workflow_group.add_argument('--tableone-only', action='store_true',
-                                help='Only run table one generation step')
+                                help='Only run critical-illness table one generation step')
+    workflow_group.add_argument('--ward-only', action='store_true',
+                                help='Only run ward table one generation step (isolated subprocess)')
+    workflow_group.add_argument('--ward', action='store_true',
+                                help='Include ward table one generation in workflow (runs after '
+                                     'critical-illness table one in an isolated subprocess so peak '
+                                     'RAM equals max of the two cohorts, not the sum)')
     workflow_group.add_argument('--get-ecdf-only', action='store_true',
                                 help='Only run get ECDF bins step')
     workflow_group.add_argument('--get-ecdf', action='store_true',
@@ -768,19 +892,29 @@ Examples:
     if args.validate_only:
         validate = True
         tableone = False
+        ward_tableone = False
         get_ecdf = False
     elif args.tableone_only:
         validate = False
         tableone = True
+        ward_tableone = args.ward  # allow --tableone-only --ward to run both table ones
+        get_ecdf = False
+    elif args.ward_only:
+        validate = False
+        tableone = False
+        ward_tableone = True
         get_ecdf = False
     elif args.get_ecdf_only:
         validate = False
         tableone = False
+        ward_tableone = False
         get_ecdf = True
     else:
         # Default: run validation and tableone
         validate = True
         tableone = True
+        # Ward table one only if explicitly requested
+        ward_tableone = args.ward
         # Get ECDF only if explicitly requested
         get_ecdf = args.get_ecdf
 
@@ -796,6 +930,7 @@ Examples:
         success = runner.run(
             validate=validate,
             tableone=tableone,
+            ward_tableone=ward_tableone,
             get_ecdf=get_ecdf,
             tables=args.tables,
             no_summary=args.no_summary,
