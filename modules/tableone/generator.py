@@ -2142,17 +2142,30 @@ def main(memory_monitor=None) -> bool:
     icu_summary = icu_summary[['encounter_block', 'first_icu_in_dttm',
                                'first_icu_out_dttm','first_icu_los_days']]
 
-    # Count ICU episodes per encounter_block
-    # Collapse contiguous ICU stays (e.g., MICU→SICU transfer = 1 episode)
-    icu_sorted = icu_df.sort_values(['encounter_block', 'in_dttm']).copy()
-    icu_sorted['prev_out_dttm'] = icu_sorted.groupby('encounter_block')['out_dttm'].shift(1)
-    icu_sorted['gap_hours'] = (
-        (icu_sorted['in_dttm'] - icu_sorted['prev_out_dttm']).dt.total_seconds() / 3600
+    # Count ICU episodes per encounter_block using the full ADT timeline.
+    # An ICU row starts a NEW episode when a "new-episode" location_category
+    # appeared between it and the previous ICU row in the same encounter_block.
+    #   same episode (collapse): icu (lateral transfer), procedural, radiology, dialysis
+    #   new episode (readmit):   ward, stepdown, l&d, hospice, psych, rehab, other
+    #   skipped:                 ed (treated as if the row weren't there)
+    NEW_EPISODE_LOCS = {'ward', 'stepdown', 'l&d', 'hospice', 'psych', 'rehab', 'other'}
+
+    adt_sorted = adt_cohort.sort_values(['encounter_block', 'in_dttm', 'out_dttm']).copy()
+    adt_sorted['triggers_new_episode'] = adt_sorted['location_category'].isin(NEW_EPISODE_LOCS)
+    adt_sorted['trigger_cumsum'] = (
+        adt_sorted.groupby('encounter_block')['triggers_new_episode'].cumsum()
     )
-    # New episode if first ICU row or gap > 1 hour from previous ICU out_dttm
-    icu_sorted['new_episode'] = icu_sorted['prev_out_dttm'].isna() | (icu_sorted['gap_hours'] > 1)
+
+    icu_rows = adt_sorted[adt_sorted['location_category'] == 'icu'].copy()
+    icu_rows['prev_trigger_cumsum'] = (
+        icu_rows.groupby('encounter_block')['trigger_cumsum'].shift(1)
+    )
+    icu_rows['new_episode'] = (
+        icu_rows['prev_trigger_cumsum'].isna()
+        | (icu_rows['trigger_cumsum'] > icu_rows['prev_trigger_cumsum'])
+    )
     icu_episodes = (
-        icu_sorted.groupby('encounter_block')['new_episode']
+        icu_rows.groupby('encounter_block')['new_episode']
         .sum()
         .astype(int)
         .reset_index(name='icu_episodes')
