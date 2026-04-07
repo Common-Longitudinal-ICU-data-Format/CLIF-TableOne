@@ -50,15 +50,49 @@ Edit `config/config.json`:
 uv run python run_project.py --no-summary --get-ecdf
 ```
 
-This validates all 18 CLIF tables, collects MCIDE data, generates Table One, and computes ECDF bins.
+This validates all 18 CLIF tables, collects MCIDE data, generates the (critical-illness) Table One, and computes ECDF bins.
 
 | Flag | Purpose |
 |---|---|
-| `--sample` | Use a 1k ICU sample for faster runs (~10-15 min vs 45-90 min) |
 | `--no-summary` | Skip summary generation |
 | `--get-ecdf` | Compute ECDF distributions for visualizations |
+| `--ward` | **Also** generate the parallel Ward Table One (see section 3a below) |
+| `--ward-only` | Only generate the Ward Table One (no validation, no critical-illness Table One) |
 
 For all available options: `uv run python run_project.py --help`
+
+### 3a. Ward Table One (optional)
+
+In addition to the **critical-illness** cohort (encounters with an ICU stay OR died/hospice), you can generate a parallel **ward** Table One whose cohort is **every adult hospitalization that touched a ward at any point** (`location_category == 'ward'`):
+
+```bash
+uv run python run_project.py --no-summary --get-ecdf --ward
+```
+
+The ward Table One runs **after** the critical-illness Table One in an **isolated subprocess** so peak memory equals the larger of the two cohorts (not the sum) — important for 16GB systems. Outputs go to `output/final/overall_ward/{tableone,figures,...}/` and the intermediate parquet to `output/intermediate/final_tableone_ward_df.parquet`. Downstream pipelines (ECDF, MCIDE) are unaffected — they continue to read the critical-illness parquet.
+
+**Common ward-related commands:**
+
+| Command | What it runs |
+|---|---|
+| `uv run python run_project.py --ward` | Validation + critical-illness Table One + **ward Table One** |
+| `uv run python run_project.py --get-ecdf --ward` | Full workflow + ward Table One + ECDF |
+| `uv run python run_project.py --tableone-only --ward` | Both Table Ones (no validation, no ECDF) |
+| `uv run python run_project.py --ward-only` | Just the ward Table One |
+| `uv run run_tableone_ward.py` | Direct entry point (ward only, bypasses project runner) |
+| `uv run run_tableone_all.py` | Both Table Ones in subprocess isolation (bypasses project runner) |
+
+**What's in the ward Table One:**
+
+- Cohort: every adult hospitalization that touched a ward — includes ward→ICU, ward→death, ward-only, etc.
+- Encounter Types section has **5 rows** showing how many ward encounters fall into each critical-illness stratum:
+  1. ICU encounters (ward → ICU subset)
+  2. Advanced respiratory support
+  3. Vasoactive support
+  4. Other critically ill (died on ED/ward without escalation)
+  5. **Ward only (survived, no critical care)** — survivor catch-all
+- **Stripped from the ward Table One** (memory/time optimization, ICU-centric metrics): SOFA scores, ICU length of stay, ICU episodes, IMV/ventilator settings (waterfall, first-24h vent settings), medication-from-ICU plot
+- All other sections (demographics, mortality, hospital LOS, comorbidities, CRRT, sepsis, code status) are present and computed against the ward cohort
 
 ## 4. Launch the Web App
 
@@ -98,17 +132,49 @@ If you encounter Unicode issues, set `PYTHONIOENCODING=utf-8` or enable system-w
 
 ## Output
 
-Results are written to `output/final/`:
+Results are written to `output/final/`. The directory tree is organized by **cohort first, artifact type second**:
 
 ```
 output/final/
-├── reports/       # Validation PDF reports
-├── results/       # Validation CSV summaries
-├── tableone/      # Table One outputs, MCIDE, plots
-├── ecdf/          # ECDF distributions
-├── bins/          # Quantile bins for visualization
-└── configs/       # ECDF configuration files
+├── overall/                    # Critical-illness cohort (ICU stay OR died/hospice)
+│   ├── tableone/              # table_one_overall.csv, mortality_rates, etc.
+│   ├── figures/               # CONSORT, sankey, venn, upset, ventilator settings, ...
+│   ├── ecdf/                  # ECDF parquets ({labs,vitals,respiratory_support}/)
+│   ├── bins/                  # Binned distributions
+│   ├── summary_stats/         # Summary statistics JSONs/CSVs
+│   └── mcide/                 # MCIDE value counts
+├── overall_ward/               # Ward cohort (only if --ward was used)
+│   ├── tableone/              # ward Table One CSVs (no SOFA, no ICU LOS, no IMV settings)
+│   ├── figures/               # ward CONSORT, sankey, code status, etc.
+│   ├── summary_stats/         # ward summary stats
+│   └── strata/                # stratified ward outputs (subsets within the ward cohort)
+│       ├── icu/{tableone,figures,summary_stats}/
+│       ├── advanced_resp/{...}
+│       ├── vaso/{...}
+│       └── deaths/{...}
+├── strata/                     # Stratified critical-illness outputs
+│   ├── icu/{tableone,figures,ecdf,bins,summary_stats}/
+│   ├── advanced_resp/{...}
+│   ├── vaso/{...}
+│   └── deaths/{...}
+├── validation/                 # Data quality assessment (DQA)
+│   ├── json_reports/          # <table>_dqa.json + missing_data_stats / errors CSVs
+│   ├── consolidated/          # consolidated_validation.csv + summary JSONs
+│   ├── feedback/              # *_validation_response.json (user-classified errors)
+│   ├── monthly_trends/        # monthly trend CSVs
+│   └── pdf_reports/           # validation report PDFs (per-table + combined)
+├── configs/                    # config snapshots used for the run
+├── meta/                       # run metadata, execution reports, log files
+│   └── workflow_logs/         # timestamped pipeline execution logs
+└── stats/                      # collection_statistics.csv (ECDF coverage)
 ```
+
+Intermediate parquets (in `output/intermediate/`):
+
+| File | Cohort | Consumed by |
+|---|---|---|
+| `final_tableone_df.parquet` | critical-illness | ECDF, MCIDE, collection stats (via `modules/strata.py`) |
+| `final_tableone_ward_df.parquet` | ward (only if `--ward` was used) | not consumed by downstream pipelines (parallel file by design) |
 
 ## Troubleshooting
 

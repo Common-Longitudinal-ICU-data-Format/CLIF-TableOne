@@ -562,12 +562,20 @@ def generate_demographic_crosstab(patient_df, output_dir):
     enrollment_report.to_csv(os.path.join(output_dir, 'demographic_crosstab_race_ethnicity_sex.csv'))
 
 
-def main(memory_monitor=None) -> bool:
+def main(memory_monitor=None, cohort_mode='critical_illness') -> bool:
     """
     Main execution function for Table One generation.
 
     Parameters:
         memory_monitor: Optional MemoryMonitor instance for tracking memory usage
+        cohort_mode: 'critical_illness' (default) or 'ward'.
+            - 'critical_illness': cohort = encounters with ICU stay OR died/hospice.
+              Outputs route to output/final/overall/{tableone,figures,...}/.
+            - 'ward': cohort = every adult encounter that touched a ward at any point.
+              Outputs route to output/final/overall_ward/{tableone,figures,...}/.
+              SOFA, ICU LOS, ICU episodes, IMV/ventilator settings, and the
+              medication-from-ICU plot are skipped in ward mode (Decisions 1-3
+              of the ward Table One design).
 
     Returns:
         bool: True if generation completed successfully, False otherwise
@@ -601,15 +609,32 @@ def main(memory_monitor=None) -> bool:
         return str(path)
 
     # Build the full output/final/ tree (overall, strata, validation, meta, ...).
+    # In ward mode, also build the parallel overall_ward/ subtree, and bind the
+    # local _tableone_dir / _figures_dir / etc. names to the WARD versions of the
+    # helpers. All ~80 downstream call sites in this file use these local names,
+    # so they automatically resolve to the right cohort tree without further changes.
     from modules.utils.output_paths import (
         ensure_output_tree,
-        tableone_dir as _tableone_dir,
-        figures_dir as _figures_dir,
-        mcide_dir as _mcide_dir,
-        summary_stats_dir as _summary_stats_dir,
+        ensure_ward_output_tree,
         validation_json_reports_dir as _validation_json_reports_dir,
     )
     ensure_output_tree()
+
+    if cohort_mode == 'ward':
+        ensure_ward_output_tree()
+        from modules.utils.output_paths import (
+            ward_tableone_dir as _tableone_dir,
+            ward_figures_dir as _figures_dir,
+            ward_mcide_dir as _mcide_dir,
+            ward_summary_stats_dir as _summary_stats_dir,
+        )
+    else:
+        from modules.utils.output_paths import (
+            tableone_dir as _tableone_dir,
+            figures_dir as _figures_dir,
+            mcide_dir as _mcide_dir,
+            summary_stats_dir as _summary_stats_dir,
+        )
 
     # CSV outputs (table_one_overall.csv, mortality_rates.csv, etc.)
     output_dir = str(_tableone_dir())
@@ -1504,17 +1529,24 @@ def main(memory_monitor=None) -> bool:
     all_encounters['discharge_category'] = all_encounters['discharge_category'].str.lower()
     all_encounters['admission_type_category'] = all_encounters['admission_type_category'].str.lower()
 
-    # Create vectorized ICU and death masks
+    # Create vectorized ICU, death, and ward masks
     icu_mask = all_encounters['location_category'].str.contains('icu', na=False)
     death_mask = all_encounters['discharge_category'].isin(['expired', 'hospice'])
+    ward_mask = all_encounters['location_category'] == 'ward'
 
-    # Vectorized: For each encounter_block, does any row have ICU or death? (much faster)
+    # Vectorized: For each encounter_block, does any row have ICU, death, or ward? (much faster)
     # Use groupby('encounter_block')[mask].transform('any') to vectorize
     all_encounters['icu_enc'] = icu_mask.groupby(all_encounters['encounter_block']).transform('any').astype(int)
     all_encounters['death_enc'] = death_mask.groupby(all_encounters['encounter_block']).transform('any').astype(int)
+    all_encounters['ward_enc'] = ward_mask.groupby(all_encounters['encounter_block']).transform('any').astype(int)
 
-    # Cohort flag using logical OR (vectorized)
-    all_encounters['cohort_enc'] = (all_encounters['icu_enc'] | all_encounters['death_enc']).astype(int)
+    # Cohort flag depends on cohort_mode:
+    # - critical_illness: any ICU stay OR died/hospice
+    # - ward: any encounter that touched a ward at any point
+    if cohort_mode == 'ward':
+        all_encounters['cohort_enc'] = all_encounters['ward_enc']
+    else:
+        all_encounters['cohort_enc'] = (all_encounters['icu_enc'] | all_encounters['death_enc']).astype(int)
 
     # Store hospitalization_ids for cohort_enc==1 in a list (as before)
     cohort_enc_hospitalization_ids = all_encounters.loc[all_encounters['cohort_enc'] == 1, 'hospitalization_id'].unique().tolist()
@@ -1688,11 +1720,15 @@ def main(memory_monitor=None) -> bool:
     final_cohort['high_support_enc'] = final_cohort['high_support_enc'].fillna(0).astype(int)
 
     # Set high_support_enc and vaso_support_enc to 0 if is_procedural_ld_only is 1
-    # (procedural/L&D only encounters without ICU should not count as having support)
-    final_cohort.loc[final_cohort['is_procedural_ld_only'] == 1, 'high_support_enc'] = 0
-    final_cohort.loc[final_cohort['is_procedural_ld_only'] == 1, 'vaso_support_enc'] = 0
+    # (procedural/L&D only encounters without ICU should not count as having support).
+    # In ward mode, ward-touching is the inclusion criterion, so support metrics for
+    # ward+procedural encounters should be reported as-is (the procedural visit doesn't
+    # invalidate real vasopressor / advanced respiratory use on the ward).
+    if cohort_mode != 'ward':
+        final_cohort.loc[final_cohort['is_procedural_ld_only'] == 1, 'high_support_enc'] = 0
+        final_cohort.loc[final_cohort['is_procedural_ld_only'] == 1, 'vaso_support_enc'] = 0
     strobe_counts["2_advanced_resp_support_hospitalizations"] = (final_cohort['high_support_enc'] == 1).sum()
-    strobe_counts["3_vasoactive_hospitalizations"] = (final_cohort['vaso_support_enc'] == 1).sum()    
+    strobe_counts["3_vasoactive_hospitalizations"] = (final_cohort['vaso_support_enc'] == 1).sum()
 
     # Memory cleanup: Clear medication initial load data
     print("Clearing medication initial load data from memory...")
@@ -1701,14 +1737,35 @@ def main(memory_monitor=None) -> bool:
     checkpoint("4. Medications Processed")
     # Missing icu_enc means not ICU
     final_cohort['icu_enc'] = final_cohort['icu_enc'].fillna(0).astype(int)
-    # Define the criteria for other critically ill
+    # death_enc is already on final_cohort (carried in the select at line ~1565).
+    # "Other critically ill" = died in ED/ward without ICU/vaso/resp escalation.
+    # Tightened definition (added explicit death_enc==1) is a no-op in critical-illness
+    # mode (any encounter in the cohort with icu_enc==0 already had death_enc==1) and
+    # produces the correct semantics in ward mode (ward encounters that died without
+    # escalation, distinct from ward survivors with no critical care).
     final_cohort['other_critically_ill'] = (
-        (final_cohort[['icu_enc', 'vaso_support_enc', 'high_support_enc']].sum(axis=1) == 0)
+        (final_cohort['death_enc'] == 1) &
+        (final_cohort['icu_enc'] == 0) &
+        (final_cohort['vaso_support_enc'] == 0) &
+        (final_cohort['high_support_enc'] == 0)
     ).astype(int)
+    # Ward-only catch-all: ward encounters that survived without any critical-care
+    # intervention. Only meaningful in ward mode.
+    if cohort_mode == 'ward':
+        final_cohort['ward_no_critical_care'] = (
+            (final_cohort['death_enc'] == 0) &
+            (final_cohort['icu_enc'] == 0) &
+            (final_cohort['vaso_support_enc'] == 0) &
+            (final_cohort['high_support_enc'] == 0)
+        ).astype(int)
     # Calculate the count
-    strobe_counts['4_other_critically_ill'] = final_cohort.loc[final_cohort['other_critically_ill'] == 1, 
+    strobe_counts['4_other_critically_ill'] = final_cohort.loc[final_cohort['other_critically_ill'] == 1,
                                                                 'encounter_block'].nunique()
     strobe_counts['5_all_critically_ill'] = final_cohort['encounter_block'].nunique()
+    if cohort_mode == 'ward':
+        strobe_counts['6_ward_no_critical_care'] = final_cohort.loc[
+            final_cohort['ward_no_critical_care'] == 1, 'encounter_block'
+        ].nunique()
 
 
     # ==============================================================================
@@ -1725,6 +1782,10 @@ def main(memory_monitor=None) -> bool:
         'Other Critically Ill': final_cohort.loc[final_cohort['other_critically_ill'] == 1, 'death_enc'].mean() * 100,
         'All Critically Ill Adults': final_cohort['death_enc'].mean() * 100,
     }
+    if cohort_mode == 'ward':
+        # CONSORT diagram in ward mode reports the ward cohort total mortality under
+        # a different label so the figure title and box label are consistent.
+        mortality_rates['Ward Cohort'] = final_cohort['death_enc'].mean() * 100
     mortality_rates_df = pd.DataFrame(list(mortality_rates.items()), columns=['count_name', 'count_value'])
     mortality_rates_df.to_csv(os.path.join(output_dir, 'mortality_rates.csv'), index=False)
 
@@ -1769,10 +1830,11 @@ def main(memory_monitor=None) -> bool:
             ax.annotate('', xy=(x2, y2), xytext=(x1, y1),
                         arrowprops=dict(arrowstyle='->', lw=2, color='black'))
 
-        ax.text(5, 13, 'Cohort', ha='center', va='center', fontsize=16, fontweight='bold')
+        diagram_title = 'Ward Cohort' if cohort_mode == 'ward' else 'Cohort'
+        ax.text(5, 13, diagram_title, ha='center', va='center', fontsize=16, fontweight='bold')
 
         # Define and arrange the boxes
-        box1 = create_box(5, 12, 3, 0.7, 
+        box1 = create_box(5, 12, 3, 0.7,
                           f"Total Hospitalizations\nn = {strobe_counts['0_total_hospitalizations']:,}",
                           'total', fontsize=11, fontweight='bold')
 
@@ -1803,10 +1865,23 @@ def main(memory_monitor=None) -> bool:
         create_arrow(box2, box3_vaso)
         create_arrow(box2, box3_other)
 
-        # Add a final box for "All Critically Ill Adults"
+        if cohort_mode == 'ward':
+            # In ward mode add the survivor catch-all box
+            ward_only_n = strobe_counts.get('6_ward_no_critical_care', 0)
+            box3_ward_only = create_box(8, 6.3, 4.5, 0.9,
+                f"Ward only (survived, no critical care)\nn = {ward_only_n:,}",
+                'ward_only', fontsize=10, fontweight='bold')
+            create_arrow(box2, box3_ward_only)
+            final_label = 'Ward Cohort'
+            final_mortality_key = 'Ward Cohort'
+        else:
+            final_label = 'All Critically Ill Adults'
+            final_mortality_key = 'All Critically Ill Adults'
+
+        # Final aggregate box (label depends on cohort_mode)
         box_final = create_box(5.7, 4.5, 5.2, 1.1,
-            f"All Critically Ill Adults\nn = {final_cohort['encounter_block'].nunique():,}\nMortality: {mortality_rates['All Critically Ill Adults']:.2f}%",
-            'all_critically_ill', fontsize=13, fontweight='bold')
+            f"{final_label}\nn = {final_cohort['encounter_block'].nunique():,}\nMortality: {mortality_rates[final_mortality_key]:.2f}%",
+            'cohort_total', fontsize=13, fontweight='bold')
 
         # Do NOT draw arrows from the four groups to the all critically ill adults box
 
@@ -1923,9 +1998,12 @@ def main(memory_monitor=None) -> bool:
                                     'race_category', 'ethnicity_category', 'sex_category', 'death_dttm', 
                                     'icu_enc', 'death_enc', 'cohort_enc']].drop_duplicates()
 
+    final_cohort_merge_cols = ['encounter_block', 'high_support_enc', 'vaso_support_enc', 'other_critically_ill']
+    if cohort_mode == 'ward':
+        final_cohort_merge_cols.append('ward_no_critical_care')
     final_tableone_df = final_tableone_df.merge(
-        final_cohort[['encounter_block','high_support_enc', 'vaso_support_enc', 'other_critically_ill']],
-        on = 'encounter_block',
+        final_cohort[final_cohort_merge_cols],
+        on='encounter_block',
         how="outer"
     )
 
@@ -2443,832 +2521,845 @@ def main(memory_monitor=None) -> bool:
     # # IMV encounters
     # ==============================================================================
 
-    # Filter to only IMV hospitalizations
-    clif.respiratory_support.df = clif.respiratory_support.df[
-        clif.respiratory_support.df['hospitalization_id'].isin(final_hosp_ids)
-    ].copy()
-    print(f"Respiratory support rows (IMV hospitalizations): {len(clif.respiratory_support.df):,}")
-    clif.respiratory_support.df = clif.respiratory_support.df.sort_values(['hospitalization_id', 'recorded_dttm'])
+    # IMV / respiratory characteristics processing is expensive: it loads the
+    # respiratory_support table again, applies the waterfall (2-20 min depending
+    # on cohort size), computes vent hours / IMV episodes / first-location-at-IMV,
+    # and runs the first-24h ventilator settings analysis (tidal volume curves,
+    # pressure control curves, mode proportions). For ward mode the user opted
+    # out of these characteristics for memory + time. The high-level
+    # `high_support_enc` flag (used for the "Advanced respiratory support"
+    # encounter type row) is computed earlier from a fast device_category filter
+    # and is unaffected.
+    if cohort_mode == 'ward':
+        print("\nSkipping IMV / respiratory support characteristics block (ward mode)")
 
-    # Standardize category columns to lowercase
-    print(f"\nStandardizing category columns...")
-    category_cols = [col for col in clif.respiratory_support.df.columns if col.endswith('_category')]
-    for col in category_cols:
-        clif.respiratory_support.df[col] = clif.respiratory_support.df[col].str.lower()
+    for _imv_iter in (range(1) if cohort_mode != 'ward' else range(0)):
+        # Filter to only IMV hospitalizations
+        clif.respiratory_support.df = clif.respiratory_support.df[
+            clif.respiratory_support.df['hospitalization_id'].isin(final_hosp_ids)
+        ].copy()
+        print(f"Respiratory support rows (IMV hospitalizations): {len(clif.respiratory_support.df):,}")
+        clif.respiratory_support.df = clif.respiratory_support.df.sort_values(['hospitalization_id', 'recorded_dttm'])
 
-    apply_outlier_handling(clif.respiratory_support)
+        # Standardize category columns to lowercase
+        print(f"\nStandardizing category columns...")
+        category_cols = [col for col in clif.respiratory_support.df.columns if col.endswith('_category')]
+        for col in category_cols:
+            clif.respiratory_support.df[col] = clif.respiratory_support.df[col].str.lower()
 
-    # Merge with encounter_block mapping
-    resp_stitched = clif.respiratory_support.df
+        apply_outlier_handling(clif.respiratory_support)
 
-    # Save pre-waterfall snapshot for debug logging (lightweight: just columns we'll log)
-    _pre_waterfall = resp_stitched[['encounter_block', 'recorded_dttm', 'device_category', 'mode_category']].copy()
+        # Merge with encounter_block mapping
+        resp_stitched = clif.respiratory_support.df
 
-    # Apply waterfall to fill sparse data and infer device categories from mode strings
-    print(f"\nApplying waterfall processing to respiratory support data. This can take 2-20 mins based on your system specs and cohort size......")
-    clif.respiratory_support = clif.respiratory_support.waterfall(id_col='encounter_block', verbose=True)
-    resp_stitched = clif.respiratory_support.df
-    print(f"Waterfall complete: {len(resp_stitched):,} rows for {resp_stitched['encounter_block'].nunique():,} unique encounter blocks")
+        # Save pre-waterfall snapshot for debug logging (lightweight: just columns we'll log)
+        _pre_waterfall = resp_stitched[['encounter_block', 'recorded_dttm', 'device_category', 'mode_category']].copy()
 
-    # Write detailed vent hours debug log to intermediate output
-    _vent_log_path = project_root / 'output' / 'intermediate' / 'vent_hours_debug.log'
-    os.makedirs(_vent_log_path.parent, exist_ok=True)
-    _vent_log = open(_vent_log_path, 'w')
-    _vent_log.write("=" * 80 + "\n")
-    _vent_log.write("VENTILATOR HOURS COMPUTATION DEBUG LOG\n")
-    _vent_log.write("=" * 80 + "\n\n")
+        # Apply waterfall to fill sparse data and infer device categories from mode strings
+        print(f"\nApplying waterfall processing to respiratory support data. This can take 2-20 mins based on your system specs and cohort size......")
+        clif.respiratory_support = clif.respiratory_support.waterfall(id_col='encounter_block', verbose=True)
+        resp_stitched = clif.respiratory_support.df
+        print(f"Waterfall complete: {len(resp_stitched):,} rows for {resp_stitched['encounter_block'].nunique():,} unique encounter blocks")
 
-    #  Identify IMV rows
-    imv_mask = resp_stitched['device_category'].str.contains("imv", case=False, na=False)
-    resp_stitched_imv = resp_stitched[imv_mask].copy()
+        # Write detailed vent hours debug log to intermediate output
+        _vent_log_path = project_root / 'output' / 'intermediate' / 'vent_hours_debug.log'
+        os.makedirs(_vent_log_path.parent, exist_ok=True)
+        _vent_log = open(_vent_log_path, 'w')
+        _vent_log.write("=" * 80 + "\n")
+        _vent_log.write("VENTILATOR HOURS COMPUTATION DEBUG LOG\n")
+        _vent_log.write("=" * 80 + "\n\n")
 
-    # Create on_vent column for IMV records
-    resp_stitched_imv['on_vent'] = 1
+        #  Identify IMV rows
+        imv_mask = resp_stitched['device_category'].str.contains("imv", case=False, na=False)
+        resp_stitched_imv = resp_stitched[imv_mask].copy()
 
-    # Get unique encounter IDs from resp_stitched_imv
-    imv_encounters = resp_stitched_imv['encounter_block'].unique()
+        # Create on_vent column for IMV records
+        resp_stitched_imv['on_vent'] = 1
 
-    # Pick sample encounter (first IMV encounter so all samples match)
-    _log_sample_enc = imv_encounters[0] if len(imv_encounters) > 0 else resp_stitched['encounter_block'].iloc[0]
+        # Get unique encounter IDs from resp_stitched_imv
+        imv_encounters = resp_stitched_imv['encounter_block'].unique()
 
-    # Step A: Pre-waterfall sample
-    pre_sample = _pre_waterfall[_pre_waterfall['encounter_block'] == _log_sample_enc].head(30)
-    _vent_log.write(f"--- Pre-waterfall sample (encounter: {_log_sample_enc}) ---\n")
-    _vent_log.write(pre_sample.to_string(index=False) + "\n")
-    _vent_log.write("---\n\n")
-    del _pre_waterfall  # free memory
+        # Pick sample encounter (first IMV encounter so all samples match)
+        _log_sample_enc = imv_encounters[0] if len(imv_encounters) > 0 else resp_stitched['encounter_block'].iloc[0]
 
-    # Step B: Post-waterfall sample
-    sample = resp_stitched[resp_stitched['encounter_block'] == _log_sample_enc][['encounter_block', 'recorded_dttm', 'device_category', 'mode_category']].head(30)
-    _vent_log.write(f"--- Post-waterfall sample (encounter: {_log_sample_enc}) ---\n")
-    _vent_log.write(sample.to_string(index=False) + "\n")
-    _vent_log.write("---\n\n")
+        # Step A: Pre-waterfall sample
+        pre_sample = _pre_waterfall[_pre_waterfall['encounter_block'] == _log_sample_enc].head(30)
+        _vent_log.write(f"--- Pre-waterfall sample (encounter: {_log_sample_enc}) ---\n")
+        _vent_log.write(pre_sample.to_string(index=False) + "\n")
+        _vent_log.write("---\n\n")
+        del _pre_waterfall  # free memory
 
-    print(f"Number of IMV encounters: {len(imv_encounters):,}")
-    strobe_counts["IMV encounters"] = len(imv_encounters)
-    # Determine Vent Start/End for Each Encounter
-    vent_start_end = resp_stitched_imv.groupby('encounter_block').agg(
-        vent_start_time=('recorded_dttm', 'min'),
-        vent_end_time=('recorded_dttm', 'max')
-    ).reset_index()
-
-    #  Add on_vent flag to final_cohort
-    final_tableone_df = final_tableone_df.merge(
-        resp_stitched_imv[['encounter_block', 'on_vent']].drop_duplicates(),
-        on='encounter_block',
-        how='left'
-    )
-    final_tableone_df['on_vent'] = final_tableone_df['on_vent'].fillna(0).astype(int)
-
-    # # Apply waterfall processing to fill sparse data
-    # print(f"\nApplying waterfall processing to respiratory support data. This can take 2-20 mins based on your system specs and cohort size...")
-    # clif.respiratory_support = clif.respiratory_support.waterfall(verbose=True)
-    # print(f"\n Waterfall complete: {len(clif.respiratory_support.df):,} rows for {clif.respiratory_support.df['hospitalization_id'].nunique():,} unique hospitalizations")
-
-    # ============================================================================
-    # Compute accurate IMV hours from waterfall time-series
-    # Each row's device is "in effect" until the next observation
-    # ============================================================================
-    print("\nComputing IMV hours from waterfall data...")
-    resp_stitched = resp_stitched.sort_values(['encounter_block', 'recorded_dttm'])
-
-    # Step 1: Get next observation timestamp within each encounter
-    resp_stitched['next_recorded_dttm'] = (
-        resp_stitched.groupby('encounter_block')['recorded_dttm'].shift(-1)
-    )
-
-    # Step 2: Duration this device was "in effect"
-    resp_stitched['duration_hours'] = (
-        (resp_stitched['next_recorded_dttm'] - resp_stitched['recorded_dttm'])
-        .dt.total_seconds() / 3600
-    )
-
-    # Log duration calculation for same IMV encounter as waterfall sample
-    if len(imv_encounters) > 0:
-        sample_dur = resp_stitched[resp_stitched['encounter_block'] == _log_sample_enc][
-            ['encounter_block', 'recorded_dttm', 'device_category', 'next_recorded_dttm', 'duration_hours']
-        ].head(30)
-        _vent_log.write(f"--- Duration calc sample (same encounter: {_log_sample_enc}) ---\n")
-        _vent_log.write(sample_dur.to_string(index=False) + "\n")
+        # Step B: Post-waterfall sample
+        sample = resp_stitched[resp_stitched['encounter_block'] == _log_sample_enc][['encounter_block', 'recorded_dttm', 'device_category', 'mode_category']].head(30)
+        _vent_log.write(f"--- Post-waterfall sample (encounter: {_log_sample_enc}) ---\n")
+        _vent_log.write(sample.to_string(index=False) + "\n")
         _vent_log.write("---\n\n")
 
-    # Step 3: Sum duration only for IMV rows
-    imv_hours_per_enc = (
-        resp_stitched[resp_stitched['device_category'].str.contains("imv", case=False, na=False)]
-        .groupby('encounter_block')['duration_hours']
-        .sum()
-        .reset_index(name='vent_duration_hours')
-    )
-
-    # Log per-encounter IMV hours
-    _vent_log.write(f"--- IMV hours per encounter (first 20) ---\n")
-    _vent_log.write(imv_hours_per_enc.head(20).to_string(index=False) + "\n")
-    _vent_log.write(f"\nTotal encounters with IMV hours: {len(imv_hours_per_enc):,}\n")
-    _vent_log.write(f"Total IMV hours across all encounters: {imv_hours_per_enc['vent_duration_hours'].sum():,.0f}\n")
-    _vent_log.write("---\n\n")
-
-    # Log summary stats
-    _vent_log.write("--- Summary Statistics ---\n")
-    _vent_log.write(f"IMV hours distribution per encounter:\n")
-    _vent_log.write(imv_hours_per_enc['vent_duration_hours'].describe().to_string() + "\n")
-    _vent_log.write("---\n")
-    _vent_log.close()
-    print(f"   Vent hours debug log written to: {_vent_log_path}")
-
-    # NOTE: IMV episode counting removed pending a proper extubation definition.
-
-    # Merge into final_tableone_df
-    final_tableone_df = final_tableone_df.merge(imv_hours_per_enc, on='encounter_block', how='left')
-    final_tableone_df['vent_duration_hours'] = final_tableone_df['vent_duration_hours'].fillna(0.0)
-
-    # Cleanup temp columns
-    resp_stitched.drop(columns=['next_recorded_dttm', 'duration_hours'], inplace=True)
-
-
-    # ==============================================================================
-    # ## Initial Mode category
-    # ==============================================================================
-
-    #  Get Initial Mode Category (first mode after vent start)
-    # Subset resp_stitched to only those encounters on IMV
-    resp_imv = resp_stitched[resp_stitched['encounter_block'].isin(imv_encounters)].copy()
-
-    # Merge in the vent_start_time
-    resp_imv = resp_imv.merge(
-        vent_start_end[['encounter_block', 'vent_start_time']],
-        on='encounter_block',
-        how='left'
-    )
-
-    # Filter to only rows at or after vent start
-    resp_post_start = resp_imv[
-        resp_imv['recorded_dttm'] >= resp_imv['vent_start_time']
-    ]
-
-    # Group and take first non-NA mode_category per encounter
-    initial_modes = (
-        resp_post_start
-        .sort_values(['encounter_block', 'recorded_dttm'])
-        .groupby('encounter_block', as_index=False)['mode_category']
-        .first()
-        .rename(columns={'mode_category': 'initial_mode_category'})
-    )
-
-    # Fill any entirely-missing groups with "Missing"
-    initial_modes['initial_mode_category'] = initial_modes['initial_mode_category'].fillna('Missing')
-
-    # Merge back onto final_cohort
-    final_tableone_df = final_tableone_df.merge(
-        initial_modes,
-        on='encounter_block',
-        how='left'
-    )
-
-    # If some encounters never went on vent, fill those too
-    final_tableone_df['initial_mode_category'] = final_tableone_df['initial_mode_category'].fillna('Missing')
-
-    # Memory cleanup: Clear ventilation mode intermediates (keep vent_start_end for later use)
-    print("Clearing ventilation mode intermediate data from memory...")
-    del resp_imv, resp_post_start, initial_modes
-    gc.collect()
-    checkpoint("6. Ventilation Modes Processed")
-
-    #  Calculate Ventilator Settings Statistics (Median and IQR)
-    # Filter resp_stitched to only those encounters on IMV
-    # resp_stitched_final = resp_stitched[resp_stitched['encounter_block'].isin(imv_encounters)]
-
-    # # Define numeric columns to aggregate
-    # numeric_cols = [
-    #     'fio2_set', 'lpm_set', 'resp_rate_set', 'peep_set',
-    #     'tidal_volume_set', 'pressure_control_set', 'pressure_support_set'
-    # ]
-
-    # # Build named aggregation dict
-    # named_aggs = {}
-    # for col in numeric_cols:
-    #     named_aggs[f'{col}_median'] = (col, 'median')
-    #     named_aggs[f'{col}_q1'] = (col, lambda x: x.quantile(0.25))
-    #     named_aggs[f'{col}_q3'] = (col, lambda x: x.quantile(0.75))
-
-    # # Aggregate ventilator settings
-    # vent_stats = (
-    #     resp_stitched_final
-    #     .groupby('encounter_block', as_index=False)
-    #     .agg(**named_aggs)
-    # )
-
-    # # Merge vent stats back to final_cohort
-    # final_tableone_df = final_tableone_df.merge(vent_stats, on='encounter_block', how='left')
-
-    #  Find First Location at IMV Start (closest ADT location to vent start)
-    # Get minimal ADT cohort with required columns and merge with encounter_block
-    print("Find First Location at IMV Start (closest ADT location to vent start)")
-
-    # Merge with vent start times
-    adt_vent = pd.merge(
-        vent_start_end[['encounter_block', 'vent_start_time']],
-        adt_cohort,
-        on='encounter_block'
-    )
-
-    # Calculate time difference between vent start and ADT in_dttm
-    adt_vent['time_diff'] = abs(adt_vent['vent_start_time'] - adt_vent['in_dttm'])
-
-    # Get the closest ADT row for each encounter block
-    closest_adt = (
-        adt_vent
-        .sort_values('time_diff')
-        .groupby('encounter_block')
-        .first()
-        .reset_index()
-    )
-    closest_adt = closest_adt.rename(columns={'location_category': 'first_location_imv'})
-
-    # Merge back to final_cohort
-    final_tableone_df = final_tableone_df.merge(
-        closest_adt[['encounter_block', 'first_location_imv']],
-        on='encounter_block',
-        how='left'
-    )
-
-    print("\n=== IMV Encounter Summary Complete ===")
-    print(f"Total encounters: {len(final_tableone_df):,}")
-    print(f"Encounters on IMV: {final_tableone_df['on_vent'].sum():,}")
-    print(f"Initial mode categories:\n{final_tableone_df['initial_mode_category'].value_counts()}")
-
-
-    # ==============================================================================
-    # ## IMV- First 24 hours 
-    # ==============================================================================
-
-    # ============================================================================
-    # 1. Add vent_start_dttm to final_tableone_df
-    # ============================================================================
-
-    # Merge vent_start_time from vent_start_end into final_tableone_df
-    final_tableone_df = final_tableone_df.merge(
-        vent_start_end[['encounter_block', 'vent_start_time']],
-        on='encounter_block',
-        how='left'
-    )
-
-    # Rename to vent_start_dttm for clarity
-    final_tableone_df = final_tableone_df.rename(columns={'vent_start_time': 'vent_start_dttm'})
-
-    print(f"\n✅ Added vent_start_dttm to final_tableone_df")
-    print(f"   Encounters with vent_start_dttm: {final_tableone_df['vent_start_dttm'].notna().sum():,}")
-
-    # Memory cleanup: Delete vent_start_end after final use
-    del vent_start_end
-
-    # ============================================================================
-    # 2. Prepare IMV data with time from vent start
-    # ============================================================================
-
-    # Get IMV encounters
-    resp_imv = resp_stitched[resp_stitched['encounter_block'].isin(imv_encounters)].copy()
-
-    # Merge vent_start_dttm
-    resp_imv = resp_imv.merge(
-        final_tableone_df[['encounter_block', 'vent_start_dttm']],
-        on='encounter_block',
-        how='left'
-    )
-
-    # Calculate hours from vent start (time 0)
-    resp_imv['hours_from_vent_start'] = (
-        (resp_imv['recorded_dttm'] - resp_imv['vent_start_dttm']).dt.total_seconds() / 3600
-    )
-
-    # Filter to only records at or after vent start
-    resp_imv_post_start = resp_imv[resp_imv['hours_from_vent_start'] >= 0].copy()
-
-    final_tableone_df.columns
-
-    # ============================================================================
-    # SUPER OPTIMIZED: Calculate Statistics (10-20x faster!)
-    # ============================================================================
-    # Define all ventilator settings
-    vent_settings = [
-        'fio2_set', 'lpm_set', 'tidal_volume_set', 'resp_rate_set',
-        'pressure_control_set', 'pressure_support_set', 'peep_set',
-        'flow_rate_set'
-    ]
-
-    # Check which columns exist
-    existing_settings = [col for col in vent_settings if col in resp_imv.columns]
-
-    print(f"\nSettings to calculate: {len(existing_settings)}, vent settings")
-
-    # ✅ SUPER OPTIMIZATION: Calculate each stat separately (pandas can optimize better)
-    results = []
-
-    # Median and mean/std (fast built-ins)
-    medians = resp_imv.groupby('encounter_block')[existing_settings].median()
-    medians.columns = [f'{col}_median' for col in medians.columns]
-
-    means = resp_imv.groupby('encounter_block')[existing_settings].mean()
-    means.columns = [f'{col}_mean' for col in means.columns]
-
-    stds = resp_imv.groupby('encounter_block')[existing_settings].std()
-    stds.columns = [f'{col}_std' for col in stds.columns]
-
-    # Quantiles (still need to use slower method, but only once each)
-    q1 = resp_imv.groupby('encounter_block')[existing_settings].quantile(0.25)
-    q1.columns = [f'{col}_q1' for col in q1.columns]
-
-    q3 = resp_imv.groupby('encounter_block')[existing_settings].quantile(0.75)
-    q3.columns = [f'{col}_q3' for col in q3.columns]
-
-    # Combine all statistics
-    vent_settings_stats = pd.concat([medians, q1, q3, means, stds], axis=1).reset_index()
-
-    print(f"✅ Calculated statistics for {len(existing_settings)} settings")
-    print(f"   Total encounters: {len(vent_settings_stats):,}")
-
-    # Merge back
-    final_tableone_df = final_tableone_df.merge(
-        vent_settings_stats,
-        on='encounter_block',
-        how='left'
-    )
-
-    # ============================================================================
-    # 3. Filter for specific mode categories
-    # ============================================================================
-
-    # Define mode categories of interest
-    volume_control_modes = ['assist control-volume control', 'pressure-regulated volume control']
-    pressure_control_mode = ['pressure control']
-
-    # Filter data
-    volume_mode_data = resp_imv_post_start[
-        resp_imv_post_start['mode_category'].isin(volume_control_modes)
-    ].copy()
-
-    pressure_mode_data = resp_imv_post_start[
-        resp_imv_post_start['mode_category'].isin(pressure_control_mode)
-    ].copy()
-
-    print(f"\n📊 Mode Category Breakdown:")
-    print(f"   Volume Control modes: {len(volume_mode_data):,} records")
-    for mode in volume_control_modes:
-        count = (volume_mode_data['mode_category'] == mode).sum()
-        print(f"      - {mode}: {count:,}")
-    print(f"   Pressure Control mode: {len(pressure_mode_data):,} records")
-
-    # ============================================================================
-    # 4. Plot Median/IQR and Mean/SD Tidal Volume for Volume Control Modes
-    # ============================================================================
-
-    # Calculate binned hour from start
-    volume_mode_data['hour_bin'] = volume_mode_data['hours_from_vent_start'].round(0).astype(int)
-    # Filter to first 168 hours (7 days)
-    volume_mode_data_7d = volume_mode_data[volume_mode_data['hour_bin'] <= 168].copy()
-
-    # Group by hour and calculate stats, including mean and std
-    tv_stats = volume_mode_data_7d.groupby('hour_bin')['tidal_volume_set'].agg([
-        ('median', 'median'),
-        ('q25', lambda x: x.quantile(0.25)),
-        ('q75', lambda x: x.quantile(0.75)),
-        ('mean', 'mean'),
-        ('std', 'std'),
-        ('count', 'count')
-    ]).reset_index()
-
-    # Filter hours with at least 10 measurements
-    tv_stats = tv_stats[tv_stats['count'] >= 10]
-
-    # Save CSV for Tidal Volume data (median/IQR/mean/SD)
-    tv_csv_path = os.path.join(output_dir, 'tidal_volume_volume_control_modes.csv')
-    tv_stats.to_csv(tv_csv_path, index=False)
-    print(f"✅ Saved CSV: {tv_csv_path}")
-
-    # Plot Median/IQR
-    fig, ax = plt.subplots(figsize=(14, 6))
-    ax.plot(tv_stats['hour_bin'], tv_stats['median'], 'o-', color='#2E86AB', linewidth=2, markersize=4, label='Median')
-    ax.fill_between(tv_stats['hour_bin'], tv_stats['q25'], tv_stats['q75'], 
-                    alpha=0.3, color='#2E86AB', label='IQR (25th-75th percentile)')
-    ax.set_xlabel('Hours from Ventilation Start', fontsize=12, fontweight='bold')
-    ax.set_ylabel('Tidal Volume Set (mL)', fontsize=12, fontweight='bold')
-    ax.set_title('Tidal Volume Over Time: Volume Control Modes\n(Assist Control-Volume Control & Pressure-Regulated Volume Control)', 
-                 fontsize=14, fontweight='bold', pad=15)
-    ax.legend(fontsize=10)
-    ax.grid(True, alpha=0.3)
-    ax.set_xlim(0, 168)
-    plt.tight_layout()
-    tv_png_path = os.path.join(figures_dir, 'tidal_volume_volume_control_modes.png')
-    plt.savefig(tv_png_path, dpi=300, bbox_inches='tight')
-    plt.close()
-    print(f"\n✅ Saved: {tv_png_path}")
-
-    # Plot Mean/SD
-    fig, ax = plt.subplots(figsize=(14, 6))
-    ax.plot(tv_stats['hour_bin'], tv_stats['mean'], 'o-', color='#e67e22', linewidth=2, markersize=4, label='Mean')
-    ax.fill_between(tv_stats['hour_bin'], tv_stats['mean'] - tv_stats['std'], tv_stats['mean'] + tv_stats['std'], 
-                    alpha=0.25, color='#e67e22', label='SD (±1 std)')
-    ax.set_xlabel('Hours from Ventilation Start', fontsize=12, fontweight='bold')
-    ax.set_ylabel('Tidal Volume Set (mL)', fontsize=12, fontweight='bold')
-    ax.set_title('Tidal Volume Over Time (Mean ± SD): Volume Control Modes\n(Assist Control-Volume Control & Pressure-Regulated Volume Control)', 
-                 fontsize=14, fontweight='bold', pad=15)
-    ax.legend(fontsize=10)
-    ax.grid(True, alpha=0.3)
-    ax.set_xlim(0, 168)
-    plt.tight_layout()
-    tv_mean_png_path = os.path.join(figures_dir, 'tidal_volume_volume_control_modes_mean_sd.png')
-    plt.savefig(tv_mean_png_path, dpi=300, bbox_inches='tight')
-    plt.close()
-    print(f"✅ Saved: {tv_mean_png_path}")
-
-    tv_mean_sd_csv_path = os.path.join(output_dir, 'tidal_volume_volume_control_modes_mean_sd.csv')
-    tv_stats[['hour_bin', 'mean', 'std', 'count']].to_csv(tv_mean_sd_csv_path, index=False)
-    print(f"✅ Saved CSV: {tv_mean_sd_csv_path}")
-
-    # ============================================================================
-    # 5. Plot Median/IQR and Mean/SD Pressure Control for Pressure Control Mode
-    # ============================================================================
-
-    # Calculate binned hour from start for pressure control mode
-    pressure_mode_data['hour_bin'] = pressure_mode_data['hours_from_vent_start'].round(0).astype(int)
-    pressure_mode_data_7d = pressure_mode_data[pressure_mode_data['hour_bin'] <= 168].copy()
-
-    # Group by hour and calculate stats, including mean and std
-    pc_stats = pressure_mode_data_7d.groupby('hour_bin')['pressure_control_set'].agg([
-        ('median', 'median'),
-        ('q25', lambda x: x.quantile(0.25)),
-        ('q75', lambda x: x.quantile(0.75)),
-        ('mean', 'mean'),
-        ('std', 'std'),
-        ('count', 'count')
-    ]).reset_index()
-
-    pc_stats = pc_stats[pc_stats['count'] >= 10]
-
-    # Save CSV for Pressure Control data (median/IQR/mean/SD)
-    pc_csv_path = os.path.join(output_dir, 'pressure_control_pressure_control_mode.csv')
-    pc_stats.to_csv(pc_csv_path, index=False)
-    print(f"✅ Saved CSV: {pc_csv_path}")
-
-    # Plot Median/IQR
-    fig, ax = plt.subplots(figsize=(14, 6))
-    ax.plot(pc_stats['hour_bin'], pc_stats['median'], 'o-', color='#A23B72', linewidth=2, markersize=4, label='Median')
-    ax.fill_between(pc_stats['hour_bin'], pc_stats['q25'], pc_stats['q75'], 
-                    alpha=0.3, color='#A23B72', label='IQR (25th-75th percentile)')
-    ax.set_xlabel('Hours from Ventilation Start', fontsize=12, fontweight='bold')
-    ax.set_ylabel('Pressure Control Set (cmH₂O)', fontsize=12, fontweight='bold')
-    ax.set_title('Pressure Control Over Time: Pressure Control Mode', 
-                 fontsize=14, fontweight='bold', pad=15)
-    ax.legend(fontsize=10)
-    ax.grid(True, alpha=0.3)
-    ax.set_xlim(0, 168)
-    plt.tight_layout()
-    pc_png_path = os.path.join(figures_dir, 'pressure_control_pressure_control_mode.png')
-    plt.savefig(pc_png_path, dpi=300, bbox_inches='tight')
-    plt.close()
-    print(f"✅ Saved: {pc_png_path}")
-
-    # Plot Mean/SD
-    fig, ax = plt.subplots(figsize=(14, 6))
-    ax.plot(pc_stats['hour_bin'], pc_stats['mean'], 'o-', color='#27ae60', linewidth=2, markersize=4, label='Mean')
-    ax.fill_between(pc_stats['hour_bin'], pc_stats['mean'] - pc_stats['std'], pc_stats['mean'] + pc_stats['std'], 
-                    alpha=0.25, color='#27ae60', label='SD (±1 std)')
-    ax.set_xlabel('Hours from Ventilation Start', fontsize=12, fontweight='bold')
-    ax.set_ylabel('Pressure Control Set (cmH₂O)', fontsize=12, fontweight='bold')
-    ax.set_title('Pressure Control Over Time (Mean ± SD): Pressure Control Mode', 
-                 fontsize=14, fontweight='bold', pad=15)
-    ax.legend(fontsize=10)
-    ax.grid(True, alpha=0.3)
-    ax.set_xlim(0, 168)
-    plt.tight_layout()
-    pc_mean_png_path = os.path.join(figures_dir, 'pressure_control_pressure_control_mode_mean_sd.png')
-    plt.savefig(pc_mean_png_path, dpi=300, bbox_inches='tight')
-    plt.close()
-    print(f"✅ Saved: {pc_mean_png_path}")
-
-    pc_mean_sd_csv_path = os.path.join(output_dir, 'pressure_control_pressure_control_mode_mean_sd.csv')
-    pc_stats[['hour_bin', 'mean', 'std', 'count']].to_csv(pc_mean_sd_csv_path, index=False)
-    print(f"✅ Saved CSV: {pc_mean_sd_csv_path}")
-
-    # ============================================================================
-    # Ventilator Settings Table by Device and Mode Category - FIXED
-    # ============================================================================
-
-
-    # Ventilator settings of interest
-    vent_settings = [
-        'fio2_set',
-        'lpm_set',
-        'tidal_volume_set',
-        'resp_rate_set',
-        'pressure_control_set',
-        'peep_set',
-        'pressure_support_set',
-        'flow_rate_set'
-    ]
-
-    # ✅ OPTIMIZATION: Use groupby instead of nested loops (10-50x faster!)
-    # Use full respiratory support data - ALL device and mode combinations
-    resp_valid = resp_stitched.copy()
-
-    # Check which columns actually exist in the data (graceful handling for missing columns)
-    existing_settings = [col for col in vent_settings if col in resp_valid.columns]
-    missing_settings = [col for col in vent_settings if col not in resp_valid.columns]
-
-    if missing_settings:
-        print(f"\n⚠️ Warning: The following ventilator settings are not available in the data: {', '.join(missing_settings)}")
-        print(f"   Proceeding with {len(existing_settings)} available settings: {', '.join(existing_settings)}")
-    else:
-        print(f"\n✅ All {len(existing_settings)} ventilator settings found in the data")
-
-    # Update vent_settings to only include existing columns
-    vent_settings = existing_settings
-
-    # Count all device-mode combinations
-    group_counts = resp_valid.groupby(['device_category', 'mode_category']).size()
-
-    print(f"Calculating statistics for {len(group_counts)} device-mode combinations from full respiratory support data...")
-
-    # Calculate median, Q1, Q3 (only for existing columns)
-    medians = resp_valid.groupby(['device_category', 'mode_category'])[vent_settings].median()
-    q1 = resp_valid.groupby(['device_category', 'mode_category'])[vent_settings].quantile(0.25)
-    q3 = resp_valid.groupby(['device_category', 'mode_category'])[vent_settings].quantile(0.75)
-
-    # ✅ FIX: Reset index for all before combining
-    medians_reset = medians.reset_index()
-    q1_reset = q1.reset_index()
-    q3_reset = q3.reset_index()
-
-    # Create settings summary starting with device and mode columns
-    settings_summary = medians_reset[['device_category', 'mode_category']].copy()
-
-    # ✅ Format as "median (q1-q3)" using .values (no index issues)
-    for setting in vent_settings:
-        if setting in medians.columns:
-            # Use .values to avoid index alignment issues
-            settings_summary[setting] = (
-                medians_reset[setting].round(1).astype(str) + ' (' +
-                q1_reset[setting].round(1).astype(str) + '-' +
-                q3_reset[setting].round(1).astype(str) + ')'
-            )
-
-    # Build rename dictionary only for columns that exist
-    rename_dict = {}
-    # Rename mode_category to ventilator_setting for consistency in output
-    if 'mode_category' in settings_summary.columns:
-        rename_dict['mode_category'] = 'ventilator_setting'
-
-    column_mapping = {
-        'fio2_set': 'FiO2 Set',
-        'lpm_set': 'LPM Set',
-        'tidal_volume_set': 'Tidal Volume Set',
-        'resp_rate_set': 'Resp Rate Set',
-        'pressure_control_set': 'Pressure Control Set',
-        'peep_set': 'PEEP Set',
-        'pressure_support_set': 'Pressure Support Set',
-        'flow_rate_set': 'Flow Rate Set'
-    }
-
-    # Only add columns that exist in settings_summary
-    for old_name, new_name in column_mapping.items():
-        if old_name in settings_summary.columns:
-            rename_dict[old_name] = new_name
-
-    # Rename columns
-    settings_summary = settings_summary.rename(columns=rename_dict)
-
-    # Sort by device and mode (use 'ventilator_setting' after rename)
-    sort_col = 'ventilator_setting' if 'ventilator_setting' in settings_summary.columns else 'mode_category'
-    settings_summary = settings_summary.sort_values(['device_category', sort_col])
-
-    # Display and save
-    print("\n" + "="*80)
-    print("VENTILATOR SETTINGS BY DEVICE AND MODE CATEGORY")
-    print("="*80)
-    print(settings_summary.to_string(index=False))
-
-    _vsbdm_path = os.path.join(output_dir, 'ventilator_settings_by_device_mode.csv')
-    settings_summary.to_csv(_vsbdm_path, index=False)
-    print(f"\n✅ Saved: {_vsbdm_path}")
-
-    # ============================================================================
-    # BONUS: Also create counts table (same optimization)
-    # ============================================================================
-
-    print("\n" + "="*80)
-    print("Creating Observation Counts Table")
-    print("="*80)
-
-    # Count non-null observations for each setting (vectorized)
-    counts_summary = resp_valid.groupby(['device_category', 'mode_category'])[vent_settings].count().reset_index()
-
-    # Build rename dictionary only for columns that exist
-    counts_rename_dict = {}
-    # Rename mode_category to ventilator_setting for consistency in output
-    if 'mode_category' in counts_summary.columns:
-        counts_rename_dict['mode_category'] = 'ventilator_setting'
-
-    counts_column_mapping = {
-        'fio2_set': 'FiO2 Set (N)',
-        'lpm_set': 'LPM Set (N)',
-        'tidal_volume_set': 'Tidal Volume Set (N)',
-        'resp_rate_set': 'Resp Rate Set (N)',
-        'pressure_control_set': 'Pressure Control Set (N)',
-        'peep_set': 'PEEP Set (N)',
-        'pressure_support_set': 'Pressure Support Set (N)',
-        'flow_rate_set': 'Flow Rate Set (N)'
-    }
-
-    # Only add columns that exist in counts_summary
-    for old_name, new_name in counts_column_mapping.items():
-        if old_name in counts_summary.columns:
-            counts_rename_dict[old_name] = new_name
-
-    # Rename columns
-    counts_summary = counts_summary.rename(columns=counts_rename_dict)
-
-    # Sort (use 'ventilator_setting' after rename)
-    sort_col = 'ventilator_setting' if 'ventilator_setting' in counts_summary.columns else 'mode_category'
-    counts_summary = counts_summary.sort_values(['device_category', sort_col])
-
-    print("\nObservation Counts by Device and Mode:")
-    print(counts_summary.to_string(index=False))
-
-    _vscbdm_path = os.path.join(output_dir, 'ventilator_settings_counts_by_device_mode.csv')
-    counts_summary.to_csv(_vscbdm_path, index=False)
-    print(f"\n✅ Saved: {_vscbdm_path}")
-
-    # Save total observations count for table reconstruction
-    total_resp_obs = len(resp_valid)  # Total respiratory support observations
-    total_obs_df = pd.DataFrame({
-        'metric': ['total_respiratory_support_observations'],
-        'value': [total_resp_obs]
-    })
-    _vsto_path = os.path.join(output_dir, 'ventilator_settings_total_observations.csv')
-    total_obs_df.to_csv(_vsto_path, index=False)
-    print(f"✅ Saved total observations count ({total_resp_obs:,}): {_vsto_path}")
-
-    print("\n" + "="*80)
-    print("VENTILATOR MODE PROPORTIONS - FIRST 24 HOURS OF IMV")
-    print("="*80)
-
-    # ============================================================================
-    # 1. Filter to First 24 Hours of IMV
-    # ============================================================================
-
-    # Use the IMV data with hours from vent start that we already created
-    # Data is already waterfall-processed from earlier; just filter to first 24h
-    imv_first_24h = resp_imv_post_start[
-        (resp_imv_post_start['hours_from_vent_start'] >= 0) &
-        (resp_imv_post_start['hours_from_vent_start'] <= 24)
-    ].copy()
-
-    print(f"\n📊 Data Summary:")
-    print(f"   Total IMV records in first 24h: {len(imv_first_24h):,}")
-    print(f"   Unique encounters: {imv_first_24h['encounter_block'].nunique():,}")
-
-    # ============================================================================
-    # 2. Map Mode Categories to Simplified Groups
-    # ============================================================================
-
-    # Define mode category mapping (based on your image)
-    mode_mapping = {
-        'assist control-volume control': 'Assist Control-Volume Control',
-        'pressure-regulated volume control': 'Pressure-Regulated Volume Control',
-        'simv': 'SIMV',
-        'pressure support/cpap': 'Pressure Support/CPAP',
-        'pressure support': 'Pressure Support/CPAP',
-        'cpap': 'Pressure Support/CPAP',
-        'pressure control': 'Pressure Control',
-    }
-
-    # Apply mapping, anything not mapped goes to "Other"
-    imv_first_24h['mode_group'] = imv_first_24h['mode_category'].str.lower().map(mode_mapping)
-    imv_first_24h['mode_group'] = imv_first_24h['mode_group'].fillna('Other')
-
-    # ============================================================================
-    # 3. Calculate Proportions
-    # ============================================================================
-
-    # Count observations per mode
-    mode_counts = imv_first_24h['mode_group'].value_counts()
-    # Use first 24h IMV count for mode proportions analysis
-    total_obs = len(imv_first_24h)
-
-    # Calculate proportions
-    mode_proportions = (mode_counts / total_obs).sort_values(ascending=False)
-
-    print(f"\n📊 Mode Category Counts:")
-    for mode, count in mode_counts.items():
-        proportion = count / total_obs
-        print(f"   {mode}: {count:,} ({proportion:.1%})")
-
-    # ============================================================================
-    # 4. Create DataFrame for Plotting
-    # ============================================================================
-
-    plot_data = pd.DataFrame({
-        'Mode': mode_proportions.index,
-        'Proportion': mode_proportions.values,
-        'Count': mode_counts[mode_proportions.index].values
-    })
-
-    print("\nPlot Data:")
-    print(plot_data.to_string(index=False))
-
-    # Save the data
-    _mp24_path = os.path.join(output_dir, 'mode_proportions_first_24h.csv')
-    plot_data.to_csv(_mp24_path, index=False)
-    print(f"\n✅ Saved: {_mp24_path}")
-
-    # ============================================================================
-    # 5. Generate Ventilator Settings Table (Combined Image)
-    # ============================================================================
-    print("\n" + "="*80)
-    print("GENERATING VENTILATOR SETTINGS TABLE IMAGE")
-    print("="*80)
-
-    try:
-        # Import the ventilator table generation function from the same module
-        from .ventilator_table import plot_ventilator_table
-
-        # Generate the table with the full respiratory support dataset count
-        save_path = os.path.join(figures_dir, 'ventilator_settings_table.png')
-        total_resp_obs = len(resp_stitched)  # Use full respiratory support dataset for the table
-        fig = plot_ventilator_table(save_path=save_path, total_observations=total_resp_obs)
-        print(f"✅ Ventilator settings table image generated successfully")
-
-    except ImportError as e:
-        print(f"⚠️ Could not import ventilator table generation function: {e}")
-        print("   Skipping ventilator settings table image generation")
-    except Exception as e:
-        print(f"⚠️ Error generating ventilator settings table: {e}")
-        print("   Skipping ventilator settings table image generation")
-
-    fig, ax = plt.subplots(figsize=(6, 8))
-    # Define colors for each mode (matching the image)
-    color_map = {
-        'Assist Control-Volume Control': '#66c2a5',  # Green
-        'Pressure-Regulated Volume Control': '#fc8d62',  # Orange
-        'SIMV': '#3288bd',  # Blue
-        'Pressure Support/CPAP': '#9e9ac8',  # Purple
-        'Pressure Control': '#fee08b',  # Yellow
-        'Other': '#e41a8c'  # Pink/Magenta
-    }
-
-    # Create vertical stacked bar
-    bottom = 0
-
-    for idx, row in plot_data.iterrows():
-        mode = row['Mode']
-        proportion = row['Proportion']
-        count = row['Count']
-        color = color_map.get(mode, '#cccccc')
+        print(f"Number of IMV encounters: {len(imv_encounters):,}")
+        strobe_counts["IMV encounters"] = len(imv_encounters)
+        # Determine Vent Start/End for Each Encounter
+        vent_start_end = resp_stitched_imv.groupby('encounter_block').agg(
+            vent_start_time=('recorded_dttm', 'min'),
+            vent_end_time=('recorded_dttm', 'max')
+        ).reset_index()
+
+        #  Add on_vent flag to final_cohort
+        final_tableone_df = final_tableone_df.merge(
+            resp_stitched_imv[['encounter_block', 'on_vent']].drop_duplicates(),
+            on='encounter_block',
+            how='left'
+        )
+        final_tableone_df['on_vent'] = final_tableone_df['on_vent'].fillna(0).astype(int)
+
+        # # Apply waterfall processing to fill sparse data
+        # print(f"\nApplying waterfall processing to respiratory support data. This can take 2-20 mins based on your system specs and cohort size...")
+        # clif.respiratory_support = clif.respiratory_support.waterfall(verbose=True)
+        # print(f"\n Waterfall complete: {len(clif.respiratory_support.df):,} rows for {clif.respiratory_support.df['hospitalization_id'].nunique():,} unique hospitalizations")
+
+        # ============================================================================
+        # Compute accurate IMV hours from waterfall time-series
+        # Each row's device is "in effect" until the next observation
+        # ============================================================================
+        print("\nComputing IMV hours from waterfall data...")
+        resp_stitched = resp_stitched.sort_values(['encounter_block', 'recorded_dttm'])
+
+        # Step 1: Get next observation timestamp within each encounter
+        resp_stitched['next_recorded_dttm'] = (
+            resp_stitched.groupby('encounter_block')['recorded_dttm'].shift(-1)
+        )
+
+        # Step 2: Duration this device was "in effect"
+        resp_stitched['duration_hours'] = (
+            (resp_stitched['next_recorded_dttm'] - resp_stitched['recorded_dttm'])
+            .dt.total_seconds() / 3600
+        )
+
+        # Log duration calculation for same IMV encounter as waterfall sample
+        if len(imv_encounters) > 0:
+            sample_dur = resp_stitched[resp_stitched['encounter_block'] == _log_sample_enc][
+                ['encounter_block', 'recorded_dttm', 'device_category', 'next_recorded_dttm', 'duration_hours']
+            ].head(30)
+            _vent_log.write(f"--- Duration calc sample (same encounter: {_log_sample_enc}) ---\n")
+            _vent_log.write(sample_dur.to_string(index=False) + "\n")
+            _vent_log.write("---\n\n")
+
+        # Step 3: Sum duration only for IMV rows
+        imv_hours_per_enc = (
+            resp_stitched[resp_stitched['device_category'].str.contains("imv", case=False, na=False)]
+            .groupby('encounter_block')['duration_hours']
+            .sum()
+            .reset_index(name='vent_duration_hours')
+        )
+
+        # Log per-encounter IMV hours
+        _vent_log.write(f"--- IMV hours per encounter (first 20) ---\n")
+        _vent_log.write(imv_hours_per_enc.head(20).to_string(index=False) + "\n")
+        _vent_log.write(f"\nTotal encounters with IMV hours: {len(imv_hours_per_enc):,}\n")
+        _vent_log.write(f"Total IMV hours across all encounters: {imv_hours_per_enc['vent_duration_hours'].sum():,.0f}\n")
+        _vent_log.write("---\n\n")
+
+        # Log summary stats
+        _vent_log.write("--- Summary Statistics ---\n")
+        _vent_log.write(f"IMV hours distribution per encounter:\n")
+        _vent_log.write(imv_hours_per_enc['vent_duration_hours'].describe().to_string() + "\n")
+        _vent_log.write("---\n")
+        _vent_log.close()
+        print(f"   Vent hours debug log written to: {_vent_log_path}")
+
+        # NOTE: IMV episode counting removed pending a proper extubation definition.
+
+        # Merge into final_tableone_df
+        final_tableone_df = final_tableone_df.merge(imv_hours_per_enc, on='encounter_block', how='left')
+        final_tableone_df['vent_duration_hours'] = final_tableone_df['vent_duration_hours'].fillna(0.0)
+
+        # Cleanup temp columns
+        resp_stitched.drop(columns=['next_recorded_dttm', 'duration_hours'], inplace=True)
+
+
+        # ==============================================================================
+        # ## Initial Mode category
+        # ==============================================================================
+
+        #  Get Initial Mode Category (first mode after vent start)
+        # Subset resp_stitched to only those encounters on IMV
+        resp_imv = resp_stitched[resp_stitched['encounter_block'].isin(imv_encounters)].copy()
+
+        # Merge in the vent_start_time
+        resp_imv = resp_imv.merge(
+            vent_start_end[['encounter_block', 'vent_start_time']],
+            on='encounter_block',
+            how='left'
+        )
+
+        # Filter to only rows at or after vent start
+        resp_post_start = resp_imv[
+            resp_imv['recorded_dttm'] >= resp_imv['vent_start_time']
+        ]
+
+        # Group and take first non-NA mode_category per encounter
+        initial_modes = (
+            resp_post_start
+            .sort_values(['encounter_block', 'recorded_dttm'])
+            .groupby('encounter_block', as_index=False)['mode_category']
+            .first()
+            .rename(columns={'mode_category': 'initial_mode_category'})
+        )
+
+        # Fill any entirely-missing groups with "Missing"
+        initial_modes['initial_mode_category'] = initial_modes['initial_mode_category'].fillna('Missing')
+
+        # Merge back onto final_cohort
+        final_tableone_df = final_tableone_df.merge(
+            initial_modes,
+            on='encounter_block',
+            how='left'
+        )
+
+        # If some encounters never went on vent, fill those too
+        final_tableone_df['initial_mode_category'] = final_tableone_df['initial_mode_category'].fillna('Missing')
+
+        # Memory cleanup: Clear ventilation mode intermediates (keep vent_start_end for later use)
+        print("Clearing ventilation mode intermediate data from memory...")
+        del resp_imv, resp_post_start, initial_modes
+        gc.collect()
+        checkpoint("6. Ventilation Modes Processed")
+
+        #  Calculate Ventilator Settings Statistics (Median and IQR)
+        # Filter resp_stitched to only those encounters on IMV
+        # resp_stitched_final = resp_stitched[resp_stitched['encounter_block'].isin(imv_encounters)]
+
+        # # Define numeric columns to aggregate
+        # numeric_cols = [
+        #     'fio2_set', 'lpm_set', 'resp_rate_set', 'peep_set',
+        #     'tidal_volume_set', 'pressure_control_set', 'pressure_support_set'
+        # ]
+
+        # # Build named aggregation dict
+        # named_aggs = {}
+        # for col in numeric_cols:
+        #     named_aggs[f'{col}_median'] = (col, 'median')
+        #     named_aggs[f'{col}_q1'] = (col, lambda x: x.quantile(0.25))
+        #     named_aggs[f'{col}_q3'] = (col, lambda x: x.quantile(0.75))
+
+        # # Aggregate ventilator settings
+        # vent_stats = (
+        #     resp_stitched_final
+        #     .groupby('encounter_block', as_index=False)
+        #     .agg(**named_aggs)
+        # )
+
+        # # Merge vent stats back to final_cohort
+        # final_tableone_df = final_tableone_df.merge(vent_stats, on='encounter_block', how='left')
+
+        #  Find First Location at IMV Start (closest ADT location to vent start)
+        # Get minimal ADT cohort with required columns and merge with encounter_block
+        print("Find First Location at IMV Start (closest ADT location to vent start)")
+
+        # Merge with vent start times
+        adt_vent = pd.merge(
+            vent_start_end[['encounter_block', 'vent_start_time']],
+            adt_cohort,
+            on='encounter_block'
+        )
+
+        # Calculate time difference between vent start and ADT in_dttm
+        adt_vent['time_diff'] = abs(adt_vent['vent_start_time'] - adt_vent['in_dttm'])
+
+        # Get the closest ADT row for each encounter block
+        closest_adt = (
+            adt_vent
+            .sort_values('time_diff')
+            .groupby('encounter_block')
+            .first()
+            .reset_index()
+        )
+        closest_adt = closest_adt.rename(columns={'location_category': 'first_location_imv'})
+
+        # Merge back to final_cohort
+        final_tableone_df = final_tableone_df.merge(
+            closest_adt[['encounter_block', 'first_location_imv']],
+            on='encounter_block',
+            how='left'
+        )
+
+        print("\n=== IMV Encounter Summary Complete ===")
+        print(f"Total encounters: {len(final_tableone_df):,}")
+        print(f"Encounters on IMV: {final_tableone_df['on_vent'].sum():,}")
+        print(f"Initial mode categories:\n{final_tableone_df['initial_mode_category'].value_counts()}")
+
+
+        # ==============================================================================
+        # ## IMV- First 24 hours 
+        # ==============================================================================
+
+        # ============================================================================
+        # 1. Add vent_start_dttm to final_tableone_df
+        # ============================================================================
+
+        # Merge vent_start_time from vent_start_end into final_tableone_df
+        final_tableone_df = final_tableone_df.merge(
+            vent_start_end[['encounter_block', 'vent_start_time']],
+            on='encounter_block',
+            how='left'
+        )
+
+        # Rename to vent_start_dttm for clarity
+        final_tableone_df = final_tableone_df.rename(columns={'vent_start_time': 'vent_start_dttm'})
+
+        print(f"\n✅ Added vent_start_dttm to final_tableone_df")
+        print(f"   Encounters with vent_start_dttm: {final_tableone_df['vent_start_dttm'].notna().sum():,}")
+
+        # Memory cleanup: Delete vent_start_end after final use
+        del vent_start_end
+
+        # ============================================================================
+        # 2. Prepare IMV data with time from vent start
+        # ============================================================================
+
+        # Get IMV encounters
+        resp_imv = resp_stitched[resp_stitched['encounter_block'].isin(imv_encounters)].copy()
+
+        # Merge vent_start_dttm
+        resp_imv = resp_imv.merge(
+            final_tableone_df[['encounter_block', 'vent_start_dttm']],
+            on='encounter_block',
+            how='left'
+        )
+
+        # Calculate hours from vent start (time 0)
+        resp_imv['hours_from_vent_start'] = (
+            (resp_imv['recorded_dttm'] - resp_imv['vent_start_dttm']).dt.total_seconds() / 3600
+        )
+
+        # Filter to only records at or after vent start
+        resp_imv_post_start = resp_imv[resp_imv['hours_from_vent_start'] >= 0].copy()
+
+        final_tableone_df.columns
+
+        # ============================================================================
+        # SUPER OPTIMIZED: Calculate Statistics (10-20x faster!)
+        # ============================================================================
+        # Define all ventilator settings
+        vent_settings = [
+            'fio2_set', 'lpm_set', 'tidal_volume_set', 'resp_rate_set',
+            'pressure_control_set', 'pressure_support_set', 'peep_set',
+            'flow_rate_set'
+        ]
+
+        # Check which columns exist
+        existing_settings = [col for col in vent_settings if col in resp_imv.columns]
+
+        print(f"\nSettings to calculate: {len(existing_settings)}, vent settings")
+
+        # ✅ SUPER OPTIMIZATION: Calculate each stat separately (pandas can optimize better)
+        results = []
+
+        # Median and mean/std (fast built-ins)
+        medians = resp_imv.groupby('encounter_block')[existing_settings].median()
+        medians.columns = [f'{col}_median' for col in medians.columns]
+
+        means = resp_imv.groupby('encounter_block')[existing_settings].mean()
+        means.columns = [f'{col}_mean' for col in means.columns]
+
+        stds = resp_imv.groupby('encounter_block')[existing_settings].std()
+        stds.columns = [f'{col}_std' for col in stds.columns]
+
+        # Quantiles (still need to use slower method, but only once each)
+        q1 = resp_imv.groupby('encounter_block')[existing_settings].quantile(0.25)
+        q1.columns = [f'{col}_q1' for col in q1.columns]
+
+        q3 = resp_imv.groupby('encounter_block')[existing_settings].quantile(0.75)
+        q3.columns = [f'{col}_q3' for col in q3.columns]
+
+        # Combine all statistics
+        vent_settings_stats = pd.concat([medians, q1, q3, means, stds], axis=1).reset_index()
+
+        print(f"✅ Calculated statistics for {len(existing_settings)} settings")
+        print(f"   Total encounters: {len(vent_settings_stats):,}")
+
+        # Merge back
+        final_tableone_df = final_tableone_df.merge(
+            vent_settings_stats,
+            on='encounter_block',
+            how='left'
+        )
+
+        # ============================================================================
+        # 3. Filter for specific mode categories
+        # ============================================================================
+
+        # Define mode categories of interest
+        volume_control_modes = ['assist control-volume control', 'pressure-regulated volume control']
+        pressure_control_mode = ['pressure control']
+
+        # Filter data
+        volume_mode_data = resp_imv_post_start[
+            resp_imv_post_start['mode_category'].isin(volume_control_modes)
+        ].copy()
+
+        pressure_mode_data = resp_imv_post_start[
+            resp_imv_post_start['mode_category'].isin(pressure_control_mode)
+        ].copy()
+
+        print(f"\n📊 Mode Category Breakdown:")
+        print(f"   Volume Control modes: {len(volume_mode_data):,} records")
+        for mode in volume_control_modes:
+            count = (volume_mode_data['mode_category'] == mode).sum()
+            print(f"      - {mode}: {count:,}")
+        print(f"   Pressure Control mode: {len(pressure_mode_data):,} records")
+
+        # ============================================================================
+        # 4. Plot Median/IQR and Mean/SD Tidal Volume for Volume Control Modes
+        # ============================================================================
+
+        # Calculate binned hour from start
+        volume_mode_data['hour_bin'] = volume_mode_data['hours_from_vent_start'].round(0).astype(int)
+        # Filter to first 168 hours (7 days)
+        volume_mode_data_7d = volume_mode_data[volume_mode_data['hour_bin'] <= 168].copy()
+
+        # Group by hour and calculate stats, including mean and std
+        tv_stats = volume_mode_data_7d.groupby('hour_bin')['tidal_volume_set'].agg([
+            ('median', 'median'),
+            ('q25', lambda x: x.quantile(0.25)),
+            ('q75', lambda x: x.quantile(0.75)),
+            ('mean', 'mean'),
+            ('std', 'std'),
+            ('count', 'count')
+        ]).reset_index()
+
+        # Filter hours with at least 10 measurements
+        tv_stats = tv_stats[tv_stats['count'] >= 10]
+
+        # Save CSV for Tidal Volume data (median/IQR/mean/SD)
+        tv_csv_path = os.path.join(output_dir, 'tidal_volume_volume_control_modes.csv')
+        tv_stats.to_csv(tv_csv_path, index=False)
+        print(f"✅ Saved CSV: {tv_csv_path}")
+
+        # Plot Median/IQR
+        fig, ax = plt.subplots(figsize=(14, 6))
+        ax.plot(tv_stats['hour_bin'], tv_stats['median'], 'o-', color='#2E86AB', linewidth=2, markersize=4, label='Median')
+        ax.fill_between(tv_stats['hour_bin'], tv_stats['q25'], tv_stats['q75'], 
+                        alpha=0.3, color='#2E86AB', label='IQR (25th-75th percentile)')
+        ax.set_xlabel('Hours from Ventilation Start', fontsize=12, fontweight='bold')
+        ax.set_ylabel('Tidal Volume Set (mL)', fontsize=12, fontweight='bold')
+        ax.set_title('Tidal Volume Over Time: Volume Control Modes\n(Assist Control-Volume Control & Pressure-Regulated Volume Control)', 
+                     fontsize=14, fontweight='bold', pad=15)
+        ax.legend(fontsize=10)
+        ax.grid(True, alpha=0.3)
+        ax.set_xlim(0, 168)
+        plt.tight_layout()
+        tv_png_path = os.path.join(figures_dir, 'tidal_volume_volume_control_modes.png')
+        plt.savefig(tv_png_path, dpi=300, bbox_inches='tight')
+        plt.close()
+        print(f"\n✅ Saved: {tv_png_path}")
+
+        # Plot Mean/SD
+        fig, ax = plt.subplots(figsize=(14, 6))
+        ax.plot(tv_stats['hour_bin'], tv_stats['mean'], 'o-', color='#e67e22', linewidth=2, markersize=4, label='Mean')
+        ax.fill_between(tv_stats['hour_bin'], tv_stats['mean'] - tv_stats['std'], tv_stats['mean'] + tv_stats['std'], 
+                        alpha=0.25, color='#e67e22', label='SD (±1 std)')
+        ax.set_xlabel('Hours from Ventilation Start', fontsize=12, fontweight='bold')
+        ax.set_ylabel('Tidal Volume Set (mL)', fontsize=12, fontweight='bold')
+        ax.set_title('Tidal Volume Over Time (Mean ± SD): Volume Control Modes\n(Assist Control-Volume Control & Pressure-Regulated Volume Control)', 
+                     fontsize=14, fontweight='bold', pad=15)
+        ax.legend(fontsize=10)
+        ax.grid(True, alpha=0.3)
+        ax.set_xlim(0, 168)
+        plt.tight_layout()
+        tv_mean_png_path = os.path.join(figures_dir, 'tidal_volume_volume_control_modes_mean_sd.png')
+        plt.savefig(tv_mean_png_path, dpi=300, bbox_inches='tight')
+        plt.close()
+        print(f"✅ Saved: {tv_mean_png_path}")
+
+        tv_mean_sd_csv_path = os.path.join(output_dir, 'tidal_volume_volume_control_modes_mean_sd.csv')
+        tv_stats[['hour_bin', 'mean', 'std', 'count']].to_csv(tv_mean_sd_csv_path, index=False)
+        print(f"✅ Saved CSV: {tv_mean_sd_csv_path}")
+
+        # ============================================================================
+        # 5. Plot Median/IQR and Mean/SD Pressure Control for Pressure Control Mode
+        # ============================================================================
+
+        # Calculate binned hour from start for pressure control mode
+        pressure_mode_data['hour_bin'] = pressure_mode_data['hours_from_vent_start'].round(0).astype(int)
+        pressure_mode_data_7d = pressure_mode_data[pressure_mode_data['hour_bin'] <= 168].copy()
+
+        # Group by hour and calculate stats, including mean and std
+        pc_stats = pressure_mode_data_7d.groupby('hour_bin')['pressure_control_set'].agg([
+            ('median', 'median'),
+            ('q25', lambda x: x.quantile(0.25)),
+            ('q75', lambda x: x.quantile(0.75)),
+            ('mean', 'mean'),
+            ('std', 'std'),
+            ('count', 'count')
+        ]).reset_index()
+
+        pc_stats = pc_stats[pc_stats['count'] >= 10]
+
+        # Save CSV for Pressure Control data (median/IQR/mean/SD)
+        pc_csv_path = os.path.join(output_dir, 'pressure_control_pressure_control_mode.csv')
+        pc_stats.to_csv(pc_csv_path, index=False)
+        print(f"✅ Saved CSV: {pc_csv_path}")
+
+        # Plot Median/IQR
+        fig, ax = plt.subplots(figsize=(14, 6))
+        ax.plot(pc_stats['hour_bin'], pc_stats['median'], 'o-', color='#A23B72', linewidth=2, markersize=4, label='Median')
+        ax.fill_between(pc_stats['hour_bin'], pc_stats['q25'], pc_stats['q75'], 
+                        alpha=0.3, color='#A23B72', label='IQR (25th-75th percentile)')
+        ax.set_xlabel('Hours from Ventilation Start', fontsize=12, fontweight='bold')
+        ax.set_ylabel('Pressure Control Set (cmH₂O)', fontsize=12, fontweight='bold')
+        ax.set_title('Pressure Control Over Time: Pressure Control Mode', 
+                     fontsize=14, fontweight='bold', pad=15)
+        ax.legend(fontsize=10)
+        ax.grid(True, alpha=0.3)
+        ax.set_xlim(0, 168)
+        plt.tight_layout()
+        pc_png_path = os.path.join(figures_dir, 'pressure_control_pressure_control_mode.png')
+        plt.savefig(pc_png_path, dpi=300, bbox_inches='tight')
+        plt.close()
+        print(f"✅ Saved: {pc_png_path}")
+
+        # Plot Mean/SD
+        fig, ax = plt.subplots(figsize=(14, 6))
+        ax.plot(pc_stats['hour_bin'], pc_stats['mean'], 'o-', color='#27ae60', linewidth=2, markersize=4, label='Mean')
+        ax.fill_between(pc_stats['hour_bin'], pc_stats['mean'] - pc_stats['std'], pc_stats['mean'] + pc_stats['std'], 
+                        alpha=0.25, color='#27ae60', label='SD (±1 std)')
+        ax.set_xlabel('Hours from Ventilation Start', fontsize=12, fontweight='bold')
+        ax.set_ylabel('Pressure Control Set (cmH₂O)', fontsize=12, fontweight='bold')
+        ax.set_title('Pressure Control Over Time (Mean ± SD): Pressure Control Mode', 
+                     fontsize=14, fontweight='bold', pad=15)
+        ax.legend(fontsize=10)
+        ax.grid(True, alpha=0.3)
+        ax.set_xlim(0, 168)
+        plt.tight_layout()
+        pc_mean_png_path = os.path.join(figures_dir, 'pressure_control_pressure_control_mode_mean_sd.png')
+        plt.savefig(pc_mean_png_path, dpi=300, bbox_inches='tight')
+        plt.close()
+        print(f"✅ Saved: {pc_mean_png_path}")
+
+        pc_mean_sd_csv_path = os.path.join(output_dir, 'pressure_control_pressure_control_mode_mean_sd.csv')
+        pc_stats[['hour_bin', 'mean', 'std', 'count']].to_csv(pc_mean_sd_csv_path, index=False)
+        print(f"✅ Saved CSV: {pc_mean_sd_csv_path}")
+
+        # ============================================================================
+        # Ventilator Settings Table by Device and Mode Category - FIXED
+        # ============================================================================
+
+
+        # Ventilator settings of interest
+        vent_settings = [
+            'fio2_set',
+            'lpm_set',
+            'tidal_volume_set',
+            'resp_rate_set',
+            'pressure_control_set',
+            'peep_set',
+            'pressure_support_set',
+            'flow_rate_set'
+        ]
+
+        # ✅ OPTIMIZATION: Use groupby instead of nested loops (10-50x faster!)
+        # Use full respiratory support data - ALL device and mode combinations
+        resp_valid = resp_stitched.copy()
+
+        # Check which columns actually exist in the data (graceful handling for missing columns)
+        existing_settings = [col for col in vent_settings if col in resp_valid.columns]
+        missing_settings = [col for col in vent_settings if col not in resp_valid.columns]
+
+        if missing_settings:
+            print(f"\n⚠️ Warning: The following ventilator settings are not available in the data: {', '.join(missing_settings)}")
+            print(f"   Proceeding with {len(existing_settings)} available settings: {', '.join(existing_settings)}")
+        else:
+            print(f"\n✅ All {len(existing_settings)} ventilator settings found in the data")
+
+        # Update vent_settings to only include existing columns
+        vent_settings = existing_settings
+
+        # Count all device-mode combinations
+        group_counts = resp_valid.groupby(['device_category', 'mode_category']).size()
+
+        print(f"Calculating statistics for {len(group_counts)} device-mode combinations from full respiratory support data...")
+
+        # Calculate median, Q1, Q3 (only for existing columns)
+        medians = resp_valid.groupby(['device_category', 'mode_category'])[vent_settings].median()
+        q1 = resp_valid.groupby(['device_category', 'mode_category'])[vent_settings].quantile(0.25)
+        q3 = resp_valid.groupby(['device_category', 'mode_category'])[vent_settings].quantile(0.75)
+
+        # ✅ FIX: Reset index for all before combining
+        medians_reset = medians.reset_index()
+        q1_reset = q1.reset_index()
+        q3_reset = q3.reset_index()
+
+        # Create settings summary starting with device and mode columns
+        settings_summary = medians_reset[['device_category', 'mode_category']].copy()
+
+        # ✅ Format as "median (q1-q3)" using .values (no index issues)
+        for setting in vent_settings:
+            if setting in medians.columns:
+                # Use .values to avoid index alignment issues
+                settings_summary[setting] = (
+                    medians_reset[setting].round(1).astype(str) + ' (' +
+                    q1_reset[setting].round(1).astype(str) + '-' +
+                    q3_reset[setting].round(1).astype(str) + ')'
+                )
+
+        # Build rename dictionary only for columns that exist
+        rename_dict = {}
+        # Rename mode_category to ventilator_setting for consistency in output
+        if 'mode_category' in settings_summary.columns:
+            rename_dict['mode_category'] = 'ventilator_setting'
+
+        column_mapping = {
+            'fio2_set': 'FiO2 Set',
+            'lpm_set': 'LPM Set',
+            'tidal_volume_set': 'Tidal Volume Set',
+            'resp_rate_set': 'Resp Rate Set',
+            'pressure_control_set': 'Pressure Control Set',
+            'peep_set': 'PEEP Set',
+            'pressure_support_set': 'Pressure Support Set',
+            'flow_rate_set': 'Flow Rate Set'
+        }
+
+        # Only add columns that exist in settings_summary
+        for old_name, new_name in column_mapping.items():
+            if old_name in settings_summary.columns:
+                rename_dict[old_name] = new_name
+
+        # Rename columns
+        settings_summary = settings_summary.rename(columns=rename_dict)
+
+        # Sort by device and mode (use 'ventilator_setting' after rename)
+        sort_col = 'ventilator_setting' if 'ventilator_setting' in settings_summary.columns else 'mode_category'
+        settings_summary = settings_summary.sort_values(['device_category', sort_col])
+
+        # Display and save
+        print("\n" + "="*80)
+        print("VENTILATOR SETTINGS BY DEVICE AND MODE CATEGORY")
+        print("="*80)
+        print(settings_summary.to_string(index=False))
+
+        _vsbdm_path = os.path.join(output_dir, 'ventilator_settings_by_device_mode.csv')
+        settings_summary.to_csv(_vsbdm_path, index=False)
+        print(f"\n✅ Saved: {_vsbdm_path}")
+
+        # ============================================================================
+        # BONUS: Also create counts table (same optimization)
+        # ============================================================================
+
+        print("\n" + "="*80)
+        print("Creating Observation Counts Table")
+        print("="*80)
+
+        # Count non-null observations for each setting (vectorized)
+        counts_summary = resp_valid.groupby(['device_category', 'mode_category'])[vent_settings].count().reset_index()
+
+        # Build rename dictionary only for columns that exist
+        counts_rename_dict = {}
+        # Rename mode_category to ventilator_setting for consistency in output
+        if 'mode_category' in counts_summary.columns:
+            counts_rename_dict['mode_category'] = 'ventilator_setting'
+
+        counts_column_mapping = {
+            'fio2_set': 'FiO2 Set (N)',
+            'lpm_set': 'LPM Set (N)',
+            'tidal_volume_set': 'Tidal Volume Set (N)',
+            'resp_rate_set': 'Resp Rate Set (N)',
+            'pressure_control_set': 'Pressure Control Set (N)',
+            'peep_set': 'PEEP Set (N)',
+            'pressure_support_set': 'Pressure Support Set (N)',
+            'flow_rate_set': 'Flow Rate Set (N)'
+        }
+
+        # Only add columns that exist in counts_summary
+        for old_name, new_name in counts_column_mapping.items():
+            if old_name in counts_summary.columns:
+                counts_rename_dict[old_name] = new_name
+
+        # Rename columns
+        counts_summary = counts_summary.rename(columns=counts_rename_dict)
+
+        # Sort (use 'ventilator_setting' after rename)
+        sort_col = 'ventilator_setting' if 'ventilator_setting' in counts_summary.columns else 'mode_category'
+        counts_summary = counts_summary.sort_values(['device_category', sort_col])
+
+        print("\nObservation Counts by Device and Mode:")
+        print(counts_summary.to_string(index=False))
+
+        _vscbdm_path = os.path.join(output_dir, 'ventilator_settings_counts_by_device_mode.csv')
+        counts_summary.to_csv(_vscbdm_path, index=False)
+        print(f"\n✅ Saved: {_vscbdm_path}")
+
+        # Save total observations count for table reconstruction
+        total_resp_obs = len(resp_valid)  # Total respiratory support observations
+        total_obs_df = pd.DataFrame({
+            'metric': ['total_respiratory_support_observations'],
+            'value': [total_resp_obs]
+        })
+        _vsto_path = os.path.join(output_dir, 'ventilator_settings_total_observations.csv')
+        total_obs_df.to_csv(_vsto_path, index=False)
+        print(f"✅ Saved total observations count ({total_resp_obs:,}): {_vsto_path}")
+
+        print("\n" + "="*80)
+        print("VENTILATOR MODE PROPORTIONS - FIRST 24 HOURS OF IMV")
+        print("="*80)
+
+        # ============================================================================
+        # 1. Filter to First 24 Hours of IMV
+        # ============================================================================
+
+        # Use the IMV data with hours from vent start that we already created
+        # Data is already waterfall-processed from earlier; just filter to first 24h
+        imv_first_24h = resp_imv_post_start[
+            (resp_imv_post_start['hours_from_vent_start'] >= 0) &
+            (resp_imv_post_start['hours_from_vent_start'] <= 24)
+        ].copy()
+
+        print(f"\n📊 Data Summary:")
+        print(f"   Total IMV records in first 24h: {len(imv_first_24h):,}")
+        print(f"   Unique encounters: {imv_first_24h['encounter_block'].nunique():,}")
+
+        # ============================================================================
+        # 2. Map Mode Categories to Simplified Groups
+        # ============================================================================
+
+        # Define mode category mapping (based on your image)
+        mode_mapping = {
+            'assist control-volume control': 'Assist Control-Volume Control',
+            'pressure-regulated volume control': 'Pressure-Regulated Volume Control',
+            'simv': 'SIMV',
+            'pressure support/cpap': 'Pressure Support/CPAP',
+            'pressure support': 'Pressure Support/CPAP',
+            'cpap': 'Pressure Support/CPAP',
+            'pressure control': 'Pressure Control',
+        }
+
+        # Apply mapping, anything not mapped goes to "Other"
+        imv_first_24h['mode_group'] = imv_first_24h['mode_category'].str.lower().map(mode_mapping)
+        imv_first_24h['mode_group'] = imv_first_24h['mode_group'].fillna('Other')
+
+        # ============================================================================
+        # 3. Calculate Proportions
+        # ============================================================================
+
+        # Count observations per mode
+        mode_counts = imv_first_24h['mode_group'].value_counts()
+        # Use first 24h IMV count for mode proportions analysis
+        total_obs = len(imv_first_24h)
+
+        # Calculate proportions
+        mode_proportions = (mode_counts / total_obs).sort_values(ascending=False)
+
+        print(f"\n📊 Mode Category Counts:")
+        for mode, count in mode_counts.items():
+            proportion = count / total_obs
+            print(f"   {mode}: {count:,} ({proportion:.1%})")
+
+        # ============================================================================
+        # 4. Create DataFrame for Plotting
+        # ============================================================================
+
+        plot_data = pd.DataFrame({
+            'Mode': mode_proportions.index,
+            'Proportion': mode_proportions.values,
+            'Count': mode_counts[mode_proportions.index].values
+        })
+
+        print("\nPlot Data:")
+        print(plot_data.to_string(index=False))
+
+        # Save the data
+        _mp24_path = os.path.join(output_dir, 'mode_proportions_first_24h.csv')
+        plot_data.to_csv(_mp24_path, index=False)
+        print(f"\n✅ Saved: {_mp24_path}")
+
+        # ============================================================================
+        # 5. Generate Ventilator Settings Table (Combined Image)
+        # ============================================================================
+        print("\n" + "="*80)
+        print("GENERATING VENTILATOR SETTINGS TABLE IMAGE")
+        print("="*80)
+
+        try:
+            # Import the ventilator table generation function from the same module
+            from .ventilator_table import plot_ventilator_table
+
+            # Generate the table with the full respiratory support dataset count
+            save_path = os.path.join(figures_dir, 'ventilator_settings_table.png')
+            total_resp_obs = len(resp_stitched)  # Use full respiratory support dataset for the table
+            fig = plot_ventilator_table(save_path=save_path, total_observations=total_resp_obs)
+            print(f"✅ Ventilator settings table image generated successfully")
+
+        except ImportError as e:
+            print(f"⚠️ Could not import ventilator table generation function: {e}")
+            print("   Skipping ventilator settings table image generation")
+        except Exception as e:
+            print(f"⚠️ Error generating ventilator settings table: {e}")
+            print("   Skipping ventilator settings table image generation")
+
+        fig, ax = plt.subplots(figsize=(6, 8))
+        # Define colors for each mode (matching the image)
+        color_map = {
+            'Assist Control-Volume Control': '#66c2a5',  # Green
+            'Pressure-Regulated Volume Control': '#fc8d62',  # Orange
+            'SIMV': '#3288bd',  # Blue
+            'Pressure Support/CPAP': '#9e9ac8',  # Purple
+            'Pressure Control': '#fee08b',  # Yellow
+            'Other': '#e41a8c'  # Pink/Magenta
+        }
+
+        # Create vertical stacked bar
+        bottom = 0
+
+        for idx, row in plot_data.iterrows():
+            mode = row['Mode']
+            proportion = row['Proportion']
+            count = row['Count']
+            color = color_map.get(mode, '#cccccc')
     
-        ax.bar(0, proportion, bottom=bottom, width=0.5, 
-              color=color, edgecolor='white', linewidth=2)
+            ax.bar(0, proportion, bottom=bottom, width=0.5, 
+                  color=color, edgecolor='white', linewidth=2)
     
-        # Add text label
-        if proportion > 0.03:
-            ax.text(0, bottom + proportion/2, f"{proportion:.1%}\n(n={count:,})", 
-                   ha='center', va='center', fontsize=9, fontweight='bold',
-                   color='white' if proportion > 0.15 else 'black')
+            # Add text label
+            if proportion > 0.03:
+                ax.text(0, bottom + proportion/2, f"{proportion:.1%}\n(n={count:,})", 
+                       ha='center', va='center', fontsize=9, fontweight='bold',
+                       color='white' if proportion > 0.15 else 'black')
     
-        bottom += proportion
+            bottom += proportion
 
-    # Formatting
-    ax.set_xlim(-0.5, 0.5)
-    ax.set_ylim(0, 1)
-    ax.set_ylabel('Proportion of Mode Category', fontsize=14, fontweight='bold')
-    ax.set_xticks([0])
-    ax.set_xticklabels(['Dataset\n(All IMV Encounters)'], fontsize=11)
-    ax.set_title('Proportions of Different Ventilator Modes\nUsed in First 24 Hours of IMV', 
-                fontsize=14, fontweight='bold', pad=20)
+        # Formatting
+        ax.set_xlim(-0.5, 0.5)
+        ax.set_ylim(0, 1)
+        ax.set_ylabel('Proportion of Mode Category', fontsize=14, fontweight='bold')
+        ax.set_xticks([0])
+        ax.set_xticklabels(['Dataset\n(All IMV Encounters)'], fontsize=11)
+        ax.set_title('Proportions of Different Ventilator Modes\nUsed in First 24 Hours of IMV', 
+                    fontsize=14, fontweight='bold', pad=20)
 
-    # Create legend
-    legend_elements = [plt.Rectangle((0,0),1,1, fc=color_map.get(mode, '#cccccc'), 
-                                    edgecolor='white', linewidth=2, label=mode)
-                      for mode in plot_data['Mode']]
-    ax.legend(handles=legend_elements, loc='upper left', bbox_to_anchor=(1.02, 1), 
-             fontsize=10, title='Mode Category', title_fontsize=11)
+        # Create legend
+        legend_elements = [plt.Rectangle((0,0),1,1, fc=color_map.get(mode, '#cccccc'), 
+                                        edgecolor='white', linewidth=2, label=mode)
+                          for mode in plot_data['Mode']]
+        ax.legend(handles=legend_elements, loc='upper left', bbox_to_anchor=(1.02, 1), 
+                 fontsize=10, title='Mode Category', title_fontsize=11)
 
-    # Add grid
-    ax.grid(axis='y', alpha=0.3)
+        # Add grid
+        ax.grid(axis='y', alpha=0.3)
 
-    plt.tight_layout()
-    _mp24v_path = os.path.join(figures_dir, 'mode_proportions_first_24h_vertical.png')
-    plt.savefig(_mp24v_path, dpi=300, bbox_inches='tight')
-    plt.close('all')
+        plt.tight_layout()
+        _mp24v_path = os.path.join(figures_dir, 'mode_proportions_first_24h_vertical.png')
+        plt.savefig(_mp24v_path, dpi=300, bbox_inches='tight')
+        plt.close('all')
 
-    print(f"✅ Saved: {_mp24v_path}")
+        print(f"✅ Saved: {_mp24v_path}")
 
-    # Memory cleanup: Clear respiratory detailed analysis
-    print("Clearing respiratory detailed analysis data from memory...")
-    del resp_stitched, resp_stitched_imv, imv_encounters
-    plt.close('all')
-    gc.collect()
-    checkpoint("7. Respiratory Detailed Analysis Complete")
+        # Memory cleanup: Clear respiratory detailed analysis
+        print("Clearing respiratory detailed analysis data from memory...")
+        del resp_stitched, resp_stitched_imv, imv_encounters
+        plt.close('all')
+        gc.collect()
+        checkpoint("7. Respiratory Detailed Analysis Complete")
 
-    final_tableone_df.columns
+        final_tableone_df.columns
 
 
     # ==============================================================================
@@ -3590,290 +3681,304 @@ def main(memory_monitor=None) -> bool:
     # ==============================================================================
 
 
-    # Define medication groups
-    med_groups = {
-        'vasoactive': ['norepinephrine', 'epinephrine', 'phenylephrine', 'vasopressin', 'dopamine'],
-        'sedative': ['propofol', 'midazolam', 'lorazepam', 'dexmedetomidine', 'fentanyl'],
-        'paralytic': ['vecuronium', 'rocuronium', 'cisatracurium', 'pancuronium']
-    }
+    # Medication-from-ICU hourly plot is anchored to first_icu_in_dttm and
+    # meaningful only for the critical-illness cohort. Decision 3: skip the
+    # entire plot block (medications_hourly_data.csv, plotly area curves,
+    # median dose plots, medications_summary_stats.csv) in ward mode. The
+    # block is wrapped in a 0-or-1 iteration for-loop so the existing code
+    # keeps its indentation but the body iterates 0 times in ward mode.
+    if cohort_mode == 'ward':
+        print("\nSkipping medication-from-ICU hourly plot block (ward mode)")
 
-    all_meds = [med for meds in med_groups.values() for med in meds]
+    for _icu_med_plot_iter in (range(1) if cohort_mode != 'ward' else range(0)):
+        # Define medication groups
+        med_groups = {
+            'vasoactive': ['norepinephrine', 'epinephrine', 'phenylephrine', 'vasopressin', 'dopamine'],
+            'sedative': ['propofol', 'midazolam', 'lorazepam', 'dexmedetomidine', 'fentanyl'],
+            'paralytic': ['vecuronium', 'rocuronium', 'cisatracurium', 'pancuronium']
+        }
 
-    # Merge and calculate hours from ICU (vectorized)
-    meds_merged = meds_df.merge(
-        final_tableone_df[['encounter_block', 'first_icu_in_dttm']],
-        on='encounter_block',
-        how='inner'
-    )
+        all_meds = [med for meds in med_groups.values() for med in meds]
 
-    meds_merged['hours_from_icu'] = (
-        pd.to_datetime(meds_merged['admin_dttm']) - pd.to_datetime(meds_merged['first_icu_in_dttm'])
-    ).dt.total_seconds() / 3600
-
-    # Filter and bin (vectorized), handle non-finite for hour_bin, avoid IntCastingNaNError
-    meds_merged['med_lower'] = meds_merged['med_category'].str.lower()
-    finite_mask = np.isfinite(meds_merged['hours_from_icu'])
-    meds_merged['hour_bin'] = np.nan
-    meds_merged.loc[finite_mask, 'hour_bin'] = np.floor(meds_merged.loc[finite_mask, 'hours_from_icu'])
-    meds_merged['hour_bin'] = meds_merged['hour_bin'].astype('Int64')
-
-    meds_7d = meds_merged[
-        (meds_merged['med_lower'].isin(all_meds)) &
-        (meds_merged['hour_bin'].notna()) &
-        (meds_merged['hour_bin'] >= 0) &
-        (meds_merged['hour_bin'] <= 167)
-    ]
-
-    total_icu_encounters = final_tableone_df[final_tableone_df['icu_enc'] == 1]['encounter_block'].nunique()
-
-    # ============================================================================
-    #  hourly counts and percentages
-    # ============================================================================
-
-    pivot = (
-        meds_7d
-        .groupby(['hour_bin', 'med_lower'])['encounter_block']
-        .nunique()
-        .unstack(fill_value=0)
-        .reindex(index=np.arange(168), columns=all_meds, fill_value=0)
-    )
-
-    pct_pivot = (pivot / total_icu_encounters * 100) if total_icu_encounters > 0 else pivot * 0
-
-    hourly_df = pd.DataFrame({'hour': np.arange(168)})
-    hourly_df = pd.concat([
-        hourly_df,
-        pivot.add_suffix('_n'),
-        pct_pivot.add_suffix('_pct')
-    ], axis=1)
-
-    _mhd_path = os.path.join(output_dir, 'medications_hourly_data.csv')
-    hourly_df.to_csv(_mhd_path, index=False)
-    print(f"✅ Saved: {_mhd_path}")
-
-    # ============================================================================
-    # Plotly plotting functions (interactive area plots)
-    # ============================================================================
-
-    colors = {
-        'norepinephrine': '#1f77b4', 'epinephrine': '#ff7f0e', 'phenylephrine': '#2ca02c',
-        'vasopressin': '#d62728', 'dopamine': '#9467bd',
-        'propofol': '#e377c2', 'midazolam': '#7f7f7f', 'lorazepam': '#bcbd22', 'dexmedetomidine': '#17becf',
-        'vecuronium': '#8c564b', 'rocuronium': '#f7b6d2', 'cisatracurium': '#c49c94', 'pancuronium': '#dbdb8d'
-    }
-
-    def hex_to_rgba(hex_color, alpha=0.2):
-        """Convert hex RGB color like '#1f77b4' to 'rgba(R,G,B,A)' string."""
-        hex_color = hex_color.lstrip('#')
-        if len(hex_color) == 6:
-            r = int(hex_color[0:2], 16)
-            g = int(hex_color[2:4], 16)
-            b = int(hex_color[4:6], 16)
-            return f'rgba({r},{g},{b},{alpha})'
-        # Fallback to gray if something is wrong
-        return f'rgba(180,180,180,{alpha})'
-
-    def plotly_medication_group(group_name, meds, hourly_df, output_path_html):
-        fig = go.Figure()
-        hours = hourly_df['hour'].values
-
-        for med in meds:
-            pct_col = f"{med}_pct"
-            if pct_col in hourly_df.columns:
-                color = colors.get(med, '#333')
-                fillcolor = (
-                    hex_to_rgba(color, 0.2)
-                    if color.startswith("#") and len(color) == 7
-                    else "rgba(180,180,180,0.15)"
-                )
-                fig.add_trace(
-                    go.Scatter(
-                        x=hours,
-                        y=hourly_df[pct_col],
-                        mode='lines',
-                        name=med.capitalize(),
-                        line=dict(color=color, width=3),
-                        fill='tozeroy',
-                        fillcolor=fillcolor,
-                        opacity=0.8,
-                        hovertemplate=f"{med.capitalize()}<br>Hour: %{{x}}<br>% ICU: %{{y:.2f}}<extra></extra>"
-                    )
-                )
-
-        fig.update_layout(
-            title=f"{group_name.capitalize()} Medication Use in First 7 Days of ICU",
-            xaxis_title="Hours from ICU Admission",
-            yaxis_title="% of ICU Encounters",
-            xaxis=dict(range=[0, 168]),
-            yaxis=dict(range=[0, None]),
-            legend=dict(title="Medication", font=dict(size=12)),
-            template="simple_white",
-            font=dict(size=14),
-            margin=dict(l=50, r=20, t=70, b=50)
+        # Merge and calculate hours from ICU (vectorized)
+        meds_merged = meds_df.merge(
+            final_tableone_df[['encounter_block', 'first_icu_in_dttm']],
+            on='encounter_block',
+            how='inner'
         )
 
-        # Save interactive plot as HTML
-        pio.write_html(fig, output_path_html)
-        # fig.show()  # REMOVED: Don't auto-open browser
+        meds_merged['hours_from_icu'] = (
+            pd.to_datetime(meds_merged['admin_dttm']) - pd.to_datetime(meds_merged['first_icu_in_dttm'])
+        ).dt.total_seconds() / 3600
 
-    # Generate all 3 interactive plots (save as HTML in figures/)
-    plotly_medication_group(
-        'vasoactive', med_groups['vasoactive'], hourly_df,
-        os.path.join(figures_dir, 'vasoactive_area_curve_7d.html')
-    )
-    plotly_medication_group(
-        'sedative', med_groups['sedative'], hourly_df,
-        os.path.join(figures_dir, 'sedative_area_curve_7d.html')
-    )
-    plotly_medication_group(
-        'paralytic', med_groups['paralytic'], hourly_df,
-        os.path.join(figures_dir, 'paralytic_area_curve_7d.html')
-    )
+        # Filter and bin (vectorized), handle non-finite for hour_bin, avoid IntCastingNaNError
+        meds_merged['med_lower'] = meds_merged['med_category'].str.lower()
+        finite_mask = np.isfinite(meds_merged['hours_from_icu'])
+        meds_merged['hour_bin'] = np.nan
+        meds_merged.loc[finite_mask, 'hour_bin'] = np.floor(meds_merged.loc[finite_mask, 'hours_from_icu'])
+        meds_merged['hour_bin'] = meds_merged['hour_bin'].astype('Int64')
 
-    print("\n✅ All medication plots (plotly) created and saved as HTML!")
+        meds_7d = meds_merged[
+            (meds_merged['med_lower'].isin(all_meds)) &
+            (meds_merged['hour_bin'].notna()) &
+            (meds_merged['hour_bin'] >= 0) &
+            (meds_merged['hour_bin'] <= 167)
+        ]
 
+        total_icu_encounters = final_tableone_df[final_tableone_df['icu_enc'] == 1]['encounter_block'].nunique()
 
-    # Define medication groups
-    med_groups = {
-        'vasoactive': ['norepinephrine', 'epinephrine', 'phenylephrine', 'vasopressin', 'dopamine'],
-        'sedative': ['propofol', 'midazolam', 'lorazepam', 'dexmedetomidine', 'fentanyl'],
-        'paralytic': ['vecuronium', 'rocuronium', 'cisatracurium', 'pancuronium']
-    }
+        # ============================================================================
+        #  hourly counts and percentages
+        # ============================================================================
 
-    # Lower-cased mapping for safety
-    med_to_group = {med: group for group, meds in med_groups.items() for med in meds}
-    all_meds = [med for meds in med_groups.values() for med in meds]
+        pivot = (
+            meds_7d
+            .groupby(['hour_bin', 'med_lower'])['encounter_block']
+            .nunique()
+            .unstack(fill_value=0)
+            .reindex(index=np.arange(168), columns=all_meds, fill_value=0)
+        )
 
-    # Merge and preprocess (same as before)
-    meds_merged = meds_df.merge(
-        final_tableone_df[['encounter_block', 'first_icu_in_dttm']],
-        on='encounter_block',
-        how='inner'
-    )
+        pct_pivot = (pivot / total_icu_encounters * 100) if total_icu_encounters > 0 else pivot * 0
 
-    meds_merged['hours_from_icu'] = (
-        pd.to_datetime(meds_merged['admin_dttm']) - pd.to_datetime(meds_merged['first_icu_in_dttm'])
-    ).dt.total_seconds() / 3600
+        hourly_df = pd.DataFrame({'hour': np.arange(168)})
+        hourly_df = pd.concat([
+            hourly_df,
+            pivot.add_suffix('_n'),
+            pct_pivot.add_suffix('_pct')
+        ], axis=1)
 
-    meds_merged['med_lower'] = meds_merged['med_category'].str.lower()
-    finite_mask = np.isfinite(meds_merged['hours_from_icu'])
-    meds_merged['hour_bin'] = np.nan
-    meds_merged.loc[finite_mask, 'hour_bin'] = np.floor(meds_merged.loc[finite_mask, 'hours_from_icu'])
-    meds_merged['hour_bin'] = meds_merged['hour_bin'].astype('Int64')
+        _mhd_path = os.path.join(output_dir, 'medications_hourly_data.csv')
+        hourly_df.to_csv(_mhd_path, index=False)
+        print(f"✅ Saved: {_mhd_path}")
 
-    meds_7d = meds_merged[
-        (meds_merged['med_lower'].isin(all_meds)) &
-        (meds_merged['hour_bin'].notna()) &
-        (meds_merged['hour_bin'] >= 0) &
-        (meds_merged['hour_bin'] <= 167)
-    ].copy()
+        # ============================================================================
+        # Plotly plotting functions (interactive area plots)
+        # ============================================================================
 
-    # =======================
-    # Line plot: median dose by hour since ICU admission (per med group)
-    # =======================
+        colors = {
+            'norepinephrine': '#1f77b4', 'epinephrine': '#ff7f0e', 'phenylephrine': '#2ca02c',
+            'vasopressin': '#d62728', 'dopamine': '#9467bd',
+            'propofol': '#e377c2', 'midazolam': '#7f7f7f', 'lorazepam': '#bcbd22', 'dexmedetomidine': '#17becf',
+            'vecuronium': '#8c564b', 'rocuronium': '#f7b6d2', 'cisatracurium': '#c49c94', 'pancuronium': '#dbdb8d'
+        }
 
-    colors = {
-        'norepinephrine': '#1f77b4', 'epinephrine': '#ff7f0e', 'phenylephrine': '#2ca02c',
-        'vasopressin': '#d62728', 'dopamine': '#9467bd',
-        'propofol': '#e377c2', 'midazolam': '#7f7f7f', 'lorazepam': '#bcbd22', 'dexmedetomidine': '#17becf',
-        'vecuronium': '#8c564b', 'rocuronium': '#f7b6d2', 'cisatracurium': '#c49c94', 'pancuronium': '#dbdb8d'
-    }
+        def hex_to_rgba(hex_color, alpha=0.2):
+            """Convert hex RGB color like '#1f77b4' to 'rgba(R,G,B,A)' string."""
+            hex_color = hex_color.lstrip('#')
+            if len(hex_color) == 6:
+                r = int(hex_color[0:2], 16)
+                g = int(hex_color[2:4], 16)
+                b = int(hex_color[4:6], 16)
+                return f'rgba({r},{g},{b},{alpha})'
+            # Fallback to gray if something is wrong
+            return f'rgba(180,180,180,{alpha})'
 
-    def plot_median_dose_line_by_hour(group_name, meds, meds_7d, output_path_html):
-        fig = go.Figure()
-        for med in meds:
-            med_data = meds_7d[meds_7d['med_lower'] == med]
-            # For each hour, compute the median dose (across all encounters)
-            hourly_median = (
-                med_data.groupby('hour_bin')['med_dose']
-                .median()
-                .reset_index()
-                .sort_values('hour_bin')
+        def plotly_medication_group(group_name, meds, hourly_df, output_path_html):
+            fig = go.Figure()
+            hours = hourly_df['hour'].values
+
+            for med in meds:
+                pct_col = f"{med}_pct"
+                if pct_col in hourly_df.columns:
+                    color = colors.get(med, '#333')
+                    fillcolor = (
+                        hex_to_rgba(color, 0.2)
+                        if color.startswith("#") and len(color) == 7
+                        else "rgba(180,180,180,0.15)"
+                    )
+                    fig.add_trace(
+                        go.Scatter(
+                            x=hours,
+                            y=hourly_df[pct_col],
+                            mode='lines',
+                            name=med.capitalize(),
+                            line=dict(color=color, width=3),
+                            fill='tozeroy',
+                            fillcolor=fillcolor,
+                            opacity=0.8,
+                            hovertemplate=f"{med.capitalize()}<br>Hour: %{{x}}<br>% ICU: %{{y:.2f}}<extra></extra>"
+                        )
+                    )
+
+            fig.update_layout(
+                title=f"{group_name.capitalize()} Medication Use in First 7 Days of ICU",
+                xaxis_title="Hours from ICU Admission",
+                yaxis_title="% of ICU Encounters",
+                xaxis=dict(range=[0, 168]),
+                yaxis=dict(range=[0, None]),
+                legend=dict(title="Medication", font=dict(size=12)),
+                template="simple_white",
+                font=dict(size=14),
+                margin=dict(l=50, r=20, t=70, b=50)
             )
-            color = colors.get(med, '#333')
-            if not hourly_median.empty:
-                fig.add_trace(
-                    go.Scatter(
-                        x=hourly_median['hour_bin'],
-                        y=hourly_median['med_dose'],
-                        mode='lines+markers',
-                        name=med.capitalize(),
-                        line=dict(color=color, width=3),
-                        marker=dict(size=6),
-                        hovertemplate=f"{med.capitalize()}<br>Hour: %{{x}}<br>Median Dose: %{{y:.2f}}<extra></extra>"
-                    )
-                )
-        fig.update_layout(
-            title=f"Median {group_name.capitalize()} Dose by Hour Since ICU Admission",
-            xaxis_title="Hours from ICU Admission",
-            yaxis_title="Median Dose",
-            legend=dict(title="Medication", font=dict(size=12)),
-            template="simple_white",
-            font=dict(size=14),
-            margin=dict(l=50, r=20, t=70, b=50),
-            xaxis=dict(range=[0, 168])
+
+            # Save interactive plot as HTML
+            pio.write_html(fig, output_path_html)
+            # fig.show()  # REMOVED: Don't auto-open browser
+
+        # Generate all 3 interactive plots (save as HTML in figures/)
+        plotly_medication_group(
+            'vasoactive', med_groups['vasoactive'], hourly_df,
+            os.path.join(figures_dir, 'vasoactive_area_curve_7d.html')
         )
-        pio.write_html(fig, output_path_html)
-        # fig.show()  # REMOVED: Don't auto-open browser
+        plotly_medication_group(
+            'sedative', med_groups['sedative'], hourly_df,
+            os.path.join(figures_dir, 'sedative_area_curve_7d.html')
+        )
+        plotly_medication_group(
+            'paralytic', med_groups['paralytic'], hourly_df,
+            os.path.join(figures_dir, 'paralytic_area_curve_7d.html')
+        )
 
-    # Generate and save plots for each medication group (lines: median dose over time)
-    plot_median_dose_line_by_hour(
-        'vasoactive', med_groups['vasoactive'], meds_7d,
-        os.path.join(figures_dir, 'vasoactive_median_dose_by_hour.html')
-    )
-    plot_median_dose_line_by_hour(
-        'sedative', med_groups['sedative'], meds_7d,
-        os.path.join(figures_dir, 'sedative_median_dose_by_hour.html')
-    )
-    plot_median_dose_line_by_hour(
-        'paralytic', med_groups['paralytic'], meds_7d,
-        os.path.join(figures_dir, 'paralytic_median_dose_by_hour.html')
-    )
+        print("\n✅ All medication plots (plotly) created and saved as HTML!")
 
-    print("\n✅ All median dose line plots by hour (plotly) created and saved as HTML!")
 
-    # ============================================================================
-    #  summary statistics
-    # ============================================================================
+        # Define medication groups
+        med_groups = {
+            'vasoactive': ['norepinephrine', 'epinephrine', 'phenylephrine', 'vasopressin', 'dopamine'],
+            'sedative': ['propofol', 'midazolam', 'lorazepam', 'dexmedetomidine', 'fentanyl'],
+            'paralytic': ['vecuronium', 'rocuronium', 'cisatracurium', 'pancuronium']
+        }
 
-    # Group by medication once, calculate all stats on med_dose
-    summary_agg = (
-        meds_7d
-        .groupby('med_lower')['med_dose']
-        .agg(['count', 'median', lambda x: x.quantile(0.25), lambda x: x.quantile(0.75)])
-        .rename(columns={'count': 'n_admin', '<lambda_0>': 'q1_dose', '<lambda_1>': 'q3_dose'})
-    )
+        # Lower-cased mapping for safety
+        med_to_group = {med: group for group, meds in med_groups.items() for med in meds}
+        all_meds = [med for meds in med_groups.values() for med in meds]
 
-    # Count unique encounters per medication
-    encounter_counts = meds_7d.groupby('med_lower')['encounter_block'].nunique()
+        # Merge and preprocess (same as before)
+        meds_merged = meds_df.merge(
+            final_tableone_df[['encounter_block', 'first_icu_in_dttm']],
+            on='encounter_block',
+            how='inner'
+        )
 
-    # Get most common dose unit per medication
-    dose_units = meds_7d.groupby('med_lower')['med_dose_unit'].agg(lambda x: x.mode()[0] if len(x.mode()) > 0 else '')
+        meds_merged['hours_from_icu'] = (
+            pd.to_datetime(meds_merged['admin_dttm']) - pd.to_datetime(meds_merged['first_icu_in_dttm'])
+        ).dt.total_seconds() / 3600
 
-    # Combine and add group labels
-    summary_df = pd.DataFrame({
-        'medication': summary_agg.index,
-        'n_encounters': encounter_counts.values,
-        'pct_encounters': (encounter_counts / total_icu_encounters * 100).values,
-        'median_dose': summary_agg['median'].values,
-        'q1_dose': summary_agg['q1_dose'].values,
-        'q3_dose': summary_agg['q3_dose'].values,
-        'dose_unit': dose_units.values
-    })
+        meds_merged['med_lower'] = meds_merged['med_category'].str.lower()
+        finite_mask = np.isfinite(meds_merged['hours_from_icu'])
+        meds_merged['hour_bin'] = np.nan
+        meds_merged.loc[finite_mask, 'hour_bin'] = np.floor(meds_merged.loc[finite_mask, 'hours_from_icu'])
+        meds_merged['hour_bin'] = meds_merged['hour_bin'].astype('Int64')
 
-    # Add group labels (vectorized with map)
-    med_to_group = {med: group for group, meds in med_groups.items() for med in meds}
-    summary_df['group'] = summary_df['medication'].map(med_to_group)
-    summary_df = summary_df[['group', 'medication', 'n_encounters', 'pct_encounters', 
-                             'median_dose', 'q1_dose', 'q3_dose', 'dose_unit']]
+        meds_7d = meds_merged[
+            (meds_merged['med_lower'].isin(all_meds)) &
+            (meds_merged['hour_bin'].notna()) &
+            (meds_merged['hour_bin'] >= 0) &
+            (meds_merged['hour_bin'] <= 167)
+        ].copy()
 
-    _mss_path = os.path.join(output_dir, 'medications_summary_stats.csv')
-    summary_df.to_csv(_mss_path, index=False)
-    print(f"✅ Saved: {_mss_path}")
+        # =======================
+        # Line plot: median dose by hour since ICU admission (per med group)
+        # =======================
 
+        colors = {
+            'norepinephrine': '#1f77b4', 'epinephrine': '#ff7f0e', 'phenylephrine': '#2ca02c',
+            'vasopressin': '#d62728', 'dopamine': '#9467bd',
+            'propofol': '#e377c2', 'midazolam': '#7f7f7f', 'lorazepam': '#bcbd22', 'dexmedetomidine': '#17becf',
+            'vecuronium': '#8c564b', 'rocuronium': '#f7b6d2', 'cisatracurium': '#c49c94', 'pancuronium': '#dbdb8d'
+        }
+
+        def plot_median_dose_line_by_hour(group_name, meds, meds_7d, output_path_html):
+            fig = go.Figure()
+            for med in meds:
+                med_data = meds_7d[meds_7d['med_lower'] == med]
+                # For each hour, compute the median dose (across all encounters)
+                hourly_median = (
+                    med_data.groupby('hour_bin')['med_dose']
+                    .median()
+                    .reset_index()
+                    .sort_values('hour_bin')
+                )
+                color = colors.get(med, '#333')
+                if not hourly_median.empty:
+                    fig.add_trace(
+                        go.Scatter(
+                            x=hourly_median['hour_bin'],
+                            y=hourly_median['med_dose'],
+                            mode='lines+markers',
+                            name=med.capitalize(),
+                            line=dict(color=color, width=3),
+                            marker=dict(size=6),
+                            hovertemplate=f"{med.capitalize()}<br>Hour: %{{x}}<br>Median Dose: %{{y:.2f}}<extra></extra>"
+                        )
+                    )
+            fig.update_layout(
+                title=f"Median {group_name.capitalize()} Dose by Hour Since ICU Admission",
+                xaxis_title="Hours from ICU Admission",
+                yaxis_title="Median Dose",
+                legend=dict(title="Medication", font=dict(size=12)),
+                template="simple_white",
+                font=dict(size=14),
+                margin=dict(l=50, r=20, t=70, b=50),
+                xaxis=dict(range=[0, 168])
+            )
+            pio.write_html(fig, output_path_html)
+            # fig.show()  # REMOVED: Don't auto-open browser
+
+        # Generate and save plots for each medication group (lines: median dose over time)
+        plot_median_dose_line_by_hour(
+            'vasoactive', med_groups['vasoactive'], meds_7d,
+            os.path.join(figures_dir, 'vasoactive_median_dose_by_hour.html')
+        )
+        plot_median_dose_line_by_hour(
+            'sedative', med_groups['sedative'], meds_7d,
+            os.path.join(figures_dir, 'sedative_median_dose_by_hour.html')
+        )
+        plot_median_dose_line_by_hour(
+            'paralytic', med_groups['paralytic'], meds_7d,
+            os.path.join(figures_dir, 'paralytic_median_dose_by_hour.html')
+        )
+
+        print("\n✅ All median dose line plots by hour (plotly) created and saved as HTML!")
+
+        # ============================================================================
+        #  summary statistics
+        # ============================================================================
+
+        # Group by medication once, calculate all stats on med_dose
+        summary_agg = (
+            meds_7d
+            .groupby('med_lower')['med_dose']
+            .agg(['count', 'median', lambda x: x.quantile(0.25), lambda x: x.quantile(0.75)])
+            .rename(columns={'count': 'n_admin', '<lambda_0>': 'q1_dose', '<lambda_1>': 'q3_dose'})
+        )
+
+        # Count unique encounters per medication
+        encounter_counts = meds_7d.groupby('med_lower')['encounter_block'].nunique()
+
+        # Get most common dose unit per medication
+        dose_units = meds_7d.groupby('med_lower')['med_dose_unit'].agg(lambda x: x.mode()[0] if len(x.mode()) > 0 else '')
+
+        # Combine and add group labels
+        summary_df = pd.DataFrame({
+            'medication': summary_agg.index,
+            'n_encounters': encounter_counts.values,
+            'pct_encounters': (encounter_counts / total_icu_encounters * 100).values,
+            'median_dose': summary_agg['median'].values,
+            'q1_dose': summary_agg['q1_dose'].values,
+            'q3_dose': summary_agg['q3_dose'].values,
+            'dose_unit': dose_units.values
+        })
+
+        # Add group labels (vectorized with map)
+        med_to_group = {med: group for group, meds in med_groups.items() for med in meds}
+        summary_df['group'] = summary_df['medication'].map(med_to_group)
+        summary_df = summary_df[['group', 'medication', 'n_encounters', 'pct_encounters', 
+                                 'median_dose', 'q1_dose', 'q3_dose', 'dose_unit']]
+
+        _mss_path = os.path.join(output_dir, 'medications_summary_stats.csv')
+        summary_df.to_csv(_mss_path, index=False)
+        print(f"✅ Saved: {_mss_path}")
+
+
+        # Cleanup of in-loop intermediates (meds_7d and summary_df only
+        # exist when the medication-from-ICU plot block ran)
+        del meds_7d, summary_df
     # Memory cleanup: Clear medication processing data
     print("Clearing medication processing data from memory...")
-    del meds_df, meds_converted, vaso_df, vaso_stats, med_flags, meds_7d, summary_df
+    del meds_df, meds_converted, vaso_df, vaso_stats, med_flags
     plt.close('all')
     gc.collect()
     checkpoint("8. Medication Analysis Complete")
@@ -4320,219 +4425,234 @@ def main(memory_monitor=None) -> bool:
     # events_summary = count_all_clinical_events(clif)
 
     os.makedirs(project_root / 'output/intermediate', exist_ok=True)
-    final_tableone_df.to_parquet(project_root / 'output/intermediate/final_tableone_df_test.parquet')
+    # Debug parquet write — cohort-aware filename so the ward run doesn't clobber
+    # the critical-illness debug parquet (or vice versa).
+    _test_parquet_name = (
+        'final_tableone_ward_df_test.parquet'
+        if cohort_mode == 'ward'
+        else 'final_tableone_df_test.parquet'
+    )
+    final_tableone_df.to_parquet(project_root / 'output/intermediate' / _test_parquet_name)
     # ==============================================================================
     # # SOFA calculation
     # ==============================================================================
 
-    checkpoint("10. Starting SOFA Computation")
-    print("Preparing SOFA cohort for Polars computation...")
+    # SOFA computation is anchored to first_icu_in_dttm and only computed for
+    # icu_enc==1 encounters. Decision 2: skip the entire block in ward mode.
+    # The block is wrapped in a 0-or-1 iteration for-loop so the existing code
+    # keeps its indentation but the body iterates 0 times in ward mode.
+    if cohort_mode == 'ward':
+        print("\nSkipping SOFA computation block (ward mode)")
 
-    # Filter to icu_enc == 1
-    sofa_cohort_df = final_tableone_df[final_tableone_df['icu_enc'] == 1][['hospitalization_id', 'encounter_block', 'first_icu_in_dttm']].copy()
-    sofa_cohort_df['start_dttm'] = sofa_cohort_df['first_icu_in_dttm']
-    sofa_cohort_df['end_dttm'] = sofa_cohort_df['start_dttm'] + pd.Timedelta(hours=24)
-    sofa_cohort_df = sofa_cohort_df[['hospitalization_id', 'encounter_block', 'start_dttm', 'end_dttm']]
-    sofa_cohort_ids = cohort_df['hospitalization_id'].astype(str).unique().tolist()
+    for _sofa_iter in (range(1) if cohort_mode != 'ward' else range(0)):
+        checkpoint("10. Starting SOFA Computation")
+        print("Preparing SOFA cohort for Polars computation...")
 
-    # Convert to Polars
-    sofa_cohort_pl = pl.from_pandas(sofa_cohort_df)
+        # Filter to icu_enc == 1
+        sofa_cohort_df = final_tableone_df[final_tableone_df['icu_enc'] == 1][['hospitalization_id', 'encounter_block', 'first_icu_in_dttm']].copy()
+        sofa_cohort_df['start_dttm'] = sofa_cohort_df['first_icu_in_dttm']
+        sofa_cohort_df['end_dttm'] = sofa_cohort_df['start_dttm'] + pd.Timedelta(hours=24)
+        sofa_cohort_df = sofa_cohort_df[['hospitalization_id', 'encounter_block', 'start_dttm', 'end_dttm']]
+        sofa_cohort_ids = cohort_df['hospitalization_id'].astype(str).unique().tolist()
 
-    print(f"Cohort shape: {sofa_cohort_pl.shape}")
-    print(f"Cohort columns: {sofa_cohort_pl.columns}")
+        # Convert to Polars
+        sofa_cohort_pl = pl.from_pandas(sofa_cohort_df)
 
-    # Compute SOFA scores using Polars
-    print("\n" + "="*60)
-    print("Computing SOFA scores with Polars...")
-    print("="*60 + "\n")
+        print(f"Cohort shape: {sofa_cohort_pl.shape}")
+        print(f"Cohort columns: {sofa_cohort_pl.columns}")
 
-    sofa_scores_pl = compute_sofa_polars(
-        data_directory=config['tables_path'],
-        cohort_df=sofa_cohort_pl,
-        filetype=config['file_type'],
-        id_name='encounter_block',
-        extremal_type='worst',
-        fill_na_scores_with_zero=True,
-        remove_outliers=True,
-        timezone=config['timezone']
-    )
+        # Compute SOFA scores using Polars
+        print("\n" + "="*60)
+        print("Computing SOFA scores with Polars...")
+        print("="*60 + "\n")
 
-    # Convert back to Pandas for compatibility with rest of code
-    sofa_scores = sofa_scores_pl.to_pandas()
+        sofa_scores_pl = compute_sofa_polars(
+            data_directory=config['tables_path'],
+            cohort_df=sofa_cohort_pl,
+            filetype=config['file_type'],
+            id_name='encounter_block',
+            extremal_type='worst',
+            fill_na_scores_with_zero=True,
+            remove_outliers=True,
+            timezone=config['timezone']
+        )
 
-    print(f"\n✅ SOFA computation complete!")
-    print(f"Result shape: {sofa_scores.shape}")
-    print(f"\nFirst few rows:")
-    print(sofa_scores.head())
+        # Convert back to Pandas for compatibility with rest of code
+        sofa_scores = sofa_scores_pl.to_pandas()
 
-    # Note: death_enc will come from final_tableone_df when we merge later
-    # For now, get death_enc temporarily for mortality calculations
-    sofa_scores_with_death = sofa_scores.merge(
-        final_tableone_df[['encounter_block', 'death_enc']],
-        how='left',
-        on='encounter_block'
-    )
+        print(f"\n✅ SOFA computation complete!")
+        print(f"Result shape: {sofa_scores.shape}")
+        print(f"\nFirst few rows:")
+        print(sofa_scores.head())
 
-    #  Prepare the data
-    # Group by SOFA score and calculate mortality rate and counts
-    sofa_mortality = sofa_scores_with_death.groupby('sofa_total').agg({
-        'death_enc': ['mean', 'count']
-    }).reset_index()
+        # Note: death_enc will come from final_tableone_df when we merge later
+        # For now, get death_enc temporarily for mortality calculations
+        sofa_scores_with_death = sofa_scores.merge(
+            final_tableone_df[['encounter_block', 'death_enc']],
+            how='left',
+            on='encounter_block'
+        )
 
-    sofa_mortality.columns = ['sofa_score', 'mortality_rate', 'count']
-    sofa_mortality['mortality_rate'] = sofa_mortality['mortality_rate'] * 100  # Convert to percentage
+        #  Prepare the data
+        # Group by SOFA score and calculate mortality rate and counts
+        sofa_mortality = sofa_scores_with_death.groupby('sofa_total').agg({
+            'death_enc': ['mean', 'count']
+        }).reset_index()
 
-    # Step 2: Calculate confidence intervals (optional, for error bars)
-    # Using Wilson score interval for binomial proportions
-    def wilson_ci(successes, n, confidence=0.95):
-        z = stats.norm.ppf((1 + confidence) / 2)
-        p_hat = successes / n
-        denominator = 1 + z**2 / n
-        center = (p_hat + z**2 / (2*n)) / denominator
-        margin = z * np.sqrt((p_hat * (1 - p_hat) + z**2 / (4*n)) / n) / denominator
-        return center * 100, margin * 100
+        sofa_mortality.columns = ['sofa_score', 'mortality_rate', 'count']
+        sofa_mortality['mortality_rate'] = sofa_mortality['mortality_rate'] * 100  # Convert to percentage
 
-    # Calculate number of deaths per score
-    sofa_mortality['deaths'] = (sofa_mortality['mortality_rate'] / 100) * sofa_mortality['count']
+        # Step 2: Calculate confidence intervals (optional, for error bars)
+        # Using Wilson score interval for binomial proportions
+        def wilson_ci(successes, n, confidence=0.95):
+            z = stats.norm.ppf((1 + confidence) / 2)
+            p_hat = successes / n
+            denominator = 1 + z**2 / n
+            center = (p_hat + z**2 / (2*n)) / denominator
+            margin = z * np.sqrt((p_hat * (1 - p_hat) + z**2 / (4*n)) / n) / denominator
+            return center * 100, margin * 100
 
-    # Calculate confidence intervals
-    ci_data = [wilson_ci(deaths, n) if n > 0 else (0, 0) 
-               for deaths, n in zip(sofa_mortality['deaths'], sofa_mortality['count'])]
-    sofa_mortality['ci_center'] = [x[0] for x in ci_data]
-    sofa_mortality['ci_margin'] = [x[1] for x in ci_data]
+        # Calculate number of deaths per score
+        sofa_mortality['deaths'] = (sofa_mortality['mortality_rate'] / 100) * sofa_mortality['count']
 
-    # Step 3: Create the plot
-    fig, ax = plt.subplots(figsize=(14, 6))
+        # Calculate confidence intervals
+        ci_data = [wilson_ci(deaths, n) if n > 0 else (0, 0) 
+                   for deaths, n in zip(sofa_mortality['deaths'], sofa_mortality['count'])]
+        sofa_mortality['ci_center'] = [x[0] for x in ci_data]
+        sofa_mortality['ci_margin'] = [x[1] for x in ci_data]
 
-    # Create bar chart
-    bars = ax.bar(sofa_mortality['sofa_score'], 
-                  sofa_mortality['mortality_rate'],
-                  color='#7FA8B8',  # Steel blue color similar to the image
-                  edgecolor='black',
-                  linewidth=0.5,
-                  alpha=0.9)
+        # Step 3: Create the plot
+        fig, ax = plt.subplots(figsize=(14, 6))
 
-    # Add error bars
-    ax.errorbar(sofa_mortality['sofa_score'], 
-                sofa_mortality['mortality_rate'],
-                yerr=sofa_mortality['ci_margin'],
-                fmt='none',
-                ecolor='black',
-                capsize=3,
-                capthick=1,
-                alpha=0.7)
+        # Create bar chart
+        bars = ax.bar(sofa_mortality['sofa_score'], 
+                      sofa_mortality['mortality_rate'],
+                      color='#7FA8B8',  # Steel blue color similar to the image
+                      edgecolor='black',
+                      linewidth=0.5,
+                      alpha=0.9)
 
-    # Customize the plot
-    ax.set_xlabel('SOFA Score', fontsize=12, fontweight='bold')
-    ax.set_ylabel('Mortality, %', fontsize=12, fontweight='bold')
-    ax.set_title('Mortality by SOFA Score (First 24hr of ICU admission)', fontsize=14, fontweight='bold', pad=20)
+        # Add error bars
+        ax.errorbar(sofa_mortality['sofa_score'], 
+                    sofa_mortality['mortality_rate'],
+                    yerr=sofa_mortality['ci_margin'],
+                    fmt='none',
+                    ecolor='black',
+                    capsize=3,
+                    capthick=1,
+                    alpha=0.7)
 
-    # Set y-axis limits
-    ax.set_ylim(0, 100)
+        # Customize the plot
+        ax.set_xlabel('SOFA Score', fontsize=12, fontweight='bold')
+        ax.set_ylabel('Mortality, %', fontsize=12, fontweight='bold')
+        ax.set_title('Mortality by SOFA Score (First 24hr of ICU admission)', fontsize=14, fontweight='bold', pad=20)
 
-    # Add grid for readability
-    ax.yaxis.grid(True, linestyle='-', alpha=0.3, color='gray')
-    ax.set_axisbelow(True)
+        # Set y-axis limits
+        ax.set_ylim(0, 100)
 
-    # Set x-axis ticks to show all SOFA scores
-    ax.set_xticks(range(int(sofa_mortality['sofa_score'].min()), 
-                        int(sofa_mortality['sofa_score'].max()) + 1))
+        # Add grid for readability
+        ax.yaxis.grid(True, linestyle='-', alpha=0.3, color='gray')
+        ax.set_axisbelow(True)
 
-    # Add count labels below x-axis
-    counts_text = '\n'.join([
-        'No. of patients per score',
-        '  '.join([f'{int(count)}' for count in sofa_mortality['count']])
-    ])
+        # Set x-axis ticks to show all SOFA scores
+        ax.set_xticks(range(int(sofa_mortality['sofa_score'].min()), 
+                            int(sofa_mortality['sofa_score'].max()) + 1))
 
-    # Create a second table-like annotation below the plot
-    fig.text(0.1, -0.05, 'No. of patients per score', 
-             ha='left', fontsize=10, weight='bold')
+        # Add count labels below x-axis
+        counts_text = '\n'.join([
+            'No. of patients per score',
+            '  '.join([f'{int(count)}' for count in sofa_mortality['count']])
+        ])
 
-    # Add individual counts
-    x_positions = np.linspace(0.15, 0.9, len(sofa_mortality))
-    for i, (score, count) in enumerate(zip(sofa_mortality['sofa_score'], sofa_mortality['count'])):
-        if i < len(x_positions):
-            fig.text(x_positions[i], -0.08, f'{int(count)}', 
-                    ha='center', fontsize=8)
+        # Create a second table-like annotation below the plot
+        fig.text(0.1, -0.05, 'No. of patients per score', 
+                 ha='left', fontsize=10, weight='bold')
 
-    plt.tight_layout()
-    plt.subplots_adjust(bottom=0.15)  # Make room for patient counts
+        # Add individual counts
+        x_positions = np.linspace(0.15, 0.9, len(sofa_mortality))
+        for i, (score, count) in enumerate(zip(sofa_mortality['sofa_score'], sofa_mortality['count'])):
+            if i < len(x_positions):
+                fig.text(x_positions[i], -0.08, f'{int(count)}', 
+                        ha='center', fontsize=8)
 
-    # Save the figure
-    plt.savefig(os.path.join(figures_dir, 'sofa_mortality_histogram.png'),
-                dpi=300, bbox_inches='tight', facecolor='white')
-    plt.close()
+        plt.tight_layout()
+        plt.subplots_adjust(bottom=0.15)  # Make room for patient counts
+
+        # Save the figure
+        plt.savefig(os.path.join(figures_dir, 'sofa_mortality_histogram.png'),
+                    dpi=300, bbox_inches='tight', facecolor='white')
+        plt.close()
 
 
-    # Step 5: Prepare data for CSV export
-    # Calculate lower and upper confidence interval bounds
-    sofa_mortality['ci_lower'] = sofa_mortality['mortality_rate'] - sofa_mortality['ci_margin']
-    sofa_mortality['ci_upper'] = sofa_mortality['mortality_rate'] + sofa_mortality['ci_margin']
+        # Step 5: Prepare data for CSV export
+        # Calculate lower and upper confidence interval bounds
+        sofa_mortality['ci_lower'] = sofa_mortality['mortality_rate'] - sofa_mortality['ci_margin']
+        sofa_mortality['ci_upper'] = sofa_mortality['mortality_rate'] + sofa_mortality['ci_margin']
 
-    # Ensure CI bounds are within valid range [0, 100]
-    sofa_mortality['ci_lower'] = sofa_mortality['ci_lower'].clip(lower=0)
-    sofa_mortality['ci_upper'] = sofa_mortality['ci_upper'].clip(upper=100)
-    sofa_mortality['total_encounters'] = sofa_scores['encounter_block'].nunique()
-    # Create export dataframe with all relevant columns
-    sofa_export = sofa_mortality[[
-        'sofa_score', 
-        'total_encounters',
-        'count',
-        'deaths',
-        'mortality_rate', 
-        'ci_lower',
-        'ci_upper',
-        'ci_margin'
-    ]].copy()
+        # Ensure CI bounds are within valid range [0, 100]
+        sofa_mortality['ci_lower'] = sofa_mortality['ci_lower'].clip(lower=0)
+        sofa_mortality['ci_upper'] = sofa_mortality['ci_upper'].clip(upper=100)
+        sofa_mortality['total_encounters'] = sofa_scores['encounter_block'].nunique()
+        # Create export dataframe with all relevant columns
+        sofa_export = sofa_mortality[[
+            'sofa_score', 
+            'total_encounters',
+            'count',
+            'deaths',
+            'mortality_rate', 
+            'ci_lower',
+            'ci_upper',
+            'ci_margin'
+        ]].copy()
 
-    # Rename columns for clarity
-    sofa_export.columns = [
-        'sofa_score',
-        'total_encounters',
-        'n_encounters',
-        'n_deaths',
-        'mortality_rate_percent',
-        'ci_lower_95',
-        'ci_upper_95',
-        'ci_margin_95'
-    ]
+        # Rename columns for clarity
+        sofa_export.columns = [
+            'sofa_score',
+            'total_encounters',
+            'n_encounters',
+            'n_deaths',
+            'mortality_rate_percent',
+            'ci_lower_95',
+            'ci_upper_95',
+            'ci_margin_95'
+        ]
 
-    # Round numeric columns for readability
-    sofa_export['n_encounters'] = sofa_export['n_encounters'].astype(int)
-    sofa_export['total_encounters'] = sofa_export['total_encounters'].astype(int)
-    sofa_export['n_deaths'] = sofa_export['n_deaths'].round(0).astype(int)
-    sofa_export['mortality_rate_percent'] = sofa_export['mortality_rate_percent'].round(2)
-    sofa_export['ci_lower_95'] = sofa_export['ci_lower_95'].round(2)
-    sofa_export['ci_upper_95'] = sofa_export['ci_upper_95'].round(2)
-    sofa_export['ci_margin_95'] = sofa_export['ci_margin_95'].round(2)
+        # Round numeric columns for readability
+        sofa_export['n_encounters'] = sofa_export['n_encounters'].astype(int)
+        sofa_export['total_encounters'] = sofa_export['total_encounters'].astype(int)
+        sofa_export['n_deaths'] = sofa_export['n_deaths'].round(0).astype(int)
+        sofa_export['mortality_rate_percent'] = sofa_export['mortality_rate_percent'].round(2)
+        sofa_export['ci_lower_95'] = sofa_export['ci_lower_95'].round(2)
+        sofa_export['ci_upper_95'] = sofa_export['ci_upper_95'].round(2)
+        sofa_export['ci_margin_95'] = sofa_export['ci_margin_95'].round(2)
 
-    # Save to CSV
-    output_path = os.path.join(output_dir, 'sofa_mortality_summary.csv')
-    sofa_export.to_csv(output_path, index=False)
+        # Save to CSV
+        output_path = os.path.join(output_dir, 'sofa_mortality_summary.csv')
+        sofa_export.to_csv(output_path, index=False)
 
-    print(f"\n=== SOFA Mortality Summary Saved ===")
-    print(f"File saved to: {output_path}")
+        print(f"\n=== SOFA Mortality Summary Saved ===")
+        print(f"File saved to: {output_path}")
 
-    # Join sofa_scores with final_tableone_df on 'encounter_block'
-    # Note: sofa_scores doesn't have death_enc anymore, so no conflict
-    final_tableone_df = final_tableone_df.merge(sofa_scores, on='encounter_block', how='left')
+        # Join sofa_scores with final_tableone_df on 'encounter_block'
+        # Note: sofa_scores doesn't have death_enc anymore, so no conflict
+        final_tableone_df = final_tableone_df.merge(sofa_scores, on='encounter_block', how='left')
 
-    # AGGRESSIVE MEMORY CLEANUP: Clear all SOFA-related data
-    print("\n" + "="*80)
-    print("AGGRESSIVE MEMORY CLEANUP AFTER SOFA COMPUTATION")
-    print("="*80)
-    print("Clearing SOFA computation data from memory...")
+        # AGGRESSIVE MEMORY CLEANUP: Clear all SOFA-related data
+        print("\n" + "="*80)
+        print("AGGRESSIVE MEMORY CLEANUP AFTER SOFA COMPUTATION")
+        print("="*80)
+        print("Clearing SOFA computation data from memory...")
 
-    # Delete SOFA computation variables
-    del sofa_scores, sofa_mortality, sofa_export, sofa_cohort_df, sofa_cohort_ids, sofa_cohort_pl, sofa_scores_pl
-    del ci_data
+        # Delete SOFA computation variables
+        del sofa_scores, sofa_mortality, sofa_export, sofa_cohort_df, sofa_cohort_ids, sofa_cohort_pl, sofa_scores_pl
+        del ci_data
 
-    # Force garbage collection
-    gc.collect()
-    print("✅ SOFA data cleared from memory")
-    print("="*80 + "\n")
+        # Force garbage collection
+        gc.collect()
+        print("✅ SOFA data cleared from memory")
+        print("="*80 + "\n")
 
-    checkpoint("11. SOFA Computation Complete + Cleanup")
+        checkpoint("11. SOFA Computation Complete + Cleanup")
 
     # ==============================================================================
     # # Outside of Table1- on whole dataset
@@ -5087,12 +5207,14 @@ def main(memory_monitor=None) -> bool:
         # ✅ OPTIMIZATION: Compute all summations once
         flag_sums = {}
         for col in df.columns:
-            if col.endswith('_flag') or col in ['icu_enc', 'death_enc', 'high_support_enc', 
-                                                 'vaso_support_enc', 'other_critically_ill', 
+            if col.endswith('_flag') or col in ['icu_enc', 'death_enc', 'high_support_enc',
+                                                 'vaso_support_enc', 'other_critically_ill',
+                                                 'ward_no_critical_care',
                                                  'on_vent', 'on_crrt', 'hospice_outcome',
                                                  'expired_outcome',
                                                  'sepsis_events_by_sepsis_col',
-                                                 'icu_episodes']:
+                                                 'icu_episodes',
+                                                 'imv_episodes']:
                 if col in df.columns:
                     flag_sums[col] = df[col].sum()
     
@@ -5145,18 +5267,31 @@ def main(memory_monitor=None) -> bool:
         # 3. Encounter Types (use pre-computed sums)
         # -------------------------------------------------------------------------
         rows.append(("Encounter Types", ""))
-    
-        for flag, label in [
+
+        # Base 4 rows: identical labels in both modes. "Other critically ill" keeps
+        # its original meaning (died in ED/ward without ICU/vaso/resp escalation) —
+        # the flag definition was tightened upstream to add an explicit death_enc==1
+        # check, which is a no-op in critical-illness mode.
+        encounter_type_rows = [
             ('icu_enc', 'ICU encounters'),
             ('high_support_enc', 'Advanced respiratory support'),
             ('vaso_support_enc', 'Vasoactive support'),
-            ('other_critically_ill', 'Other critically ill')
-        ]:
+            ('other_critically_ill', 'Other critically ill'),
+        ]
+        # In ward mode add a 5th catch-all row for ward survivors with no critical
+        # care intervention. Mutually exclusive with the other four.
+        if cohort_mode == 'ward':
+            encounter_type_rows.append(
+                ('ward_no_critical_care', 'Ward only (survived, no critical care)')
+            )
+
+        for flag, label in encounter_type_rows:
             if flag in flag_sums:
                 n = flag_sums[flag]
                 rows.append((f"  {label}, n (%)", f"{n:,} ({100*n/N_enc:.1f}%)"))
 
-        if 'icu_episodes' in flag_sums:
+        # Drop ICU episodes rows in ward mode (ICU-severity metric, not strata overlap)
+        if cohort_mode != 'ward' and 'icu_episodes' in flag_sums:
             total_icu_eps = flag_sums['icu_episodes']
             enc_with_icu = (df['icu_episodes'] > 0).sum()
             rows.append(("ICU episodes, total n", f"{total_icu_eps:,}"))
@@ -5186,8 +5321,11 @@ def main(memory_monitor=None) -> bool:
         # -------------------------------------------------------------------------
         # 6. Length of Stay (use pre-computed stats)
         # -------------------------------------------------------------------------
-        for col, label in [('first_icu_los_days', 'ICU length of stay (days)'),
-                           ('hospital_length_of_stay_days', 'Hospital length of stay (days)')]:
+        # Drop "ICU length of stay" in ward mode (ICU-severity metric, not strata overlap)
+        los_pairs = [('hospital_length_of_stay_days', 'Hospital length of stay (days)')]
+        if cohort_mode != 'ward':
+            los_pairs.insert(0, ('first_icu_los_days', 'ICU length of stay (days)'))
+        for col, label in los_pairs:
             if col in continuous_stats:
                 s = continuous_stats[col]
                 rows.append((f"{label}, median [Q1, Q3]",
@@ -5223,10 +5361,11 @@ def main(memory_monitor=None) -> bool:
                     name = comorb.replace('_', ' ').title()
                     rows.append((f"  {name}", f"{int(n):,} ({100*n/N_enc:.1f}%)"))
         # -------------------------------------------------------------------------
-        # 8. SOFA Scores
+        # 8. SOFA Scores (skipped in ward mode — SOFA isn't computed for ward cohort)
         # -------------------------------------------------------------------------
-        rows.append(("SOFA Scores", ""))
-    
+        if cohort_mode != 'ward':
+            rows.append(("SOFA Scores", ""))
+
         # Total SOFA
         if 'sofa_total' in continuous_stats:
             s = continuous_stats['sofa_total']
@@ -5279,10 +5418,15 @@ def main(memory_monitor=None) -> bool:
                          f"{enc_with_sepsis:,} ({100*enc_with_sepsis/N_enc:.1f}%)"))
 
         # -------------------------------------------------------------------------
-        # 9. Mechanical Ventilation
+        # 9. Mechanical Ventilation (skipped entirely in ward mode — IMV processing
+        # block is skipped upstream so on_vent / vent_duration_hours / imv_episodes
+        # / first_location_imv / initial_mode_category are not in the dataframe).
         # -------------------------------------------------------------------------
-        imv_n = flag_sums.get('on_vent', 0)
-        rows.append(("Invasive mechanical ventilation, n (%)", f"{imv_n:,} ({100*imv_n/N_enc:.1f}%)"))
+        if cohort_mode == 'ward':
+            imv_n = 0
+        else:
+            imv_n = flag_sums.get('on_vent', 0)
+            rows.append(("Invasive mechanical ventilation, n (%)", f"{imv_n:,} ({100*imv_n/N_enc:.1f}%)"))
 
         # Ventilator hours (total across all encounters in this subset)
         if 'vent_duration_hours' in df.columns:
@@ -5502,52 +5646,60 @@ def main(memory_monitor=None) -> bool:
     # Step 5: Generate Table Ones by Encounter Type (with year columns)
     # ============================================================================
 
-    print("\n" + "="*80)
-    print("GENERATING TABLE ONES BY ENCOUNTER TYPE")
-    print("="*80)
+    # Stratified by-year Table Ones (ICU / advanced_resp / vaso / deaths) are
+    # not wanted in ward mode (Phase 2 Decision P2-1). The loop is wrapped in a
+    # 0-or-1 iteration for-loop so the existing code keeps its indentation but
+    # the body iterates 0 times in ward mode.
+    if cohort_mode == 'ward':
+        print("\nSkipping stratified by-year Table Ones (ward mode)")
 
-    from modules.strata import ENCOUNTER_TYPE_STRATA as encounter_type_strata
+    for _strat_by_year_iter in (range(1) if cohort_mode != 'ward' else range(0)):
+        print("\n" + "="*80)
+        print("GENERATING TABLE ONES BY ENCOUNTER TYPE")
+        print("="*80)
 
-    for stratum_name, col in encounter_type_strata.items():
-        if col not in tableone_df.columns:
-            print(f"  ⚠️ Skipping {stratum_name}: column '{col}' not found")
-            continue
+        from modules.strata import ENCOUNTER_TYPE_STRATA as encounter_type_strata
 
-        df_strat = tableone_df[tableone_df[col] == 1]
-        if len(df_strat) == 0:
-            print(f"  ⚠️ Skipping {stratum_name}: no encounters")
-            continue
+        for stratum_name, col in encounter_type_strata.items():
+            if col not in tableone_df.columns:
+                print(f"  ⚠️ Skipping {stratum_name}: column '{col}' not found")
+                continue
 
-        pat_strat = patient_df[patient_df['patient_id'].isin(df_strat['patient_id'])]
-        print(f"\n  {stratum_name}: {len(df_strat):,} encounters, {len(pat_strat):,} patients")
+            df_strat = tableone_df[tableone_df[col] == 1]
+            if len(df_strat) == 0:
+                print(f"  ⚠️ Skipping {stratum_name}: no encounters")
+                continue
 
-        # Overall for this stratum
-        tbl_strat = make_table_one_optimized(df_strat, pat_strat)
-        strat_var_order = tbl_strat['Variable'].tolist()
-        strat_results = {'Overall': tbl_strat.set_index('Variable')['Overall']}
+            pat_strat = patient_df[patient_df['patient_id'].isin(df_strat['patient_id'])]
+            print(f"\n  {stratum_name}: {len(df_strat):,} encounters, {len(pat_strat):,} patients")
 
-        # By year within stratum
-        if 'admission_year' in df_strat.columns:
-            strat_years = sorted(df_strat['admission_year'].dropna().unique())
-            for yr in strat_years:
-                df_yr = df_strat[df_strat['admission_year'] == yr]
-                pat_yr = pat_strat[pat_strat['patient_id'].isin(df_yr['patient_id'])]
-                if len(df_yr) > 0:
-                    tbl_yr = make_table_one_optimized(df_yr, pat_yr)
-                    strat_results[str(int(yr))] = tbl_yr.set_index('Variable')['Overall']
+            # Overall for this stratum
+            tbl_strat = make_table_one_optimized(df_strat, pat_strat)
+            strat_var_order = tbl_strat['Variable'].tolist()
+            strat_results = {'Overall': tbl_strat.set_index('Variable')['Overall']}
 
-        strat_table = (
-            pd.DataFrame(strat_results)
-            .reindex(strat_var_order)
-            .reset_index()
-            .rename(columns={'index': 'Variable'})
-        )
+            # By year within stratum
+            if 'admission_year' in df_strat.columns:
+                strat_years = sorted(df_strat['admission_year'].dropna().unique())
+                for yr in strat_years:
+                    df_yr = df_strat[df_strat['admission_year'] == yr]
+                    pat_yr = pat_strat[pat_strat['patient_id'].isin(df_yr['patient_id'])]
+                    if len(df_yr) > 0:
+                        tbl_yr = make_table_one_optimized(df_yr, pat_yr)
+                        strat_results[str(int(yr))] = tbl_yr.set_index('Variable')['Overall']
 
-        out_path = os.path.join(str(_tableone_dir(stratum=stratum_name)),
-                                  f'table_one_{stratum_name}_by_year.csv')
-        os.makedirs(os.path.dirname(out_path), exist_ok=True)
-        strat_table.to_csv(out_path, index=False)
-        print(f"  ✅ Saved: {out_path}")
+            strat_table = (
+                pd.DataFrame(strat_results)
+                .reindex(strat_var_order)
+                .reset_index()
+                .rename(columns={'index': 'Variable'})
+            )
+
+            out_path = os.path.join(str(_tableone_dir(stratum=stratum_name)),
+                                      f'table_one_{stratum_name}_by_year.csv')
+            os.makedirs(os.path.dirname(out_path), exist_ok=True)
+            strat_table.to_csv(out_path, index=False)
+            print(f"  ✅ Saved: {out_path}")
 
     # ============================================================================
     # NIH Enrollment Report — race × ethnicity × sex cross-tabulation
@@ -5568,126 +5720,146 @@ def main(memory_monitor=None) -> bool:
     print("="*80)
 
     os.makedirs(project_root / 'output/intermediate', exist_ok=True)
-    final_tableone_df.to_parquet(project_root / 'output/intermediate/final_tableone_df.parquet')
+    # Cohort-aware parquet filename: ward run writes to a parallel file so downstream
+    # pipelines (ECDF, collection stats, MCIDE) that read final_tableone_df.parquet
+    # via modules/strata.py continue to see the critical-illness cohort untouched.
+    _final_parquet_name = (
+        'final_tableone_ward_df.parquet'
+        if cohort_mode == 'ward'
+        else 'final_tableone_df.parquet'
+    )
+    final_tableone_df.to_parquet(project_root / 'output/intermediate' / _final_parquet_name)
 
     # ============================================================================
     # Step 6: Generate Stratified Summary CSVs by Encounter Type
     # ============================================================================
 
-    print("\n" + "="*80)
-    print("GENERATING STRATIFIED SUMMARY CSVs BY ENCOUNTER TYPE")
-    print("="*80)
+    # Stratified per-encounter-type subdirectory generation is broken in ward
+    # mode (Phase 2 Decision P2-2): the loop body references resp_valid,
+    # resp_imv_post_start, meds_merged, med_groups, and vent_settings, all of
+    # which are defined inside the IMV / med-from-ICU plot for-loop wrappers
+    # added in Phase 1 and therefore undefined when cohort_mode == "ward".
+    # The try/except blocks would catch the NameErrors but produce 44 noisy
+    # ❌ log lines and empty per-stratum subdirs. Skip the entire loop in ward
+    # mode.
+    if cohort_mode == 'ward':
+        print("\nSkipping stratified per-encounter-type subdirectory generation (ward mode)")
 
-    from modules.strata import ENCOUNTER_TYPE_STRATA
+    for _strat_subdir_iter in (range(1) if cohort_mode != 'ward' else range(0)):
+        print("\n" + "="*80)
+        print("GENERATING STRATIFIED SUMMARY CSVs BY ENCOUNTER TYPE")
+        print("="*80)
 
-    for stratum_name, col in ENCOUNTER_TYPE_STRATA.items():
-        if col not in final_tableone_df.columns:
-            print(f"  ⚠️ Skipping {stratum_name}: column '{col}' not found")
-            continue
+        from modules.strata import ENCOUNTER_TYPE_STRATA
 
-        strat_df = final_tableone_df[final_tableone_df[col] == 1].copy()
-        if len(strat_df) == 0:
-            print(f"  ⚠️ Skipping {stratum_name}: no encounters")
-            continue
+        for stratum_name, col in ENCOUNTER_TYPE_STRATA.items():
+            if col not in final_tableone_df.columns:
+                print(f"  ⚠️ Skipping {stratum_name}: column '{col}' not found")
+                continue
 
-        strat_hosp_ids = set(strat_df['hospitalization_id'].unique())
-        strat_patient_ids = set(strat_df['patient_id'].unique())
-        strat_enc_blocks = set(strat_df['encounter_block'].unique())
-        strat_output_dir = str(_tableone_dir(stratum=stratum_name))
-        os.makedirs(strat_output_dir, exist_ok=True)
+            strat_df = final_tableone_df[final_tableone_df[col] == 1].copy()
+            if len(strat_df) == 0:
+                print(f"  ⚠️ Skipping {stratum_name}: no encounters")
+                continue
 
-        n_enc = len(strat_df.drop_duplicates(subset=['encounter_block']))
-        print(f"\n  {stratum_name}: {n_enc:,} encounters → {strat_output_dir}")
+            strat_hosp_ids = set(strat_df['hospitalization_id'].unique())
+            strat_patient_ids = set(strat_df['patient_id'].unique())
+            strat_enc_blocks = set(strat_df['encounter_block'].unique())
+            strat_output_dir = str(_tableone_dir(stratum=stratum_name))
+            os.makedirs(strat_output_dir, exist_ok=True)
 
-        # Filter intermediate DataFrames to this stratum using encounter_block
-        try:
-            strat_resp_valid = resp_valid[resp_valid['encounter_block'].isin(strat_enc_blocks)]
-        except Exception:
-            strat_resp_valid = pd.DataFrame()
-        try:
-            strat_resp_imv = resp_imv_post_start[resp_imv_post_start['encounter_block'].isin(strat_enc_blocks)]
-        except Exception:
-            strat_resp_imv = pd.DataFrame()
-        try:
-            strat_meds = meds_merged[meds_merged['encounter_block'].isin(strat_enc_blocks)]
-        except Exception:
-            strat_meds = pd.DataFrame()
-        try:
-            strat_cci = cci_results[cci_results['encounter_block'].isin(strat_enc_blocks)]
-        except Exception:
-            strat_cci = pd.DataFrame()
-        strat_patient = patient_df[patient_df['patient_id'].isin(strat_patient_ids)]
-        strat_icu_encounters = strat_df[strat_df['icu_enc'] == 1]['encounter_block'].nunique() if 'icu_enc' in strat_df.columns else 0
+            n_enc = len(strat_df.drop_duplicates(subset=['encounter_block']))
+            print(f"\n  {stratum_name}: {n_enc:,} encounters → {strat_output_dir}")
 
-        try:
-            generate_ventilator_settings_summary(strat_resp_valid, vent_settings, strat_output_dir)
-            print(f"    ✅ ventilator_settings")
-        except Exception as e:
-            print(f"    ❌ ventilator_settings: {e}")
+            # Filter intermediate DataFrames to this stratum using encounter_block
+            try:
+                strat_resp_valid = resp_valid[resp_valid['encounter_block'].isin(strat_enc_blocks)]
+            except Exception:
+                strat_resp_valid = pd.DataFrame()
+            try:
+                strat_resp_imv = resp_imv_post_start[resp_imv_post_start['encounter_block'].isin(strat_enc_blocks)]
+            except Exception:
+                strat_resp_imv = pd.DataFrame()
+            try:
+                strat_meds = meds_merged[meds_merged['encounter_block'].isin(strat_enc_blocks)]
+            except Exception:
+                strat_meds = pd.DataFrame()
+            try:
+                strat_cci = cci_results[cci_results['encounter_block'].isin(strat_enc_blocks)]
+            except Exception:
+                strat_cci = pd.DataFrame()
+            strat_patient = patient_df[patient_df['patient_id'].isin(strat_patient_ids)]
+            strat_icu_encounters = strat_df[strat_df['icu_enc'] == 1]['encounter_block'].nunique() if 'icu_enc' in strat_df.columns else 0
 
-        try:
-            generate_tidal_volume_stats(strat_resp_imv, strat_output_dir)
-            print(f"    ✅ tidal_volume_stats")
-        except Exception as e:
-            print(f"    ❌ tidal_volume_stats: {e}")
+            try:
+                generate_ventilator_settings_summary(strat_resp_valid, vent_settings, strat_output_dir)
+                print(f"    ✅ ventilator_settings")
+            except Exception as e:
+                print(f"    ❌ ventilator_settings: {e}")
 
-        try:
-            generate_pressure_control_stats(strat_resp_imv, strat_output_dir)
-            print(f"    ✅ pressure_control_stats")
-        except Exception as e:
-            print(f"    ❌ pressure_control_stats: {e}")
+            try:
+                generate_tidal_volume_stats(strat_resp_imv, strat_output_dir)
+                print(f"    ✅ tidal_volume_stats")
+            except Exception as e:
+                print(f"    ❌ tidal_volume_stats: {e}")
 
-        try:
-            generate_mode_proportions(strat_resp_imv, strat_output_dir)
-            print(f"    ✅ mode_proportions")
-        except Exception as e:
-            print(f"    ❌ mode_proportions: {e}")
+            try:
+                generate_pressure_control_stats(strat_resp_imv, strat_output_dir)
+                print(f"    ✅ pressure_control_stats")
+            except Exception as e:
+                print(f"    ❌ pressure_control_stats: {e}")
 
-        try:
-            generate_medications_hourly(strat_meds, strat_icu_encounters, med_groups, strat_output_dir)
-            print(f"    ✅ medications_hourly")
-        except Exception as e:
-            print(f"    ❌ medications_hourly: {e}")
+            try:
+                generate_mode_proportions(strat_resp_imv, strat_output_dir)
+                print(f"    ✅ mode_proportions")
+            except Exception as e:
+                print(f"    ❌ mode_proportions: {e}")
 
-        try:
-            generate_medications_summary(strat_meds, strat_icu_encounters, med_groups, strat_output_dir)
-            print(f"    ✅ medications_summary")
-        except Exception as e:
-            print(f"    ❌ medications_summary: {e}")
+            try:
+                generate_medications_hourly(strat_meds, strat_icu_encounters, med_groups, strat_output_dir)
+                print(f"    ✅ medications_hourly")
+            except Exception as e:
+                print(f"    ❌ medications_hourly: {e}")
 
-        try:
-            generate_comorbidities(strat_cci, strat_output_dir)
-            print(f"    ✅ comorbidities")
-        except Exception as e:
-            print(f"    ❌ comorbidities: {e}")
+            try:
+                generate_medications_summary(strat_meds, strat_icu_encounters, med_groups, strat_output_dir)
+                print(f"    ✅ medications_summary")
+            except Exception as e:
+                print(f"    ❌ medications_summary: {e}")
 
-        try:
-            generate_sofa_mortality(strat_df, strat_output_dir)
-            print(f"    ✅ sofa_mortality")
-        except Exception as e:
-            print(f"    ❌ sofa_mortality: {e}")
+            try:
+                generate_comorbidities(strat_cci, strat_output_dir)
+                print(f"    ✅ comorbidities")
+            except Exception as e:
+                print(f"    ❌ comorbidities: {e}")
 
-        try:
-            generate_hospice_trends(strat_df, strat_output_dir)
-            print(f"    ✅ hospice_trends")
-        except Exception as e:
-            print(f"    ❌ hospice_trends: {e}")
+            try:
+                generate_sofa_mortality(strat_df, strat_output_dir)
+                print(f"    ✅ sofa_mortality")
+            except Exception as e:
+                print(f"    ❌ sofa_mortality: {e}")
 
-        try:
-            generate_cci_hospice_mortality(strat_df, strat_output_dir)
-            print(f"    ✅ cci_hospice_mortality")
-        except Exception as e:
-            print(f"    ❌ cci_hospice_mortality: {e}")
+            try:
+                generate_hospice_trends(strat_df, strat_output_dir)
+                print(f"    ✅ hospice_trends")
+            except Exception as e:
+                print(f"    ❌ hospice_trends: {e}")
 
-        try:
-            generate_demographic_crosstab(strat_patient, strat_output_dir)
-            print(f"    ✅ demographic_crosstab")
-        except Exception as e:
-            print(f"    ❌ demographic_crosstab: {e}")
+            try:
+                generate_cci_hospice_mortality(strat_df, strat_output_dir)
+                print(f"    ✅ cci_hospice_mortality")
+            except Exception as e:
+                print(f"    ❌ cci_hospice_mortality: {e}")
 
-    print("\n" + "="*80)
-    print("✅ STRATIFIED SUMMARY GENERATION COMPLETE")
-    print("="*80)
+            try:
+                generate_demographic_crosstab(strat_patient, strat_output_dir)
+                print(f"    ✅ demographic_crosstab")
+            except Exception as e:
+                print(f"    ❌ demographic_crosstab: {e}")
+
+        print("\n" + "="*80)
+        print("✅ STRATIFIED SUMMARY GENERATION COMPLETE")
+        print("="*80)
 
     # Final memory cleanup
     print("\nFinal memory cleanup...")
