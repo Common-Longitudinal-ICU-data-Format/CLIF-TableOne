@@ -11,26 +11,6 @@ import pandas as pd
 import os
 
 
-# Keys that must NEVER be persisted to validation/json_reports/*_dqa.json because
-# they contain raw identifier values (PHI risk). Stripped recursively before write.
-_DQA_PII_KEYS = frozenset({'sample_orphan_ids', 'sample_ids'})
-
-
-def scrub_dqa_pii(obj):
-    """Recursively return a copy of *obj* with PII id-sample keys removed.
-
-    Drops any dict key in :data:`_DQA_PII_KEYS` at any depth. The input is
-    not mutated. Used by every code path that writes a validation JSON report.
-    """
-    if isinstance(obj, dict):
-        return {k: scrub_dqa_pii(v) for k, v in obj.items() if k not in _DQA_PII_KEYS}
-    if isinstance(obj, list):
-        return [scrub_dqa_pii(v) for v in obj]
-    if isinstance(obj, tuple):
-        return tuple(scrub_dqa_pii(v) for v in obj)
-    return obj
-
-
 class BaseTableAnalyzer(ABC):
     """Base class for all table-specific analyzers."""
 
@@ -462,9 +442,6 @@ class BaseTableAnalyzer(ABC):
             serializable['table_stats'] = dqa_result['table_stats']
         if 'total_rows' in dqa_result:
             serializable['total_rows'] = dqa_result['total_rows']
-
-        # Strip PII id-sample keys (sample_orphan_ids, sample_ids) before write
-        serializable = scrub_dqa_pii(serializable)
 
         with open(filepath, 'w', encoding='utf-8') as f:
             json.dump(serializable, f, indent=2, default=str)

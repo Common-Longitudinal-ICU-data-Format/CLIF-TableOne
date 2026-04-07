@@ -12,7 +12,6 @@ from modules.tables import (
     PatientProceduresAnalyzer, PositionAnalyzer, RespiratorySupportAnalyzer,
     VitalsAnalyzer
 )
-from modules.tables.base_table_analyzer import scrub_dqa_pii
 from .formatters import ConsoleFormatter
 from .pdf_generator import ValidationPDFGenerator
 
@@ -347,7 +346,6 @@ class CLIAnalysisRunner:
                         with open(json_path, 'r', encoding='utf-8') as f:
                             saved = json.load(f)
                         saved.setdefault('completeness', {}).update(serialized_rel)
-                        saved = scrub_dqa_pii(saved)
                         with open(json_path, 'w', encoding='utf-8') as f:
                             json.dump(saved, f, indent=2, default=str)
 
@@ -379,7 +377,6 @@ class CLIAnalysisRunner:
                         with open(json_path, 'r', encoding='utf-8') as f:
                             saved = json.load(f)
                         saved.setdefault('completeness', {}).update(serialized_cond)
-                        saved = scrub_dqa_pii(saved)
                         with open(json_path, 'w', encoding='utf-8') as f:
                             json.dump(saved, f, indent=2, default=str)
 
@@ -411,7 +408,6 @@ class CLIAnalysisRunner:
                         with open(json_path, 'r', encoding='utf-8') as f:
                             saved = json.load(f)
                         saved.setdefault('plausibility', {}).update(serialized_plaus)
-                        saved = scrub_dqa_pii(saved)
                         with open(json_path, 'w', encoding='utf-8') as f:
                             json.dump(saved, f, indent=2, default=str)
 
