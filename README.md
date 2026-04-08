@@ -1,201 +1,349 @@
-# CLIF 2.1 Validation & Summarization Tool
+# CLIF Table One
 
-A comprehensive tool for validating and analyzing CLIF 2.1 data tables using clifpy with Table One generation.
+A validation and Table-One generation tool for the CLIF 2.1 (Common Longitudinal ICU Format) data standard. It runs `clifpy` data-quality checks on all 18 CLIF tables, builds a critical-illness Table One (and an optional ward Table One), pre-computes ECDF / quantile-bin distributions for downstream visualizations, and serves everything through a FastAPI web app.
 
-## Supported Tables
+---
 
-All 18 CLIF 2.1 tables are supported:
-- **Core**: Patient, Hospitalization, ADT
-- **Clinical**: Code Status, Labs, Vitals, Patient Assessments, Patient Procedures, Hospital Diagnosis
-- **Respiratory**: Respiratory Support, Position
-- **Medications**: Medication Admin (Continuous & Intermittent)
-- **Microbiology**: Culture, Non-culture, Susceptibility
-- **Devices**: CRRT Therapy, ECMO_MCS
+## 1. Supported tables
 
-## Installation
+All 18 CLIF 2.1 tables:
 
-**Prerequisites:**
-- Python 3.8+
-- UV package manager ([install instructions](https://docs.astral.sh/uv/))
-- CLIF 2.1 data in parquet format
+- **Core:** patient, hospitalization, ADT
+- **Clinical:** code_status, labs, vitals, patient_assessments, patient_procedures, hospital_diagnosis
+- **Respiratory:** respiratory_support, position
+- **Medications:** medication_admin_continuous, medication_admin_intermittent
+- **Microbiology:** culture, non-culture, susceptibility
+- **Devices:** crrt_therapy, ecmo_mcs
 
-**Setup:**
+---
+
+## 2. Prerequisites
+
+- **Python 3.11+**
+- **[`uv`](https://docs.astral.sh/uv/)** package manager:
+  ```bash
+  curl -LsSf https://astral.sh/uv/install.sh | sh
+  ```
+- **CLIF 2.1 data** in `parquet` (or `csv` / `fst`) format
+
+---
+
+## 3. Install
+
 ```bash
 cd CLIF-TableOne
 uv sync
 ```
 
-## Configuration
+> Always invoke commands through `uv run` so the project's virtualenv (not your system Python) is used.
 
-Create or update `config/config.json`:
+---
+
+## 4. Configure
+
+Copy the template and fill in your site details:
+
+```bash
+cp config/config_template.json config/config.json
+```
+
+Edit `config/config.json`:
 
 ```json
 {
-    "site_name": "Your Hospital Name",
-    "tables_path": "/path/to/clif/data",
-    "filetype": "parquet",
-    "timezone": "America/Chicago"
+    "site_name": "Your_Site_Name",
+    "tables_path": "/path/to/your/clif/data",
+    "file_type": "parquet",
+    "timezone": "US/Central"
 }
 ```
 
-## Quick Start - Complete Workflow
+| Field | Description |
+|---|---|
+| `site_name` | Your institution name (e.g. `UCMC`, `MIMIC`) |
+| `tables_path` | Absolute path to the directory holding your CLIF files (no trailing `/`) |
+| `file_type` | `parquet`, `csv`, or `fst` |
+| `timezone` | Site timezone, e.g. `US/Central`, `US/Eastern`, `America/Chicago` |
 
-### Linux/MacOS
+---
 
-Run the complete analysis pipeline with sampling (recommended for first run):
-
-```bash
-uv run python run_project.py --sample --no-summary --get-ecdf
-```
-
-This command:
-1. Validates all 18 CLIF tables using a 1k ICU sample
-2. Collects MCIDE data
-3. Generates Table One analysis
-4. Computes ECDF bins for visualizations
-5. Automatically launches the Streamlit app
-
-**Time:** ~10-15 minutes with sampling, 45-90 minutes without
-
-### Windows
-
-Windows users should use the provided scripts that handle UTF-8 encoding:
-
-**Using Batch files:**
-```batch
-run_project_windows.bat --sample --no-summary --get-ecdf
-```
-
-**Using PowerShell:**
-```powershell
-.\run_project_windows.ps1 --sample --no-summary --get-ecdf
-```
-
-If you encounter Unicode/emoji display issues, see the [Windows Troubleshooting](#windows-unicode-troubleshooting) section below.
-
-## Web Application
-
-To launch the Streamlit app independently:
+## 5. Run the analysis pipeline
 
 ```bash
-uv run streamlit run app.py
+uv run python run_project.py --no-summary --get-ecdf
 ```
 
-The app will open at `http://localhost:8501`
+This validates all 18 CLIF tables, builds the critical-illness Table One, and computes ECDF / bins distributions.
 
-## Output Structure
+| Flag | Purpose |
+|---|---|
+| `--no-summary` | Skip per-table summary statistics generation |
+| `--get-ecdf` | Compute ECDF + quantile bins for labs / vitals / respiratory_support |
+| `--ward` | **Also** generate the parallel ward Table One (see §5a) |
+| `--ward-only` | Only generate the ward Table One (skip validation + critical-illness Table One) |
+| `--validate-only` | Run validation only |
+| `--tableone-only` | Run Table One only |
+| `--get-ecdf-only` | Run ECDF only |
+
+For the full flag list: `uv run python run_project.py --help`. Advanced workflows and granular per-table commands live in [`advanced_usage.md`](advanced_usage.md).
+
+### 5a. Ward Table One (optional)
+
+In addition to the **critical-illness** cohort (encounters with an ICU stay OR died/hospice), you can generate a parallel **ward** Table One whose cohort is **every adult hospitalization that touched a ward at any point**:
+
+```bash
+uv run python run_project.py --no-summary --get-ecdf --ward
+```
+
+The ward Table One runs **after** the critical-illness Table One in an **isolated subprocess** so peak memory equals the larger of the two cohorts (not the sum) — important on 16 GB systems. Outputs go to `output/final/overall_ward/{tableone,figures,...}/`. Downstream pipelines (ECDF, MCIDE) keep reading the critical-illness parquet — they are unaffected.
+
+| Command | What it runs |
+|---|---|
+| `uv run python run_project.py --ward` | Validation + critical-illness Table One + ward Table One |
+| `uv run python run_project.py --get-ecdf --ward` | Full workflow + ward Table One + ECDF |
+| `uv run python run_project.py --tableone-only --ward` | Both Table Ones (no validation, no ECDF) |
+| `uv run python run_project.py --ward-only` | Just the ward Table One |
+| `uv run run_tableone_ward.py` | Direct ward entry point (bypasses the project runner) |
+| `uv run run_tableone_all.py` | Both Table Ones in subprocess isolation (bypasses the project runner) |
+
+**What's in the ward Table One:**
+
+- Cohort: every adult hospitalization that touched a ward — includes ward→ICU, ward→death, ward-only, etc.
+- Encounter Types section has **5 rows** showing how many ward encounters fall into each critical-illness stratum:
+  1. ICU encounters (ward→ICU subset)
+  2. Advanced respiratory support
+  3. Vasoactive support
+  4. Other critically ill (died on ED/ward without escalation)
+  5. **Ward only (survived, no critical care)** — the survivor catch-all
+- **Stripped** from the ward Table One (memory + time optimization, ICU-centric metrics): SOFA scores, ICU LOS, ICU episodes, IMV/ventilator settings, medication-from-ICU plot
+- All other sections (demographics, mortality, hospital LOS, comorbidities, CRRT, sepsis, code status) are present and computed against the ward cohort.
+
+---
+
+## 6. Launch the web app
+
+```bash
+uv run uvicorn server.main:app --reload
+```
+
+Open **http://127.0.0.1:8000** in a browser.
+
+| Flag | Purpose |
+|---|---|
+| `--reload` | Auto-restart on code changes (development mode) |
+| `--host 0.0.0.0` | Allow access from other machines on the network |
+| `--port 8080` | Use a different port (default: 8000) |
+
+The web app is FastAPI + a vanilla-JS SPA under `static/`. The legacy Streamlit app is kept as `app_streamlit.py` but is no longer the primary interface.
+
+Tabs:
+
+- **Validation** — Per-table DQA results
+- **mCIDE** — Value counts and summary statistics
+- **Table One Results** — Cohort analysis: demographics, medications, IMV, SOFA/CCI, outcomes
+- **Feedback** — Classify validation errors as Accepted / Rejected / Pending; saves to `output/final/validation/feedback/<table>_validation_response.json` and updates the table status
+
+---
+
+## 7. Reviewing validation errors
+
+The feedback workflow lets reviewers classify validation errors:
+
+1. Open the **Validation** tab
+2. Enable **"Review Status-Affecting Errors"** and scroll to the error list
+3. For each error, choose:
+   - **Accepted** — legitimate issue requiring attention
+   - **Rejected** — site-specific variation (provide a justification)
+   - **Pending** — not yet reviewed
+4. Save feedback. Table status is recomputed:
+   - Status becomes **complete** only when **all** errors are rejected
+   - Any accepted or pending error keeps the table at its original status
+
+After classifying errors, click **Regenerate reports** on the Home page to recompile the combined PDF + consolidated CSV.
+
+---
+
+## 8. Cohort definitions
+
+This is the part most likely to surprise readers, so it gets its own section.
+
+### 8.1 Adult filter
+
+```python
+# modules/tableone/generator.py:1441
+adult_encounters = adult_encounters[
+    (adult_encounters['age_at_admission'] >= 18) & (adult_encounters['age_at_admission'].notna())
+]
+```
+
+All cohorts require `age_at_admission >= 18`. There is no admission-year restriction in the current code (the year filter at lines 1448-1449 is commented out for all sites).
+
+### 8.2 Encounter stitching
+
+Linked admissions are joined into a single `encounter_block` *before* cohort selection, using `clifpy.utils.stitching_encounters.stitch_encounters` (`modules/tableone/generator.py:61`). Every flag below is computed at the **encounter-block level**, not the `hospitalization_id` level — so a patient who bounces ED → ward → ICU within a single stitched encounter counts as one ICU encounter, not three.
+
+### 8.3 Per-encounter-block flags
+
+Every flag is a 0/1 indicator on the stitched encounter block. The strata in §9 are just filters on these flags.
+
+| Flag | Definition | Set at |
+|---|---|---|
+| `icu_enc` | Encounter ever had a row with `location_category` containing `'icu'` | `generator.py:1533, 1539` |
+| `death_enc` | Encounter ever had a row with `discharge_category in ('expired', 'hospice')` | `generator.py:1534, 1540` |
+| `ward_enc` | Encounter ever had a row with `location_category == 'ward'` | `generator.py:1535, 1541` |
+| `high_support_enc` | Encounter ever received `imv` / `nippv` / `cpap` / `high flow nc` (`respiratory_support.device_category`) | `generator.py:1646, 1659` |
+| `vaso_support_enc` | Encounter ever received `norepinephrine`, `epinephrine`, `phenylephrine`, `vasopressin`, `dopamine`, or `angiotensin` (`medication_admin_continuous.med_category`) | `generator.py:1693, 1706` |
+| `is_procedural_ld_only` | No ICU AND only `procedural` / `l&d` locations — in critical-illness mode this zeros out the support flags so a procedural-only encounter cannot be flagged as advanced resp / vaso | `generator.py:1584-1587, 1727-1729` |
+| `other_critically_ill` | `death_enc==1 AND icu_enc==0 AND vaso_support_enc==0 AND high_support_enc==0` (died in ED/ward without escalation) | `generator.py:1764-1769` |
+
+### 8.4 Critical-illness cohort (default)
+
+This is what `run_project.py` produces in `output/final/overall/`:
+
+```python
+# modules/tableone/generator.py:1549
+all_encounters['cohort_enc'] = (all_encounters['icu_enc'] | all_encounters['death_enc']).astype(int)
+```
+
+> Adults whose encounter block touched an ICU **OR** discharged as expired/hospice.
+
+**Vasoactive and advanced respiratory support are not inclusion criteria.** They are flags computed *after* the cohort is fixed and are used only for stratification (§9). Concretely: an adult who got norepinephrine on the ward, never touched ICU, and survived → **not** in the critical-illness cohort. The code comment at `generator.py:1761` even points this out — *"in critical-illness mode (any encounter in the cohort with icu_enc==0 already had death_enc==1)"*.
+
+### 8.5 Ward cohort
+
+This is what `run_project.py --ward` adds to `output/final/overall_ward/`:
+
+```python
+# modules/tableone/generator.py:1547
+all_encounters['cohort_enc'] = all_encounters['ward_enc']
+```
+
+> Adults whose encounter block touched a ward at any point — includes ward→ICU, ward→death, and ward-only encounters.
+
+### 8.6 Stale docstring note
+
+The legacy comment at `modules/tableone/generator.py:22-23` describes inclusion as *"at least one ICU stay or those who had only emergency department or ward encounters and either died or received life support"*. The "received life support" branch is **not** implemented by the code at line 1549 — vaso/advanced-resp encounters that never reached ICU and survived are excluded. The docstring is on a separate cleanup list.
+
+---
+
+## 9. Strata
+
+The strata directories under `output/final/strata/` are subsets of the **critical-illness cohort**, filtered by a single flag. The mapping is the single source of truth in `modules/strata.py:24-33`:
+
+| Directory | Flag | Definition |
+|---|---|---|
+| `strata/icu/` | `icu_enc` | Encounter touched a location with `location_category == 'icu'` |
+| `strata/advanced_resp/` | `high_support_enc` | Received `imv` / `nippv` / `cpap` / `high flow nc` at any point |
+| `strata/advanced_resp/icu/` | `high_support_icu_enc` | Advanced resp **AND** ICU |
+| `strata/advanced_resp/no_icu/` | `high_support_no_icu_enc` | Advanced resp **AND NOT** ICU (by construction these are deaths) |
+| `strata/vaso/` | `vaso_support_enc` | Received `norepinephrine`, `epinephrine`, `phenylephrine`, `vasopressin`, `dopamine`, or `angiotensin` |
+| `strata/vaso/icu/` | `vaso_icu_enc` | Vaso **AND** ICU |
+| `strata/vaso/no_icu/` | `vaso_no_icu_enc` | Vaso **AND NOT** ICU (by construction deaths) |
+| `strata/deaths/` | `death_enc` | `discharge_category in ('expired', 'hospice')` |
+
+Strata are not independent cohorts — every stratum is a subset of `cohort_enc == 1`. So `strata/vaso/no_icu/` is "patients in the critical-illness cohort who got a vasopressor but never touched an ICU" — and because the cohort selector at line 1549 already requires ICU OR death, every patient in that stratum is necessarily a death.
+
+---
+
+## 10. Output layout
 
 ```
 output/final/
-├── reports/              # Validation PDF reports
-│   ├── patient_validation_report.pdf
-│   ├── combined_validation_report.pdf
-│   └── ...
-├── results/              # Validation CSV summaries
-│   ├── patient_summary.csv
-│   └── ...
-├── tableone/            # Table One outputs
-│   ├── table_one_overall.csv
-│   ├── table_one_by_year.csv
-│   ├── consort_flow_diagram.png
-│   ├── execution_report.txt
-│   ├── mcide/          # MCIDE value counts
-│   ├── summary_stats/  # MCIDE numerical summaries
-│   └── plots/          # Medication analysis plots
-├── ecdf/                # ECDF distributions
-│   ├── labs/
-│   ├── vitals/
-│   └── respiratory_support/
-├── bins/                # Quantile bins for visualization
-│   ├── labs/
-│   ├── vitals/
-│   └── respiratory_support/
-└── configs/             # ECDF configuration files
+├── overall/                    Critical-illness cohort
+│   ├── tableone/               Demographics, mortality, comorbidities, ventilator, medications, ...
+│   ├── figures/                CONSORT, sankey, venn, upset, area curves
+│   ├── ecdf/                   {labs,vitals,respiratory_support}/ ECDF parquets
+│   ├── bins/                   {labs,vitals,respiratory_support}/ quantile-bin parquets
+│   ├── summary_stats/          Per-category mean/median/IQR
+│   └── mcide/                  Minimum CDE value counts
+├── overall_ward/               Ward cohort (only present when --ward is used)
+│   └── {tableone,figures,summary_stats}/
+├── strata/                     Stratified critical-illness subsets
+│   ├── icu/                    {tableone,figures,ecdf,bins,summary_stats}/
+│   ├── advanced_resp/          {... + icu/ + no_icu/}
+│   ├── vaso/                   {... + icu/ + no_icu/}
+│   └── deaths/                 {tableone,figures,ecdf,bins,summary_stats}/
+├── validation/                 Data quality assessment
+│   ├── json_reports/           <table>_dqa.json + supporting CSVs
+│   ├── consolidated/           consolidated_validation.csv + summary JSONs
+│   ├── feedback/               <table>_validation_response.json (user-classified errors)
+│   ├── monthly_trends/         Monthly trend CSVs
+│   └── pdf_reports/            Per-table PDFs + combined PDF
+├── stats/                      collection_statistics.csv (+ per-stratum variants)
+├── meta/                       Execution reports, workflow logs, run metadata
+│   └── workflow_logs/          Timestamped pipeline stdout/stderr
+└── configs/                    Snapshot of config files used for the run
 ```
 
-## Workflow
+For **what each file contains**, **the cohort filter applied**, and **which module generates it**, see [`OUTPUT_REFERENCE.md`](OUTPUT_REFERENCE.md). It also has a worked example for `albumin_g_dL.parquet`.
 
-### 1. Setup
-- Install prerequisites and dependencies using `uv sync`
-- Configure `config/config.json` with your site information
-- Ensure CLIF data files are in the specified `tables_path`
+A short note on the ECDF time window, since it's frequently misremembered: ECDF and bin parquets cover the **entire ICU stay window** for each encounter (`in_dttm` ≤ value timestamp ≤ `out_dttm`, summed across every `location_category == 'icu'` row in `clif_adt`). There is **no 168-hour cap**. The 24h/48h/72h numbers in `stats/collection_statistics*.csv` are observation-count coverage statistics, not the ECDF input filter (`modules/ecdf/statistics.py:196-200` vs `modules/ecdf/generator.py:507-511`).
 
-### 2. Configuration
-- Verify paths and settings in config file
-- Choose whether to use sampling for faster initial runs
+---
 
-### 3. Main Command
-- Run `run_project.py` with appropriate flags: `uv run python run_project.py --sample --no-summary --get-ecdf`
-- Monitor progress in the terminal
-- Wait for automatic app launch or launch manually
+## 11. Windows
 
-### 4. Using the App
-- **Validation Tab**: Review validation results for each table
-- **mCIDE Tab**: View mCIDE and summary stats if generated. 
-- **Table One Results**: Access comprehensive cohort analysis (appears after generation)
+Use the provided wrapper scripts that handle UTF-8 encoding:
 
-### 5. Reviewing Validation Errors
-
-The feedback system allows classification of validation errors:
-
-- **Review Errors**: Enable "📋 Review Status-Affecting Errors" in the Validation tab. Scroll to the bottom of the page. 
-- **Classify Each Error**:
-  - **Accepted**: Legitimate issue requiring attention
-  - **Rejected**: Site-specific variation (provide justification)
-  - **Pending**: Not yet reviewed
-- **Save Feedback**: Click "💾 Save Feedback" to persist decisions
-- **Status Updates**: Table status automatically adjusts based on feedback
-  - Status becomes "complete" only when ALL errors are rejected
-  - Accepted or pending errors maintain original status
-
-Feedback is saved to `output/final/results/{table}_validation_response.json`.
-To recompile the combined report after providing feedback, click the Regenerate reports button on the Home page. 
-
-### 6. Table One Results
-
-After Table One generation completes:
-
-1. Click "📊 Table One Results" in the sidebar
-2. Explore analysis across tabs:
-   - **Cohort**: CONSORT diagram and cohort flow
-   - **Demographics**: Patient characteristics
-   - **Medications**: Medication usage analysis with visualizations
-   - **IMV**: Invasive mechanical ventilation metrics
-   - **SOFA & CCI**: Severity and comorbidity scores
-   - **Hospice & Outcomes**: End-of-life care and outcomes
-
-See [TABLEONE_VIEWER_GUIDE.md](TABLEONE_VIEWER_GUIDE.md) for detailed viewer documentation.
-
-## Windows Unicode Troubleshooting
-
-If you see encoding errors with emojis/Unicode characters:
-
-### Option 1: Set Environment Variables
+**Batch:**
 ```batch
-# Command Prompt
+run_project_windows.bat --no-summary --get-ecdf
+app_windows.bat
+```
+
+**PowerShell:**
+```powershell
+.\run_project_windows.ps1 --no-summary --get-ecdf
+.\app_windows.ps1
+```
+
+If you still see encoding errors with emojis or Unicode characters, set `PYTHONIOENCODING=utf-8`:
+
+```batch
+:: Command Prompt
 set PYTHONIOENCODING=utf-8
 python run_project.py
+```
 
+```powershell
 # PowerShell
 $env:PYTHONIOENCODING="utf-8"
 python run_project.py
 ```
 
-### Option 2: Enable System-Wide UTF-8
-1. Go to Settings → Time & Language → Language → Administrative language settings
-2. Click "Change system locale"
-3. Check "Beta: Use Unicode UTF-8 for worldwide language support"
-4. Restart your computer
+Or enable system-wide UTF-8: Settings → Time & Language → Language → Administrative language settings → Change system locale → check **"Beta: Use Unicode UTF-8 for worldwide language support"** → restart.
 
-### Option 3: Python UTF-8 Mode
+Or use Python's UTF-8 mode for a one-off run:
+
 ```batch
 python -X utf8 run_project.py
 ```
 
-## Advanced Usage
+---
 
-For detailed command-line options, additional workflows, and advanced configurations, see [advanced_usage.md](advanced_usage.md).
+## 12. Troubleshooting
+
+| Problem | Fix |
+|---|---|
+| `ModuleNotFoundError: No module named 'fastapi'` | You ran `uvicorn` with system Python. Use `uv run uvicorn ...` instead. |
+| `Could not load config` on startup | Ensure `config/config.json` exists and is valid JSON. |
+| `uv sync` fails on `clifpy` | `clifpy` is now a PyPI dependency (no editable install needed). Ensure your `uv` is up to date and rerun `uv sync`. |
+| Port already in use | Use `--port 8080` or kill the existing process. |
+| Out of memory on the full dataset | Use `--ward-only` separately, or run validation and Table One in sequence rather than together. |
+
+---
+
+## 13. Further reading
+
+- [`OUTPUT_REFERENCE.md`](OUTPUT_REFERENCE.md) — Per-file detail for everything under `output/final/`
+- [`advanced_usage.md`](advanced_usage.md) — Granular per-table validation, sampling workflows, ECDF configuration
+- [`TABLEONE_VIEWER_GUIDE.md`](TABLEONE_VIEWER_GUIDE.md) — Web app viewer documentation
+- [`CHANGE.md`](CHANGE.md) — Release notes
+- [CLIF documentation](https://clif-icu.com)
+- [clifpy](https://github.com/Common-Longitudinal-ICU-data-Format/clifpy)
+
+---
 
 ## Support
 
-For issues or questions, please create an issue in the project repository.
+For issues or questions, please open an issue in the project repository.
