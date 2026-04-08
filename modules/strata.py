@@ -14,10 +14,18 @@ from typing import Dict, Optional, Set
 import polars as pl
 
 
-# Canonical strata definition — used by all pipelines
+# Canonical strata definition — used by all pipelines.
+#
+# Slash-prefixed keys ('advanced_resp/icu', 'advanced_resp/no_icu') are
+# sub-strata of advanced_resp. The slash makes Path-based output helpers
+# (cohort_dir, tableone_dir, ecdf_dir, ...) resolve them as nested directories
+# under output/final/strata/advanced_resp/, while still letting the existing
+# per-stratum loops iterate them uniformly.
 ENCOUNTER_TYPE_STRATA = {
     'icu': 'icu_enc',
     'advanced_resp': 'high_support_enc',
+    'advanced_resp/icu': 'high_support_icu_enc',
+    'advanced_resp/no_icu': 'high_support_no_icu_enc',
     'vaso': 'vaso_support_enc',
     'deaths': 'death_enc',
 }

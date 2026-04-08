@@ -292,7 +292,7 @@ class ECDFRunner:
                         lab_category_units=lab_category_units,
                         lab_vital_config=lab_vital_config,
                         output_dir=str(output_dir),
-                        suffix=f"_{stratum_name}"
+                        suffix=f"_{stratum_name.replace('/', '_')}"
                     )
             except FileNotFoundError as e:
                 print(f"\n  ⚠️ Skipping stratified collection statistics: {e}")
