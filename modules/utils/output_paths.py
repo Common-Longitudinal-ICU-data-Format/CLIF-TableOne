@@ -238,7 +238,9 @@ def ward_validation_json_reports_dir() -> Path:
 
 
 # Strata names known to the pipeline. Mirrors modules.strata.ENCOUNTER_TYPE_STRATA keys.
-STRATA_NAMES = ('icu', 'advanced_resp', 'vaso', 'deaths')
+# Slash-prefixed entries are sub-strata that resolve to nested directories
+# (e.g. 'vaso/icu' → output/final/strata/vaso/icu/).
+STRATA_NAMES = ('icu', 'advanced_resp', 'vaso', 'vaso/icu', 'vaso/no_icu', 'deaths')
 
 
 def ensure_output_tree() -> None:

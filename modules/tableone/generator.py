@@ -1737,6 +1737,16 @@ def main(memory_monitor=None, cohort_mode='critical_illness') -> bool:
     checkpoint("4. Medications Processed")
     # Missing icu_enc means not ICU
     final_cohort['icu_enc'] = final_cohort['icu_enc'].fillna(0).astype(int)
+    # Sub-strata of vaso: vasoactive recipients with vs. without any ICU stay.
+    # Built after both vaso_support_enc and icu_enc are finalized (and the
+    # is_procedural_ld_only zero-out at L1727 has already run in critical-illness
+    # mode), so the two flags partition the parent vaso cohort exactly.
+    final_cohort['vaso_icu_enc'] = (
+        (final_cohort['vaso_support_enc'] == 1) & (final_cohort['icu_enc'] == 1)
+    ).astype(int)
+    final_cohort['vaso_no_icu_enc'] = (
+        (final_cohort['vaso_support_enc'] == 1) & (final_cohort['icu_enc'] == 0)
+    ).astype(int)
     # death_enc is already on final_cohort (carried in the select at line ~1565).
     # "Other critically ill" = died in ED/ward without ICU/vaso/resp escalation.
     # Tightened definition (added explicit death_enc==1) is a no-op in critical-illness
@@ -1998,7 +2008,8 @@ def main(memory_monitor=None, cohort_mode='critical_illness') -> bool:
                                     'race_category', 'ethnicity_category', 'sex_category', 'death_dttm', 
                                     'icu_enc', 'death_enc', 'cohort_enc']].drop_duplicates()
 
-    final_cohort_merge_cols = ['encounter_block', 'high_support_enc', 'vaso_support_enc', 'other_critically_ill']
+    final_cohort_merge_cols = ['encounter_block', 'high_support_enc', 'vaso_support_enc',
+                               'vaso_icu_enc', 'vaso_no_icu_enc', 'other_critically_ill']
     if cohort_mode == 'ward':
         final_cohort_merge_cols.append('ward_no_critical_care')
     final_tableone_df = final_tableone_df.merge(
@@ -5695,8 +5706,11 @@ def main(memory_monitor=None, cohort_mode='critical_illness') -> bool:
                 .rename(columns={'index': 'Variable'})
             )
 
+            # Slugify stratum_name for the filename only — the directory arg keeps
+            # the slash so nested keys like 'vaso/icu' resolve to vaso/icu/tableone/.
+            _strat_slug = stratum_name.replace('/', '_')
             out_path = os.path.join(str(_tableone_dir(stratum=stratum_name)),
-                                      f'table_one_{stratum_name}_by_year.csv')
+                                      f'table_one_{_strat_slug}_by_year.csv')
             os.makedirs(os.path.dirname(out_path), exist_ok=True)
             strat_table.to_csv(out_path, index=False)
             print(f"  ✅ Saved: {out_path}")

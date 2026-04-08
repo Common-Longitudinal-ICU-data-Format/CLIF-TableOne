@@ -14,11 +14,18 @@ from typing import Dict, Optional, Set
 import polars as pl
 
 
-# Canonical strata definition — used by all pipelines
+# Canonical strata definition — used by all pipelines.
+#
+# Slash-prefixed keys ('vaso/icu', 'vaso/no_icu') are sub-strata of vaso. The
+# slash makes Path-based output helpers (cohort_dir, tableone_dir, ecdf_dir, ...)
+# resolve them as nested directories under output/final/strata/vaso/, while still
+# letting the existing per-stratum loops iterate them uniformly.
 ENCOUNTER_TYPE_STRATA = {
     'icu': 'icu_enc',
     'advanced_resp': 'high_support_enc',
     'vaso': 'vaso_support_enc',
+    'vaso/icu': 'vaso_icu_enc',
+    'vaso/no_icu': 'vaso_no_icu_enc',
     'deaths': 'death_enc',
 }
 
