@@ -54,10 +54,35 @@ class BaseTableAnalyzer(ABC):
         validation_monthly_trends_dir().mkdir(parents=True, exist_ok=True)
         PDF_REPORTS.mkdir(parents=True, exist_ok=True)
 
-        # Load the table
-        self.load_table()
+        # Memory-efficient primary loader: DuckDB -> Arrow -> arrow-backed pandas.
+        # Cuts peak RSS roughly 4x vs clifpy's default numpy-object pandas path,
+        # and (when CLIF_BACKEND=duckdb is set) routes clifpy's validator onto
+        # its duckdb backend so we never spawn a polars copy of the dataframe
+        # during validation. See modules/utils/clif_loader.py for details.
+        # Set CLIF_LOADER=clifpy to bypass and use clifpy's loader directly.
+        if self.filetype == 'parquet' and os.environ.get('CLIF_LOADER', 'duckdb').lower() == 'duckdb':
+            try:
+                from modules.utils.clif_loader import load_clif_table
+                self.table = load_clif_table(
+                    table_name=self.get_table_name(),
+                    data_dir=self.data_dir,
+                    filetype=self.filetype,
+                    timezone=self.timezone,
+                    output_directory=os.path.join(self.output_dir, 'logs'),
+                )
+            except Exception as e:
+                import logging as _lg
+                _lg.getLogger(__name__).warning(
+                    "DuckDB loader failed for %s, falling back to clifpy: %s",
+                    self.get_table_name(), e,
+                )
+                self.table = None
 
-        # If load_table failed (e.g. OOM), try optimized streaming fallback
+        # Fall back to clifpy's loader if the DuckDB path is disabled or failed
+        if self.table is None:
+            self.load_table()
+
+        # Last-resort: clifpy failed too — try the polars streaming fallback
         if self.table is None and self.filetype == 'parquet':
             self._try_lazy_fallback()
 
