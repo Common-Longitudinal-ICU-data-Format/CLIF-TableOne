@@ -391,8 +391,8 @@ def process_category(
     output_subdir = os.path.join(output_dir, table_type)
     os.makedirs(output_subdir, exist_ok=True)
 
-    output_path = os.path.join(output_subdir, filename.replace('.parquet', '.html'))
-    fig.write_html(output_path)
+    output_path = os.path.join(output_subdir, filename.replace('.parquet', '.png'))
+    fig.write_image(output_path, width=1200, height=600, scale=2)
 
     print(f"  ✓ {category} {f'({unit})' if unit else ''}: {output_path}")
 

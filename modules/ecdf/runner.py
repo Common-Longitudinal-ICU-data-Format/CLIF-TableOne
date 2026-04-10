@@ -126,6 +126,15 @@ class ECDFRunner:
                 bins_dir(stratum, 'respiratory_support'),
             ])
 
+        # Deduplicate: sub-strata now resolve to the same parent directories
+        seen = set()
+        deduped_dirs = []
+        for d in expected_dirs:
+            if d not in seen:
+                seen.add(d)
+                deduped_dirs.append(d)
+        expected_dirs = deduped_dirs
+
         missing_dirs = []
         existing_dirs = []
 
@@ -202,9 +211,30 @@ class ECDFRunner:
         print(f"{'='*80}\n")
 
         try:
-            # Import and execute the visualization function
-            from .visualizer import main
-            main()
+            from .visualizer import discover_files, process_category
+            from modules.utils.output_paths import (
+                OVERALL, cohort_dir, figures_dir, STRATA_NAMES,
+            )
+
+            # --- Overall cohort ---
+            overall_base = str(OVERALL)
+            overall_output = str(figures_dir() / 'distributions')
+            print(f"Processing overall cohort ({overall_base})...")
+            for table_type, category, unit in discover_files(base_dir=overall_base):
+                process_category(table_type, category, unit,
+                                 base_dir=overall_base, output_dir=overall_output)
+
+            # --- Strata ---
+            for stratum in STRATA_NAMES:
+                stratum_base = str(cohort_dir(stratum))
+                stratum_output = str(figures_dir(stratum) / 'distributions')
+                files = discover_files(base_dir=stratum_base)
+                if not files:
+                    continue
+                print(f"\nProcessing stratum {stratum} ({len(files)} categories)...")
+                for table_type, category, unit in files:
+                    process_category(table_type, category, unit,
+                                     base_dir=stratum_base, output_dir=stratum_output)
 
             print(f"\n{'='*80}")
             print("✅ VISUALIZATION SUCCESSFUL")
@@ -231,8 +261,13 @@ class ECDFRunner:
 
         try:
             # Import necessary functions
-            from .generator import load_configs, extract_icu_time_windows, discover_lab_category_units
+            from .generator import (
+                load_configs, extract_icu_time_windows, discover_lab_category_units,
+                load_discharge_times, extract_vaso_event_windows,
+                extract_advanced_resp_event_windows, STRATUM_WINDOW_TYPE,
+            )
             from .statistics import compute_collection_statistics
+            import polars as pl
 
             # Load configurations
             clif_config, outlier_config, lab_vital_config = load_configs()
@@ -242,6 +277,27 @@ class ECDFRunner:
                 clif_config['tables_path'],
                 clif_config['file_type']
             )
+
+            # Compute event-based time windows
+            discharge_times = load_discharge_times(
+                clif_config['tables_path'],
+                clif_config['file_type']
+            )
+            vaso_windows = extract_vaso_event_windows(
+                clif_config['tables_path'],
+                clif_config['file_type'],
+                discharge_times,
+            )
+            resp_windows = extract_advanced_resp_event_windows(
+                clif_config['tables_path'],
+                clif_config['file_type'],
+                discharge_times,
+            )
+            all_time_windows = {
+                'icu': icu_windows,
+                'vaso': vaso_windows,
+                'resp': resp_windows,
+            }
 
             # Discover lab category-unit combinations
             lab_category_units = discover_lab_category_units(
@@ -273,18 +329,22 @@ class ECDFRunner:
 
             # Stratified collection statistics
             try:
-                from modules.strata import load_strata_hospitalization_ids, filter_icu_windows_by_stratum
+                from modules.strata import load_strata_hospitalization_ids
 
                 strata_hosp_ids = load_strata_hospitalization_ids()
 
                 for stratum_name, hosp_ids in strata_hosp_ids.items():
-                    filtered_windows = filter_icu_windows_by_stratum(icu_windows, hosp_ids)
+                    window_type = STRATUM_WINDOW_TYPE.get(stratum_name, 'icu')
+                    base_windows = all_time_windows[window_type]
+                    filtered_windows = base_windows.filter(
+                        pl.col('hospitalization_id').is_in(list(hosp_ids))
+                    )
                     if len(filtered_windows) == 0:
-                        print(f"  ⚠️ Skipping collection statistics for {stratum_name}: no ICU windows")
+                        print(f"  ⚠️ Skipping collection statistics for {stratum_name}: no time windows")
                         continue
 
                     print(f"\n  Computing collection statistics for {stratum_name} "
-                          f"({len(filtered_windows):,} ICU windows)...")
+                          f"({len(filtered_windows):,} time windows)...")
                     compute_collection_statistics(
                         icu_windows=filtered_windows,
                         tables_path=clif_config['tables_path'],
@@ -347,12 +407,12 @@ class ECDFRunner:
 
         print(f"\n📊 Execution report saved: {report_path}")
 
-    def run(self, visualize=False):
+    def run(self, visualize=True):
         """
         Main execution method.
 
         Args:
-            visualize (bool): Whether to generate HTML visualizations
+            visualize (bool): Whether to generate PNG visualizations (default True)
 
         Returns:
             bool: True if successful, False otherwise
@@ -360,9 +420,6 @@ class ECDFRunner:
         print("\n" + "="*80)
         print("ECDF AND BINS GENERATION")
         print("="*80 + "\n")
-
-        if visualize:
-            print("📊 Visualization mode enabled - will generate HTML plots after ECDF generation\n")
 
         self.start_time = time.time()
 
