@@ -494,14 +494,14 @@ class ProjectRunner:
             }
             return False
 
-    def run_get_ecdf(self, visualize=True):
+    def run_get_ecdf(self, visualize=False):
         """
         Run ECDF generation using the new modular structure.
 
         Parameters
         ----------
         visualize : bool
-            Whether to generate PNG visualizations after ECDF generation
+            Whether to generate interactive HTML distribution viewers
 
         Returns
         -------
@@ -758,7 +758,7 @@ class ProjectRunner:
         # Step 3: Get ECDF Bins
         if get_ecdf:
             ecdf_success = self.run_get_ecdf(
-                visualize=kwargs.get('visualize', True)
+                visualize=kwargs.get('visualize', False)
             )
 
         # Generate summary
@@ -835,7 +835,7 @@ Examples:
   %(prog)s --tableone-only                    # Only critical-illness table one
   %(prog)s --ward-only                        # Only ward table one (isolated subprocess)
   %(prog)s --get-ecdf-only                    # Only get ECDF bins
-  %(prog)s --get-ecdf-only --no-visualize     # Get ECDF without PNG plots
+  %(prog)s --get-ecdf-only --visualize        # Get ECDF + interactive HTML viewers
   %(prog)s --ward                             # Full workflow + ward table one
   %(prog)s --get-ecdf --ward                  # Full workflow + ward table one + ECDF
   %(prog)s --tableone-only --ward             # Both critical-illness and ward table ones
@@ -859,8 +859,8 @@ Examples:
                                 help='Only run get ECDF bins step')
     workflow_group.add_argument('--get-ecdf', action='store_true',
                                 help='Include get ECDF bins in workflow')
-    workflow_group.add_argument('--no-visualize', action='store_true',
-                                help='Skip PNG visualization generation (for get ECDF)')
+    workflow_group.add_argument('--visualize', action='store_true',
+                                help='Generate interactive HTML distribution viewers (for get ECDF)')
     workflow_group.add_argument('--continue-on-error', action='store_true',
                                 help='Continue to next step even if previous step fails')
     workflow_group.add_argument('--no-launch-app', action='store_true',
@@ -935,7 +935,7 @@ Examples:
             tables=args.tables,
             no_summary=args.no_summary,
             verbose=args.verbose,
-            visualize=not args.no_visualize,
+            visualize=args.visualize,
             continue_on_error=args.continue_on_error,
             no_launch_app=args.no_launch_app
         )

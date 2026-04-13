@@ -203,38 +203,47 @@ class ECDFRunner:
             return False
 
     def execute_visualization(self):
-        """Execute the visualization script to generate HTML plots."""
+        """Generate interactive HTML distribution viewers."""
         print(f"\n{'='*80}")
-        print("GENERATING HTML VISUALIZATIONS")
+        print("GENERATING INTERACTIVE DISTRIBUTION VIEWERS")
         print(f"{'='*80}")
         print(f"Module: modules.ecdf.visualizer")
         print(f"{'='*80}\n")
 
         try:
-            from .visualizer import discover_files, process_category
+            from .visualizer import generate_interactive_html
             from modules.utils.output_paths import (
-                OVERALL, cohort_dir, figures_dir, STRATA_NAMES,
+                OVERALL, cohort_dir, figures_dir,
             )
 
-            # --- Overall cohort ---
-            overall_base = str(OVERALL)
-            overall_output = str(figures_dir() / 'distributions')
-            print(f"Processing overall cohort ({overall_base})...")
-            for table_type, category, unit in discover_files(base_dir=overall_base):
-                process_category(table_type, category, unit,
-                                 base_dir=overall_base, output_dir=overall_output)
-
-            # --- Strata ---
-            for stratum in STRATA_NAMES:
-                stratum_base = str(cohort_dir(stratum))
-                stratum_output = str(figures_dir(stratum) / 'distributions')
-                files = discover_files(base_dir=stratum_base)
-                if not files:
+            # Simple strata: single-panel HTML
+            simple = [
+                (str(OVERALL), str(figures_dir() / 'distributions.html'), 'Overall'),
+                (str(cohort_dir('icu')), str(figures_dir('icu') / 'distributions.html'), 'ICU'),
+                (str(cohort_dir('deaths')), str(figures_dir('deaths') / 'distributions.html'), 'Deaths'),
+            ]
+            for base, out, label in simple:
+                if not os.path.isdir(os.path.join(base, 'bins')):
                     continue
-                print(f"\nProcessing stratum {stratum} ({len(files)} categories)...")
-                for table_type, category, unit in files:
-                    process_category(table_type, category, unit,
-                                     base_dir=stratum_base, output_dir=stratum_output)
+                print(f"  Generating {label} viewer → {out}")
+                generate_interactive_html(base, out, f'{label} ECDF Distributions')
+
+            # Complex strata: 3-panel (Overall / ICU / No ICU)
+            complex_strata = [
+                ('advanced_resp', 'Advanced Respiratory Support'),
+                ('vaso', 'Vasopressor Support'),
+            ]
+            for stratum, label in complex_strata:
+                base = str(cohort_dir(stratum))
+                if not os.path.isdir(os.path.join(base, 'bins')):
+                    continue
+                out = str(figures_dir(stratum) / 'distributions.html')
+                print(f"  Generating {label} viewer (3-panel) → {out}")
+                generate_interactive_html(
+                    base, out, f'{label} ECDF Distributions',
+                    sub_strata_suffixes=['_icu', '_no_icu'],
+                    panel_labels=['Overall', 'ICU', 'No ICU'],
+                )
 
             print(f"\n{'='*80}")
             print("✅ VISUALIZATION SUCCESSFUL")
@@ -407,12 +416,12 @@ class ECDFRunner:
 
         print(f"\n📊 Execution report saved: {report_path}")
 
-    def run(self, visualize=True):
+    def run(self, visualize=False):
         """
         Main execution method.
 
         Args:
-            visualize (bool): Whether to generate PNG visualizations (default True)
+            visualize (bool): Whether to generate interactive HTML viewers
 
         Returns:
             bool: True if successful, False otherwise

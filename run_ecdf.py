@@ -8,7 +8,7 @@ for labs, vitals, and respiratory support measurements.
 
 Usage:
     uv run run_ecdf.py
-    uv run run_ecdf.py --no-visualize  # Skip PNG visualization
+    uv run run_ecdf.py --visualize  # Also generate interactive HTML viewers
 """
 
 import sys
@@ -23,16 +23,16 @@ def main():
         description='Generate ECDF and bins data for labs, vitals, and respiratory support'
     )
     parser.add_argument(
-        '--no-visualize',
+        '--visualize',
         action='store_true',
-        help='Skip PNG visualization generation'
+        help='Generate interactive HTML distribution viewers'
     )
     args = parser.parse_args()
 
     try:
         # Initialize and run the ECDF generator
         runner = ECDFRunner()
-        success = runner.run(visualize=not args.no_visualize)
+        success = runner.run(visualize=args.visualize)
 
         # Exit with appropriate code
         sys.exit(0 if success else 1)
