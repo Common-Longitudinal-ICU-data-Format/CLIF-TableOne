@@ -88,6 +88,13 @@ import sys
 import warnings
 
 
+def _waterfall_chunk(args):
+    """Process a chunk of encounters through the waterfall (top-level for pickling)."""
+    chunk_df, id_col = args
+    from clifpy.utils.waterfall import process_resp_support_waterfall
+    return process_resp_support_waterfall(chunk_df, id_col=id_col, verbose=False)
+
+
 def crosstab_demographics(patient_df: pd.DataFrame) -> pd.DataFrame:
     """Cross-tabulate race × ethnicity × sex for NIH enrollment reporting.
 
@@ -139,7 +146,13 @@ def crosstab_demographics(patient_df: pd.DataFrame) -> pd.DataFrame:
 # Extracted summary functions for stratified output generation
 # ============================================================================
 
-def generate_ventilator_settings_summary(resp_valid, vent_settings, output_dir):
+def _suffixed(basename: str, suffix: str) -> str:
+    """Insert *suffix* before the file extension: 'foo.csv' + '_icu' -> 'foo_icu.csv'."""
+    stem, ext = os.path.splitext(basename)
+    return f'{stem}{suffix}{ext}'
+
+
+def generate_ventilator_settings_summary(resp_valid, vent_settings, output_dir, suffix=''):
     """Generate ventilator settings summary CSVs."""
     os.makedirs(output_dir, exist_ok=True)
     existing_settings = [col for col in vent_settings if col in resp_valid.columns]
@@ -178,7 +191,7 @@ def generate_ventilator_settings_summary(resp_valid, vent_settings, output_dir):
     settings_summary = settings_summary.rename(columns=rename_dict)
     sort_col = 'ventilator_setting' if 'ventilator_setting' in settings_summary.columns else 'mode_category'
     settings_summary = settings_summary.sort_values(['device_category', sort_col])
-    settings_summary.to_csv(os.path.join(output_dir, 'ventilator_settings_by_device_mode.csv'), index=False)
+    settings_summary.to_csv(os.path.join(output_dir, _suffixed('ventilator_settings_by_device_mode.csv', suffix)), index=False)
 
     # Counts table
     counts_summary = resp_valid.groupby(['device_category', 'mode_category'])[existing_settings].count().reset_index()
@@ -192,17 +205,17 @@ def generate_ventilator_settings_summary(resp_valid, vent_settings, output_dir):
     counts_summary = counts_summary.rename(columns=counts_rename)
     sort_col = 'ventilator_setting' if 'ventilator_setting' in counts_summary.columns else 'mode_category'
     counts_summary = counts_summary.sort_values(['device_category', sort_col])
-    counts_summary.to_csv(os.path.join(output_dir, 'ventilator_settings_counts_by_device_mode.csv'), index=False)
+    counts_summary.to_csv(os.path.join(output_dir, _suffixed('ventilator_settings_counts_by_device_mode.csv', suffix)), index=False)
 
     # Total observations
     total_obs_df = pd.DataFrame({
         'metric': ['total_respiratory_support_observations'],
         'value': [len(resp_valid)]
     })
-    total_obs_df.to_csv(os.path.join(output_dir, 'ventilator_settings_total_observations.csv'), index=False)
+    total_obs_df.to_csv(os.path.join(output_dir, _suffixed('ventilator_settings_total_observations.csv', suffix)), index=False)
 
 
-def generate_tidal_volume_stats(resp_imv_post_start, output_dir):
+def generate_tidal_volume_stats(resp_imv_post_start, output_dir, suffix=''):
     """Generate tidal volume stats for volume control modes."""
     os.makedirs(output_dir, exist_ok=True)
     volume_control_modes = ['assist control-volume control', 'pressure-regulated volume control']
@@ -225,12 +238,12 @@ def generate_tidal_volume_stats(resp_imv_post_start, output_dir):
     ]).reset_index()
     tv_stats = tv_stats[tv_stats['count'] >= 10]
 
-    tv_stats.to_csv(os.path.join(output_dir, 'tidal_volume_volume_control_modes.csv'), index=False)
+    tv_stats.to_csv(os.path.join(output_dir, _suffixed('tidal_volume_volume_control_modes.csv', suffix)), index=False)
     tv_stats[['hour_bin', 'mean', 'std', 'count']].to_csv(
-        os.path.join(output_dir, 'tidal_volume_volume_control_modes_mean_sd.csv'), index=False)
+        os.path.join(output_dir, _suffixed('tidal_volume_volume_control_modes_mean_sd.csv', suffix)), index=False)
 
 
-def generate_pressure_control_stats(resp_imv_post_start, output_dir):
+def generate_pressure_control_stats(resp_imv_post_start, output_dir, suffix=''):
     """Generate pressure control stats for pressure control mode."""
     os.makedirs(output_dir, exist_ok=True)
     pressure_mode_data = resp_imv_post_start[
@@ -252,12 +265,12 @@ def generate_pressure_control_stats(resp_imv_post_start, output_dir):
     ]).reset_index()
     pc_stats = pc_stats[pc_stats['count'] >= 10]
 
-    pc_stats.to_csv(os.path.join(output_dir, 'pressure_control_pressure_control_mode.csv'), index=False)
+    pc_stats.to_csv(os.path.join(output_dir, _suffixed('pressure_control_pressure_control_mode.csv', suffix)), index=False)
     pc_stats[['hour_bin', 'mean', 'std', 'count']].to_csv(
-        os.path.join(output_dir, 'pressure_control_pressure_control_mode_mean_sd.csv'), index=False)
+        os.path.join(output_dir, _suffixed('pressure_control_pressure_control_mode_mean_sd.csv', suffix)), index=False)
 
 
-def generate_mode_proportions(resp_imv_post_start, output_dir):
+def generate_mode_proportions(resp_imv_post_start, output_dir, suffix=''):
     """Generate mode proportions for first 24 hours of IMV."""
     os.makedirs(output_dir, exist_ok=True)
     if len(resp_imv_post_start) == 0:
@@ -290,10 +303,10 @@ def generate_mode_proportions(resp_imv_post_start, output_dir):
         'Proportion': mode_proportions.values,
         'Count': mode_counts[mode_proportions.index].values
     })
-    plot_data.to_csv(os.path.join(output_dir, 'mode_proportions_first_24h.csv'), index=False)
+    plot_data.to_csv(os.path.join(output_dir, _suffixed('mode_proportions_first_24h.csv', suffix)), index=False)
 
 
-def generate_medications_hourly(meds_merged, total_icu_encounters, med_groups, output_dir):
+def generate_medications_hourly(meds_merged, total_icu_encounters, med_groups, output_dir, suffix=''):
     """Generate hourly medication usage data."""
     os.makedirs(output_dir, exist_ok=True)
     all_meds = [med for meds in med_groups.values() for med in meds]
@@ -321,10 +334,10 @@ def generate_medications_hourly(meds_merged, total_icu_encounters, med_groups, o
 
     hourly_df = pd.DataFrame({'hour': np.arange(168)})
     hourly_df = pd.concat([hourly_df, pivot.add_suffix('_n'), pct_pivot.add_suffix('_pct')], axis=1)
-    hourly_df.to_csv(os.path.join(output_dir, 'medications_hourly_data.csv'), index=False)
+    hourly_df.to_csv(os.path.join(output_dir, _suffixed('medications_hourly_data.csv', suffix)), index=False)
 
 
-def generate_medications_summary(meds_merged, total_icu_encounters, med_groups, output_dir):
+def generate_medications_summary(meds_merged, total_icu_encounters, med_groups, output_dir, suffix=''):
     """Generate medication summary statistics."""
     os.makedirs(output_dir, exist_ok=True)
     all_meds = [med for meds in med_groups.values() for med in meds]
@@ -364,10 +377,10 @@ def generate_medications_summary(meds_merged, total_icu_encounters, med_groups, 
     summary_df['group'] = summary_df['medication'].map(med_to_group)
     summary_df = summary_df[['group', 'medication', 'n_encounters', 'pct_encounters',
                              'median_dose', 'q1_dose', 'q3_dose', 'dose_unit']]
-    summary_df.to_csv(os.path.join(output_dir, 'medications_summary_stats.csv'), index=False)
+    summary_df.to_csv(os.path.join(output_dir, _suffixed('medications_summary_stats.csv', suffix)), index=False)
 
 
-def generate_comorbidities(cci_results, output_dir):
+def generate_comorbidities(cci_results, output_dir, suffix=''):
     """Generate comorbidity prevalence per 1000 hospitalizations."""
     os.makedirs(output_dir, exist_ok=True)
     if len(cci_results) == 0:
@@ -390,7 +403,7 @@ def generate_comorbidities(cci_results, output_dir):
         'per_1000_hospitalizations': comorbidity_per_1000.values.round(1)
     }).sort_values('per_1000_hospitalizations', ascending=False).reset_index(drop=True)
 
-    comorbidity_summary.to_csv(os.path.join(output_dir, 'comorbidities_per_1000_hospitalizations.csv'), index=False)
+    comorbidity_summary.to_csv(os.path.join(output_dir, _suffixed('comorbidities_per_1000_hospitalizations.csv', suffix)), index=False)
 
     total_comorbidities = int(comorbidity_counts.sum())
     avg_comorbidities_per_hosp = total_comorbidities / total_hospitalizations if total_hospitalizations > 0 else 0
@@ -404,14 +417,14 @@ def generate_comorbidities(cci_results, output_dir):
         ['Most common comorbidity', most_common_comorbidity],
         ['Most common: per 1000 hospitalizations', f"{most_common_per_1000:.1f}"],
     ]
-    with open(os.path.join(output_dir, 'comorbidities_per_1000_hospitalizations_summary.csv'), 'w', newline='') as f:
+    with open(os.path.join(output_dir, _suffixed('comorbidities_per_1000_hospitalizations_summary.csv', suffix)), 'w', newline='') as f:
         writer = csv.writer(f)
         writer.writerow(['Metric', 'Value'])
         for row in summary_stats_rows:
             writer.writerow(row)
 
 
-def generate_sofa_mortality(final_tableone_df, output_dir):
+def generate_sofa_mortality(final_tableone_df, output_dir, suffix=''):
     """Generate SOFA-mortality summary."""
     os.makedirs(output_dir, exist_ok=True)
     if 'sofa_total' not in final_tableone_df.columns or 'death_enc' not in final_tableone_df.columns:
@@ -456,10 +469,10 @@ def generate_sofa_mortality(final_tableone_df, output_dir):
     for col in ['mortality_rate_percent', 'ci_lower_95', 'ci_upper_95', 'ci_margin_95']:
         sofa_export[col] = sofa_export[col].round(2)
 
-    sofa_export.to_csv(os.path.join(output_dir, 'sofa_mortality_summary.csv'), index=False)
+    sofa_export.to_csv(os.path.join(output_dir, _suffixed('sofa_mortality_summary.csv', suffix)), index=False)
 
 
-def generate_hospice_trends(final_tableone_df, output_dir):
+def generate_hospice_trends(final_tableone_df, output_dir, suffix=''):
     """Generate hospice vs mortality trends by year."""
     os.makedirs(output_dir, exist_ok=True)
     required_cols = ['encounter_block', 'admission_year', 'hospice_outcome',
@@ -496,10 +509,10 @@ def generate_hospice_trends(final_tableone_df, output_dir):
     hospice_trends['hospice_among_eol_ci_lower'] = [x[0] for x in ci_results]
     hospice_trends['hospice_among_eol_ci_upper'] = [x[1] for x in ci_results]
 
-    hospice_trends.to_csv(os.path.join(output_dir, 'hospice_trends_summary.csv'), index=False)
+    hospice_trends.to_csv(os.path.join(output_dir, _suffixed('hospice_trends_summary.csv', suffix)), index=False)
 
 
-def generate_cci_hospice_mortality(final_tableone_df, output_dir):
+def generate_cci_hospice_mortality(final_tableone_df, output_dir, suffix=''):
     """Generate CCI-hospice-mortality comprehensive summary."""
     os.makedirs(output_dir, exist_ok=True)
     required_cols = ['encounter_block', 'cci_score', 'admission_year',
@@ -543,7 +556,7 @@ def generate_cci_hospice_mortality(final_tableone_df, output_dir):
                                 'hospice_or_expired_count', 'combined_eol_pct',
                                 'hospice_among_eol_pct', 'hospice_eol_ci_lower', 'hospice_eol_ci_upper',
                                 'hospice_capture_rate']]
-    cci_summary.to_csv(os.path.join(output_dir, 'cci_hospice_mortality_comprehensive_summary.csv'), index=False)
+    cci_summary.to_csv(os.path.join(output_dir, _suffixed('cci_hospice_mortality_comprehensive_summary.csv', suffix)), index=False)
 
     # Plot data
     categories = ['0 (No comorbidity)', '1-2 (Mild)', '3-4 (Moderate)', '5+ (Severe)']
@@ -552,14 +565,14 @@ def generate_cci_hospice_mortality(final_tableone_df, output_dir):
         cat_data = cci_summary[cci_summary['cci_category'] == category].sort_values('year')
         plot_data.append(cat_data.assign(cci_category_label=category))
     plot_data_df = pd.concat(plot_data, axis=0)
-    plot_data_df.to_csv(os.path.join(output_dir, 'cci_mortality_hospice_trends_by_year_category_plotdata.csv'), index=False)
+    plot_data_df.to_csv(os.path.join(output_dir, _suffixed('cci_mortality_hospice_trends_by_year_category_plotdata.csv', suffix)), index=False)
 
 
-def generate_demographic_crosstab(patient_df, output_dir):
+def generate_demographic_crosstab(patient_df, output_dir, suffix=''):
     """Generate NIH enrollment report demographic crosstab."""
     os.makedirs(output_dir, exist_ok=True)
     enrollment_report = crosstab_demographics(patient_df)
-    enrollment_report.to_csv(os.path.join(output_dir, 'demographic_crosstab_race_ethnicity_sex.csv'))
+    enrollment_report.to_csv(os.path.join(output_dir, _suffixed('demographic_crosstab_race_ethnicity_sex.csv', suffix)))
 
 
 def main(memory_monitor=None, cohort_mode='critical_illness') -> bool:
@@ -1640,18 +1653,61 @@ def main(memory_monitor=None, cohort_mode='critical_illness') -> bool:
     for col in category_cols:
         clif.respiratory_support.df[col] = clif.respiratory_support.df[col].str.lower()
 
-
-    # Identify hospitalizations on advanced mechanical support
-    print(f"\nIdentifying hospitalizations with advanced respiratory support devices...")
-    device_types = ['imv', 'nippv', 'cpap', 'high flow nc']
-    clif.respiratory_support.df = pd.merge(clif.respiratory_support.df, encounter_mapping, 
+    clif.respiratory_support.df = pd.merge(clif.respiratory_support.df, encounter_mapping,
                                             on='hospitalization_id', how='left')
+
+    # Filter to cohort encounters and run waterfall to fill sparse lpm_set
+    # (must precede HFNC >= 30 LPM threshold check which needs filled values)
+    _cohort_enc_blocks = final_cohort['encounter_block'].unique()
+    clif.respiratory_support.df = clif.respiratory_support.df[
+        clif.respiratory_support.df['encounter_block'].isin(_cohort_enc_blocks)
+    ].copy()
+    clif.respiratory_support.df = clif.respiratory_support.df.sort_values(
+        ['hospitalization_id', 'recorded_dttm']
+    )
+    apply_outlier_handling(clif.respiratory_support)
+
+    # Run waterfall (parallel by default, sequential fallback)
+    print(f"\nApplying waterfall to respiratory support ({len(clif.respiratory_support.df):,} rows)...")
+    try:
+        from concurrent.futures import ProcessPoolExecutor
+        _enc_blocks = clif.respiratory_support.df['encounter_block'].unique()
+        _n_workers = min(os.cpu_count() or 4, max(1, len(_enc_blocks) // 10))
+        if _n_workers > 1:
+            _chunks = np.array_split(_enc_blocks, _n_workers)
+            _df_chunks = [
+                (clif.respiratory_support.df[
+                    clif.respiratory_support.df['encounter_block'].isin(c)
+                ].copy(), 'encounter_block')
+                for c in _chunks
+            ]
+            print(f"  Parallel waterfall: {_n_workers} workers, {len(_enc_blocks)} encounters...")
+            with ProcessPoolExecutor(max_workers=_n_workers) as executor:
+                _results = list(executor.map(_waterfall_chunk, _df_chunks))
+            clif.respiratory_support.df = pd.concat(_results, ignore_index=True)
+        else:
+            raise ValueError("Too few encounters for parallelization")
+    except Exception as e:
+        print(f"  Parallel waterfall unavailable ({e}), using sequential...")
+        clif.respiratory_support = clif.respiratory_support.waterfall(
+            id_col='encounter_block', verbose=True
+        )
+    print(f"Waterfall complete: {len(clif.respiratory_support.df):,} rows")
+
+    # Identify hospitalizations on advanced respiratory support
+    # IMV, NIPPV, CPAP always qualify; HFNC qualifies only at >= 30 LPM
+    print(f"\nIdentifying hospitalizations with advanced respiratory support devices...")
+    always_mask = clif.respiratory_support.df['device_category'].isin(
+        ['imv', 'nippv', 'cpap']
+    )
+    hfnc_mask = (
+        (clif.respiratory_support.df['device_category'] == 'high flow nc')
+        & (clif.respiratory_support.df['lpm_set'] >= 30)
+    )
     advanced_support_hosp_ids = clif.respiratory_support.df.loc[
-        clif.respiratory_support.df['device_category'].str.lower().isin([d.lower() for d in device_types]),
-        'encounter_block'
+        always_mask | hfnc_mask, 'encounter_block'
     ].unique()
-    print(f"Hospitalizations with any advanced resp. device ({', '.join(device_types).upper()}): {len(advanced_support_hosp_ids):,}")
-    # strobe_counts["2_advanced_resp_support_hospitalizations"] = len(advanced_support_hosp_ids)
+    print(f"Hospitalizations with advanced resp. support (IMV/NIPPV/CPAP or HFNC>=30 LPM): {len(advanced_support_hosp_ids):,}")
 
     # Create a DataFrame with advanced_support_hosp_ids and 'high_support_en' == 1
     advanced_support_df = pd.DataFrame({
@@ -1666,6 +1722,16 @@ def main(memory_monitor=None, cohort_mode='critical_illness') -> bool:
         on='encounter_block',
         how='left'
     )
+
+    # Detect respiratory failure onset for PF/SF calculation
+    print("Detecting respiratory failure onset for PF/SF ratios...")
+    from modules.tableone.pf_sf_calculator import detect_respiratory_failure_onset
+    resp_failure_onset_df = detect_respiratory_failure_onset(
+        clif.respiratory_support.df,
+        cohort_ids=final_cohort['encounter_block'].unique(),
+        id_col='encounter_block'
+    )
+    print(f"Respiratory failure onset detected for {len(resp_failure_onset_df):,} encounters")
 
     # Memory cleanup: Clear respiratory support intermediate data
     print("Clearing respiratory support intermediate data from memory...")
@@ -2544,45 +2610,24 @@ def main(memory_monitor=None, cohort_mode='critical_illness') -> bool:
     # # IMV encounters
     # ==============================================================================
 
-    # IMV / respiratory characteristics processing is expensive: it loads the
-    # respiratory_support table again, applies the waterfall (2-20 min depending
-    # on cohort size), computes vent hours / IMV episodes / first-location-at-IMV,
-    # and runs the first-24h ventilator settings analysis (tidal volume curves,
-    # pressure control curves, mode proportions). For ward mode the user opted
-    # out of these characteristics for memory + time. The high-level
-    # `high_support_enc` flag (used for the "Advanced respiratory support"
-    # encounter type row) is computed earlier from a fast device_category filter
-    # and is unaffected.
+    # IMV / respiratory characteristics processing computes vent hours / IMV
+    # episodes / first-location-at-IMV and runs first-24h ventilator settings
+    # analysis (tidal volume curves, pressure control curves, mode proportions).
+    # The waterfall already ran earlier (before the high_support_enc flag) so
+    # respiratory_support data is already filled. For ward mode the user opted
+    # out of these characteristics for memory + time.
     if cohort_mode == 'ward':
         print("\nSkipping IMV / respiratory support characteristics block (ward mode)")
 
     for _imv_iter in (range(1) if cohort_mode != 'ward' else range(0)):
-        # Filter to only IMV hospitalizations
+        # Filter to final cohort hospitalizations (waterfall already applied earlier)
         clif.respiratory_support.df = clif.respiratory_support.df[
             clif.respiratory_support.df['hospitalization_id'].isin(final_hosp_ids)
         ].copy()
-        print(f"Respiratory support rows (IMV hospitalizations): {len(clif.respiratory_support.df):,}")
+        print(f"Respiratory support rows (final cohort): {len(clif.respiratory_support.df):,}")
         clif.respiratory_support.df = clif.respiratory_support.df.sort_values(['hospitalization_id', 'recorded_dttm'])
 
-        # Standardize category columns to lowercase
-        print(f"\nStandardizing category columns...")
-        category_cols = [col for col in clif.respiratory_support.df.columns if col.endswith('_category')]
-        for col in category_cols:
-            clif.respiratory_support.df[col] = clif.respiratory_support.df[col].str.lower()
-
-        apply_outlier_handling(clif.respiratory_support)
-
-        # Merge with encounter_block mapping
         resp_stitched = clif.respiratory_support.df
-
-        # Save pre-waterfall snapshot for debug logging (lightweight: just columns we'll log)
-        _pre_waterfall = resp_stitched[['encounter_block', 'recorded_dttm', 'device_category', 'mode_category']].copy()
-
-        # Apply waterfall to fill sparse data and infer device categories from mode strings
-        print(f"\nApplying waterfall processing to respiratory support data. This can take 2-20 mins based on your system specs and cohort size......")
-        clif.respiratory_support = clif.respiratory_support.waterfall(id_col='encounter_block', verbose=True)
-        resp_stitched = clif.respiratory_support.df
-        print(f"Waterfall complete: {len(resp_stitched):,} rows for {resp_stitched['encounter_block'].nunique():,} unique encounter blocks")
 
         # Write detailed vent hours debug log to intermediate output
         _vent_log_path = project_root / 'output' / 'intermediate' / 'vent_hours_debug.log'
@@ -2602,17 +2647,8 @@ def main(memory_monitor=None, cohort_mode='critical_illness') -> bool:
         # Get unique encounter IDs from resp_stitched_imv
         imv_encounters = resp_stitched_imv['encounter_block'].unique()
 
-        # Pick sample encounter (first IMV encounter so all samples match)
+        # Log sample encounter for debugging
         _log_sample_enc = imv_encounters[0] if len(imv_encounters) > 0 else resp_stitched['encounter_block'].iloc[0]
-
-        # Step A: Pre-waterfall sample
-        pre_sample = _pre_waterfall[_pre_waterfall['encounter_block'] == _log_sample_enc].head(30)
-        _vent_log.write(f"--- Pre-waterfall sample (encounter: {_log_sample_enc}) ---\n")
-        _vent_log.write(pre_sample.to_string(index=False) + "\n")
-        _vent_log.write("---\n\n")
-        del _pre_waterfall  # free memory
-
-        # Step B: Post-waterfall sample
         sample = resp_stitched[resp_stitched['encounter_block'] == _log_sample_enc][['encounter_block', 'recorded_dttm', 'device_category', 'mode_category']].head(30)
         _vent_log.write(f"--- Post-waterfall sample (encounter: {_log_sample_enc}) ---\n")
         _vent_log.write(sample.to_string(index=False) + "\n")
@@ -2633,11 +2669,6 @@ def main(memory_monitor=None, cohort_mode='critical_illness') -> bool:
             how='left'
         )
         final_tableone_df['on_vent'] = final_tableone_df['on_vent'].fillna(0).astype(int)
-
-        # # Apply waterfall processing to fill sparse data
-        # print(f"\nApplying waterfall processing to respiratory support data. This can take 2-20 mins based on your system specs and cohort size...")
-        # clif.respiratory_support = clif.respiratory_support.waterfall(verbose=True)
-        # print(f"\n Waterfall complete: {len(clif.respiratory_support.df):,} rows for {clif.respiratory_support.df['hospitalization_id'].nunique():,} unique hospitalizations")
 
         # ============================================================================
         # Compute accurate IMV hours from waterfall time-series
@@ -4237,49 +4268,79 @@ def main(memory_monitor=None, cohort_mode='critical_illness') -> bool:
     # # Sepsis (CDC Adult Sepsis Event)
     # ==============================================================================
 
-    print(f"\nComputing Adult Sepsis Events (ASE)...")
-    try:
-        ase_df = compute_ase(
-            hospitalization_ids=final_hosp_ids,
-            config_path=config_path,
-            data_directory=config['tables_path'],
-            filetype=config['file_type'],
-            verbose=True
-        )
-
-        # Print sample of ASE results
-        print("\n--- ASE Results Sample (first 20 rows) ---")
-        print(ase_df.head(20).to_string())
-        print(f"--- End ASE Sample ({len(ase_df)} total rows) ---\n")
-
-        # Map hospitalization_id → encounter_block
-        ase_enc = ase_df.merge(
-            encounter_mapping[['hospitalization_id', 'encounter_block']],
-            on='hospitalization_id',
-            how='inner'
-        )
-
-        # Count sepsis events per encounter_block using both methods
-        sepsis_rows = ase_enc[ase_enc['sepsis'] == 1]
-        counts_by_sepsis = sepsis_rows.groupby('encounter_block').size().reset_index(name='sepsis_events_by_sepsis_col')
-        counts_by_episode = sepsis_rows.groupby('encounter_block')['episode_id'].count().reset_index(name='sepsis_events_by_episode_id')
-
-        sepsis_counts = counts_by_sepsis.merge(counts_by_episode, on='encounter_block', how='outer')
-
-        final_tableone_df = final_tableone_df.merge(sepsis_counts, on='encounter_block', how='left')
-        final_tableone_df['sepsis_events_by_sepsis_col'] = final_tableone_df['sepsis_events_by_sepsis_col'].fillna(0).astype(int)
-        final_tableone_df['sepsis_events_by_episode_id'] = final_tableone_df['sepsis_events_by_episode_id'].fillna(0).astype(int)
-
-        total_by_sepsis = final_tableone_df['sepsis_events_by_sepsis_col'].sum()
-        total_by_episode = final_tableone_df['sepsis_events_by_episode_id'].sum()
-        enc_with_sepsis = (final_tableone_df['sepsis_events_by_sepsis_col'] > 0).sum()
-        print(f"   Total sepsis events (via sepsis col): {total_by_sepsis:,}")
-        print(f"   Total sepsis events (via episode_id): {total_by_episode:,}")
-        print(f"   Encounters with >=1 sepsis event: {enc_with_sepsis:,} / {len(final_tableone_df):,}")
-    except Exception as e:
-        print(f"Warning: Failed to compute ASE: {e}. Proceeding without sepsis data.")
+    if cohort_mode == 'ward':
+        print("\nSkipping ASE computation (ward mode)")
         final_tableone_df['sepsis_events_by_sepsis_col'] = 0
         final_tableone_df['sepsis_events_by_episode_id'] = 0
+    else:
+        print(f"\nComputing Adult Sepsis Events (ASE)...")
+        ASE_BATCH_SIZE = 50_000
+        try:
+            if len(final_hosp_ids) > ASE_BATCH_SIZE:
+                # Batch to keep DuckDB memory bounded
+                batches = [
+                    final_hosp_ids[i:i + ASE_BATCH_SIZE]
+                    for i in range(0, len(final_hosp_ids), ASE_BATCH_SIZE)
+                ]
+                print(f"   Processing {len(final_hosp_ids):,} hospitalizations in {len(batches)} batches of ≤{ASE_BATCH_SIZE:,}")
+                ase_parts = []
+                for idx, batch_ids in enumerate(batches, 1):
+                    print(f"   Batch {idx}/{len(batches)} ({len(batch_ids):,} IDs)...")
+                    part = compute_ase(
+                        hospitalization_ids=batch_ids,
+                        config_path=config_path,
+                        data_directory=config['tables_path'],
+                        filetype=config['file_type'],
+                        verbose=False
+                    )
+                    ase_parts.append(part)
+                    gc.collect()
+                ase_df = pd.concat(ase_parts, ignore_index=True)
+                del ase_parts
+                gc.collect()
+                print(f"   All batches complete — {len(ase_df):,} total rows")
+            else:
+                ase_df = compute_ase(
+                    hospitalization_ids=final_hosp_ids,
+                    config_path=config_path,
+                    data_directory=config['tables_path'],
+                    filetype=config['file_type'],
+                    verbose=True
+                )
+
+            # Print sample of ASE results
+            print("\n--- ASE Results Sample (first 20 rows) ---")
+            print(ase_df.head(20).to_string())
+            print(f"--- End ASE Sample ({len(ase_df)} total rows) ---\n")
+
+            # Map hospitalization_id → encounter_block
+            ase_enc = ase_df.merge(
+                encounter_mapping[['hospitalization_id', 'encounter_block']],
+                on='hospitalization_id',
+                how='inner'
+            )
+
+            # Count sepsis events per encounter_block using both methods
+            sepsis_rows = ase_enc[ase_enc['sepsis'] == 1]
+            counts_by_sepsis = sepsis_rows.groupby('encounter_block').size().reset_index(name='sepsis_events_by_sepsis_col')
+            counts_by_episode = sepsis_rows.groupby('encounter_block')['episode_id'].count().reset_index(name='sepsis_events_by_episode_id')
+
+            sepsis_counts = counts_by_sepsis.merge(counts_by_episode, on='encounter_block', how='outer')
+
+            final_tableone_df = final_tableone_df.merge(sepsis_counts, on='encounter_block', how='left')
+            final_tableone_df['sepsis_events_by_sepsis_col'] = final_tableone_df['sepsis_events_by_sepsis_col'].fillna(0).astype(int)
+            final_tableone_df['sepsis_events_by_episode_id'] = final_tableone_df['sepsis_events_by_episode_id'].fillna(0).astype(int)
+
+            total_by_sepsis = final_tableone_df['sepsis_events_by_sepsis_col'].sum()
+            total_by_episode = final_tableone_df['sepsis_events_by_episode_id'].sum()
+            enc_with_sepsis = (final_tableone_df['sepsis_events_by_sepsis_col'] > 0).sum()
+            print(f"   Total sepsis events (via sepsis col): {total_by_sepsis:,}")
+            print(f"   Total sepsis events (via episode_id): {total_by_episode:,}")
+            print(f"   Encounters with >=1 sepsis event: {enc_with_sepsis:,} / {len(final_tableone_df):,}")
+        except Exception as e:
+            print(f"Warning: Failed to compute ASE: {e}. Proceeding without sepsis data.")
+            final_tableone_df['sepsis_events_by_sepsis_col'] = 0
+            final_tableone_df['sepsis_events_by_episode_id'] = 0
 
 
     # ==============================================================================
@@ -5666,6 +5727,29 @@ def main(memory_monitor=None, cohort_mode='critical_illness') -> bool:
         print(f"\n✅ Saved: {_t1by_path}")
 
     # ============================================================================
+    # Step 4b: Compute PF/SF ratios for advanced_resp strata
+    # ============================================================================
+    pf_sf_per_encounter = None
+    if cohort_mode != 'ward' and resp_failure_onset_df is not None and len(resp_failure_onset_df) > 0:
+        print("\n" + "="*80)
+        print("COMPUTING PF/SF RATIOS (first 24h of respiratory failure)")
+        print("="*80)
+        from modules.tableone.pf_sf_calculator import calculate_pf_sf_ratios
+        try:
+            pf_sf_per_encounter = calculate_pf_sf_ratios(
+                onset_df=resp_failure_onset_df,
+                data_directory=config['tables_path'],
+                filetype=config['file_type'],
+                timezone=config['timezone'],
+                id_col='encounter_block'
+            )
+            print(f"PF/SF ratios computed for {len(pf_sf_per_encounter):,} encounters")
+        except Exception as e:
+            print(f"⚠️ PF/SF calculation failed: {e}")
+            import traceback
+            traceback.print_exc()
+
+    # ============================================================================
     # Step 5: Generate Table Ones by Encounter Type (with year columns)
     # ============================================================================
 
@@ -5682,6 +5766,8 @@ def main(memory_monitor=None, cohort_mode='critical_illness') -> bool:
         print("="*80)
 
         from modules.strata import ENCOUNTER_TYPE_STRATA as encounter_type_strata
+        from modules.utils.output_paths import parse_stratum
+        _pf_sf_strata_data = {}  # Collect PF/SF data for comparison figure
 
         for stratum_name, col in encounter_type_strata.items():
             if col not in tableone_df.columns:
@@ -5692,6 +5778,8 @@ def main(memory_monitor=None, cohort_mode='critical_illness') -> bool:
             if len(df_strat) == 0:
                 print(f"  ⚠️ Skipping {stratum_name}: no encounters")
                 continue
+
+            _, _strat_suffix = parse_stratum(stratum_name)
 
             pat_strat = patient_df[patient_df['patient_id'].isin(df_strat['patient_id'])]
             print(f"\n  {stratum_name}: {len(df_strat):,} encounters, {len(pat_strat):,} patients")
@@ -5718,15 +5806,48 @@ def main(memory_monitor=None, cohort_mode='critical_illness') -> bool:
                 .rename(columns={'index': 'Variable'})
             )
 
-            # Slugify stratum_name for the filename only — the directory arg keeps
-            # the slash so nested keys like 'vaso/icu' or 'advanced_resp/icu'
-            # resolve to vaso/icu/tableone/ and advanced_resp/icu/tableone/.
+            # Slugify stratum_name for the filename — sub-strata resolve to the
+            # parent directory so no nested icu/no_icu subdirs are created.
             _strat_slug = stratum_name.replace('/', '_')
             out_path = os.path.join(str(_tableone_dir(stratum=stratum_name)),
                                       f'table_one_{_strat_slug}_by_year.csv')
             os.makedirs(os.path.dirname(out_path), exist_ok=True)
             strat_table.to_csv(out_path, index=False)
             print(f"  ✅ Saved: {out_path}")
+
+            # PF/SF CSV output for advanced_resp strata
+            _PFVSF_STRATA = {'advanced_resp', 'advanced_resp/icu', 'advanced_resp/no_icu'}
+            if stratum_name in _PFVSF_STRATA and pf_sf_per_encounter is not None and len(pf_sf_per_encounter) > 0:
+                from modules.tableone.pf_sf_calculator import generate_aggregate_stats
+                strat_enc_ids = df_strat['encounter_block'].unique()
+                strat_pf_sf = pf_sf_per_encounter[pf_sf_per_encounter['encounter_block'].isin(strat_enc_ids)]
+                if len(strat_pf_sf) > 0:
+                    strat_tableone_dir = str(_tableone_dir(stratum=stratum_name))
+                    os.makedirs(strat_tableone_dir, exist_ok=True)
+                    # Per-encounter CSV
+                    pf_sf_path = os.path.join(strat_tableone_dir, _suffixed('pf_sf_summary_24h.csv', _strat_suffix))
+                    strat_pf_sf.to_csv(pf_sf_path, index=False)
+                    print(f"  ✅ PF/SF per-encounter: {pf_sf_path}")
+                    # Aggregate stats CSV
+                    agg_stats = generate_aggregate_stats(strat_pf_sf)
+                    agg_path = os.path.join(strat_tableone_dir, _suffixed('pf_sf_aggregate_stats.csv', _strat_suffix))
+                    agg_stats.to_csv(agg_path, index=False)
+                    print(f"  ✅ PF/SF aggregate stats: {agg_path}")
+                    # Collect for comparison figure
+                    _fig_label = {'advanced_resp': 'Overall', 'advanced_resp/icu': 'ICU', 'advanced_resp/no_icu': 'No ICU'}
+                    if stratum_name in _fig_label:
+                        _pf_sf_strata_data[_fig_label[stratum_name]] = strat_pf_sf
+
+        # Generate PF/SF comparison figure across strata
+        if len(_pf_sf_strata_data) > 0 and pf_sf_per_encounter is not None:
+            from modules.tableone.pf_sf_calculator import generate_pf_sf_comparison_figure
+            _fig_dir = os.path.join(str(project_root), 'output', 'final', 'strata', 'advanced_resp', 'figures')
+            _fig_path = os.path.join(_fig_dir, 'pf_sf_comparison_overall_icu_noicu.png')
+            try:
+                generate_pf_sf_comparison_figure(_pf_sf_strata_data, _fig_path)
+                print(f"  ✅ PF/SF comparison figure: {_fig_path}")
+            except Exception as e:
+                print(f"  ⚠️ PF/SF comparison figure failed: {e}")
 
     # ============================================================================
     # NIH Enrollment Report — race × ethnicity × sex cross-tabulation
@@ -5778,6 +5899,7 @@ def main(memory_monitor=None, cohort_mode='critical_illness') -> bool:
         print("="*80)
 
         from modules.strata import ENCOUNTER_TYPE_STRATA
+        from modules.utils.output_paths import parse_stratum as _parse_stratum
 
         for stratum_name, col in ENCOUNTER_TYPE_STRATA.items():
             if col not in final_tableone_df.columns:
@@ -5788,6 +5910,8 @@ def main(memory_monitor=None, cohort_mode='critical_illness') -> bool:
             if len(strat_df) == 0:
                 print(f"  ⚠️ Skipping {stratum_name}: no encounters")
                 continue
+
+            _, strat_suffix = _parse_stratum(stratum_name)
 
             strat_hosp_ids = set(strat_df['hospitalization_id'].unique())
             strat_patient_ids = set(strat_df['patient_id'].unique())
@@ -5819,67 +5943,67 @@ def main(memory_monitor=None, cohort_mode='critical_illness') -> bool:
             strat_icu_encounters = strat_df[strat_df['icu_enc'] == 1]['encounter_block'].nunique() if 'icu_enc' in strat_df.columns else 0
 
             try:
-                generate_ventilator_settings_summary(strat_resp_valid, vent_settings, strat_output_dir)
+                generate_ventilator_settings_summary(strat_resp_valid, vent_settings, strat_output_dir, suffix=strat_suffix)
                 print(f"    ✅ ventilator_settings")
             except Exception as e:
                 print(f"    ❌ ventilator_settings: {e}")
 
             try:
-                generate_tidal_volume_stats(strat_resp_imv, strat_output_dir)
+                generate_tidal_volume_stats(strat_resp_imv, strat_output_dir, suffix=strat_suffix)
                 print(f"    ✅ tidal_volume_stats")
             except Exception as e:
                 print(f"    ❌ tidal_volume_stats: {e}")
 
             try:
-                generate_pressure_control_stats(strat_resp_imv, strat_output_dir)
+                generate_pressure_control_stats(strat_resp_imv, strat_output_dir, suffix=strat_suffix)
                 print(f"    ✅ pressure_control_stats")
             except Exception as e:
                 print(f"    ❌ pressure_control_stats: {e}")
 
             try:
-                generate_mode_proportions(strat_resp_imv, strat_output_dir)
+                generate_mode_proportions(strat_resp_imv, strat_output_dir, suffix=strat_suffix)
                 print(f"    ✅ mode_proportions")
             except Exception as e:
                 print(f"    ❌ mode_proportions: {e}")
 
             try:
-                generate_medications_hourly(strat_meds, strat_icu_encounters, med_groups, strat_output_dir)
+                generate_medications_hourly(strat_meds, strat_icu_encounters, med_groups, strat_output_dir, suffix=strat_suffix)
                 print(f"    ✅ medications_hourly")
             except Exception as e:
                 print(f"    ❌ medications_hourly: {e}")
 
             try:
-                generate_medications_summary(strat_meds, strat_icu_encounters, med_groups, strat_output_dir)
+                generate_medications_summary(strat_meds, strat_icu_encounters, med_groups, strat_output_dir, suffix=strat_suffix)
                 print(f"    ✅ medications_summary")
             except Exception as e:
                 print(f"    ❌ medications_summary: {e}")
 
             try:
-                generate_comorbidities(strat_cci, strat_output_dir)
+                generate_comorbidities(strat_cci, strat_output_dir, suffix=strat_suffix)
                 print(f"    ✅ comorbidities")
             except Exception as e:
                 print(f"    ❌ comorbidities: {e}")
 
             try:
-                generate_sofa_mortality(strat_df, strat_output_dir)
+                generate_sofa_mortality(strat_df, strat_output_dir, suffix=strat_suffix)
                 print(f"    ✅ sofa_mortality")
             except Exception as e:
                 print(f"    ❌ sofa_mortality: {e}")
 
             try:
-                generate_hospice_trends(strat_df, strat_output_dir)
+                generate_hospice_trends(strat_df, strat_output_dir, suffix=strat_suffix)
                 print(f"    ✅ hospice_trends")
             except Exception as e:
                 print(f"    ❌ hospice_trends: {e}")
 
             try:
-                generate_cci_hospice_mortality(strat_df, strat_output_dir)
+                generate_cci_hospice_mortality(strat_df, strat_output_dir, suffix=strat_suffix)
                 print(f"    ✅ cci_hospice_mortality")
             except Exception as e:
                 print(f"    ❌ cci_hospice_mortality: {e}")
 
             try:
-                generate_demographic_crosstab(strat_patient, strat_output_dir)
+                generate_demographic_crosstab(strat_patient, strat_output_dir, suffix=strat_suffix)
                 print(f"    ✅ demographic_crosstab")
             except Exception as e:
                 print(f"    ❌ demographic_crosstab: {e}")
