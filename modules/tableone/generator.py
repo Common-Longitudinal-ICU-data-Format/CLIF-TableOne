@@ -29,6 +29,7 @@ Converted from: code/archives/generate_table_one_2_1.ipynb
 # ==============================================================================
 
 import pandas as pd
+pd.set_option('future.no_silent_downcasting', True)
 import numpy as np
 import matplotlib.pyplot as plt
 import gc
@@ -2111,6 +2112,8 @@ def main(memory_monitor=None, cohort_mode='critical_illness') -> bool:
     final_cohort_merge_cols = ['encounter_block',
                                'high_support_enc',
                                'high_support_icu_enc', 'high_support_no_icu_enc',
+                               'nippv_hfnc_enc',
+                               'nippv_hfnc_icu_enc', 'nippv_hfnc_no_icu_enc',
                                'vaso_support_enc',
                                'vaso_icu_enc', 'vaso_no_icu_enc',
                                'other_critically_ill']
@@ -4772,460 +4775,464 @@ def main(memory_monitor=None, cohort_mode='critical_illness') -> bool:
     # ==============================================================================
     # ## Hospice Use vs Mortality Trends
     # ==============================================================================
+    # CCI/hospice analysis only for overall critical-illness cohort.
 
+    if cohort_mode == 'ward':
+        print("\nSkipping CCI/hospice analysis (ward mode)")
+    else:
 
-    # ============================================================================
-    # Prepare Comprehensive Hospice Trend Data
-    # ============================================================================
+        # ============================================================================
+        # Prepare Comprehensive Hospice Trend Data
+        # ============================================================================
 
-    # Extract year from admission_dttm
-    final_tableone_df['admission_year'] = final_tableone_df['admission_dttm'].dt.year
+        # Extract year from admission_dttm
+        final_tableone_df['admission_year'] = final_tableone_df['admission_dttm'].dt.year
 
-    # Create outcome variables (encounter-level, matching death_enc pattern)
-    _hospice_mask = (final_tableone_df['discharge_category'].str.lower() == 'hospice')
-    final_tableone_df['hospice_outcome'] = _hospice_mask.groupby(
-        final_tableone_df['encounter_block']
-    ).transform('any').astype(int)
+        # Create outcome variables (encounter-level, matching death_enc pattern)
+        _hospice_mask = (final_tableone_df['discharge_category'].str.lower() == 'hospice')
+        final_tableone_df['hospice_outcome'] = _hospice_mask.groupby(
+            final_tableone_df['encounter_block']
+        ).transform('any').astype(int)
 
-    _expired_mask = (final_tableone_df['discharge_category'].str.lower() == 'expired')
-    final_tableone_df['expired_outcome'] = _expired_mask.groupby(
-        final_tableone_df['encounter_block']
-    ).transform('any').astype(int)
+        _expired_mask = (final_tableone_df['discharge_category'].str.lower() == 'expired')
+        final_tableone_df['expired_outcome'] = _expired_mask.groupby(
+            final_tableone_df['encounter_block']
+        ).transform('any').astype(int)
 
-    final_tableone_df['hospice_or_expired'] = (
-        final_tableone_df['hospice_outcome'] | final_tableone_df['expired_outcome']
-    ).astype(int)
+        final_tableone_df['hospice_or_expired'] = (
+            final_tableone_df['hospice_outcome'] | final_tableone_df['expired_outcome']
+        ).astype(int)
 
-    # ============================================================================
-    # Aggregate All Metrics by Year (Single DataFrame)
-    # ============================================================================
+        # ============================================================================
+        # Aggregate All Metrics by Year (Single DataFrame)
+        # ============================================================================
 
-    # Deduplicate to one row per encounter for aggregations (outcome flags are
-    # now encounter-level, so summing multi-row encounters would over-count)
-    _enc_deduped = final_tableone_df.drop_duplicates(subset=['encounter_block'])
+        # Deduplicate to one row per encounter for aggregations (outcome flags are
+        # now encounter-level, so summing multi-row encounters would over-count)
+        _enc_deduped = final_tableone_df.drop_duplicates(subset=['encounter_block'])
 
-    hospice_trends = _enc_deduped.groupby('admission_year').agg({
-        'encounter_block': 'count',  # Total encounters
-        'hospice_outcome': 'sum',    # Hospice discharges
-        'expired_outcome': 'sum',    # Deaths
-        'hospice_or_expired': 'sum'  # Combined end-of-life
-    }).reset_index()
+        hospice_trends = _enc_deduped.groupby('admission_year').agg({
+            'encounter_block': 'count',  # Total encounters
+            'hospice_outcome': 'sum',    # Hospice discharges
+            'expired_outcome': 'sum',    # Deaths
+            'hospice_or_expired': 'sum'  # Combined end-of-life
+        }).reset_index()
 
-    hospice_trends.columns = ['year', 'total_encounters', 'hospice', 'expired', 'hospice_or_expired']
+        hospice_trends.columns = ['year', 'total_encounters', 'hospice', 'expired', 'hospice_or_expired']
 
-    # Calculate percentages (of all encounters)
-    hospice_trends['hospice_pct'] = (hospice_trends['hospice'] / hospice_trends['total_encounters'] * 100)
-    hospice_trends['mortality_pct'] = (hospice_trends['expired'] / hospice_trends['total_encounters'] * 100)
+        # Calculate percentages (of all encounters)
+        hospice_trends['hospice_pct'] = (hospice_trends['hospice'] / hospice_trends['total_encounters'] * 100)
+        hospice_trends['mortality_pct'] = (hospice_trends['expired'] / hospice_trends['total_encounters'] * 100)
 
-    # Calculate hospice proportion among end-of-life patients
-    hospice_trends['hospice_among_eol_pct'] = (
-        hospice_trends['hospice'] / hospice_trends['hospice_or_expired'] * 100
-    )
-
-    # Calculate Wilson score confidence intervals
-    def calculate_ci(successes, n, confidence=0.95):
-        """Calculate Wilson score confidence interval for proportions"""
-        if n == 0:
-            return 0, 0
-        ci_low, ci_upp = proportion_confint(successes, n, alpha=1-confidence, method='wilson')
-        return ci_low * 100, ci_upp * 100
-
-    # CIs for hospice among end-of-life
-    ci_results = [
-        calculate_ci(row['hospice'], row['hospice_or_expired'])
-        for _, row in hospice_trends.iterrows()
-    ]
-    hospice_trends['hospice_among_eol_ci_lower'] = [x[0] for x in ci_results]
-    hospice_trends['hospice_among_eol_ci_upper'] = [x[1] for x in ci_results]
-
-    # ============================================================================
-    # Save Results DataFrame
-    # ============================================================================
-
-    _hts_path = os.path.join(output_dir, 'hospice_trends_summary.csv')
-    hospice_trends.to_csv(_hts_path, index=False)
-    print(f"✅ Saved: {_hts_path}")
-
-    # ============================================================================
-    # Create Combined Figure
-    # ============================================================================
-
-    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(14, 10))
-
-    x_labels = hospice_trends['year'].astype(str).tolist()
-    x_pos = np.arange(len(x_labels))
-
-    # ----------------------------------------------------------------------------
-    # TOP PANEL: Mortality vs Hospice Trends (% of all encounters)
-    # ----------------------------------------------------------------------------
-
-    mortality_pct = hospice_trends['mortality_pct'].values
-    hospice_pct = hospice_trends['hospice_pct'].values
-
-    # Plot MORTALITY line
-    ax1.plot(x_pos, mortality_pct, 
-             marker='o', markersize=14, 
-             color='#666666', 
-             linewidth=3,
-             markerfacecolor='#666666',
-             markeredgecolor='black',
-             markeredgewidth=1,
-             label='MORTALITY',
-             zorder=3)
-
-    # Plot HOSPICE line
-    ax1.plot(x_pos, hospice_pct,
-             marker='s', markersize=12,
-             color='#000000',
-             linewidth=3,
-             markerfacecolor='#000000',
-             markeredgecolor='black',
-             markeredgewidth=1,
-             label='HOSPICE',
-             zorder=3)
-
-    # Add percentage labels
-    for i, (mort, hosp) in enumerate(zip(mortality_pct, hospice_pct)):
-        ax1.text(i, mort + 0.2, f'{mort:.2f}%', 
-                 ha='center', va='bottom', 
-                 fontsize=11, fontweight='bold',
-                 color='#333333')
-    
-        ax1.text(i, hosp - 0.2, f'{hosp:.2f}%',
-                 ha='center', va='top',
-                 fontsize=11, fontweight='bold',
-                 color='#000000')
-
-    # Add text labels
-    mid_y_mortality = np.mean(mortality_pct)
-    mid_y_hospice = np.mean(hospice_pct)
-
-    ax1.text(len(x_pos)/2, mid_y_mortality + 0.1, 'MORTALITY', 
-             fontsize=16, fontweight='normal',
-             color='#666666', ha='center',
-             style='italic')
-
-    ax1.text(len(x_pos)/2, mid_y_hospice - 0.1, 'HOSPICE',
-             fontsize=16, fontweight='normal',
-             color='#000000', ha='center',
-             style='italic')
-
-    # Customize axes
-    ax1.set_ylabel('PERCENT OF ALL ENCOUNTERS', fontsize=14, fontweight='bold', labelpad=10)
-    ax1.set_xticks(x_pos)
-    ax1.set_xticklabels(x_labels, fontsize=12, fontweight='bold')
-
-    # Calculate ylim with defensive checks for NaN/Inf values
-    hosp_min = np.nanmin(hospice_pct) if len(hospice_pct) > 0 and not np.all(np.isnan(hospice_pct)) else 0
-    mort_max = np.nanmax(mortality_pct) if len(mortality_pct) > 0 and not np.all(np.isnan(mortality_pct)) else 10
-
-    # Provide defaults if still invalid
-    if np.isnan(hosp_min) or np.isinf(hosp_min):
-        hosp_min = 0
-    if np.isnan(mort_max) or np.isinf(mort_max):
-        mort_max = 10
-
-    ax1.set_ylim(hosp_min - 0.5, mort_max + 1)
-    ax1.spines['top'].set_visible(False)
-    ax1.spines['right'].set_visible(False)
-    ax1.spines['left'].set_linewidth(2)
-    ax1.spines['bottom'].set_linewidth(2)
-    ax1.yaxis.grid(True, linestyle=':', alpha=0.3, linewidth=1, color='gray')
-    ax1.set_axisbelow(True)
-    ax1.set_title('End-of-Life Outcomes Over Time', fontsize=16, fontweight='bold', pad=15)
-
-    # ----------------------------------------------------------------------------
-    # BOTTOM PANEL: Hospice Proportion Among End-of-Life Patients
-    # ----------------------------------------------------------------------------
-
-    hospice_among_eol_pct = hospice_trends['hospice_among_eol_pct'].values
-    ci_lower = hospice_trends['hospice_among_eol_ci_lower'].values
-    ci_upper = hospice_trends['hospice_among_eol_ci_upper'].values
-
-    # Plot line with confidence interval
-    ax2.plot(x_pos, hospice_among_eol_pct,
-             marker='D', markersize=12,
-             color='#2E86AB',
-             linewidth=3,
-             markerfacecolor='#2E86AB',
-             markeredgecolor='black',
-             markeredgewidth=1,
-             zorder=3)
-
-    # Add confidence interval shading
-    ax2.fill_between(x_pos, ci_lower, ci_upper,
-                     alpha=0.3, color='#2E86AB')
-
-    # Add percentage labels
-    for i, pct in enumerate(hospice_among_eol_pct):
-        ax2.text(i, pct + 1.5, f'{pct:.1f}%',
-                 ha='center', va='bottom',
-                 fontsize=11, fontweight='bold',
-                 color='#2E86AB')
-
-    # Customize axes
-    ax2.set_xlabel('YEAR', fontsize=14, fontweight='bold', labelpad=10)
-    ax2.set_ylabel('PERCENT', fontsize=14, fontweight='bold', labelpad=10)
-    ax2.set_xticks(x_pos)
-    ax2.set_xticklabels(x_labels, fontsize=12, fontweight='bold')
-
-    # Calculate ylim with defensive checks for NaN/Inf values
-    ci_upper_max = np.nanmax(ci_upper) if len(ci_upper) > 0 and not np.all(np.isnan(ci_upper)) else 100
-    if np.isnan(ci_upper_max) or np.isinf(ci_upper_max):
-        ci_upper_max = 100  # Default to 100% for percentage plot
-
-    ax2.set_ylim(0, ci_upper_max + 5)
-    ax2.spines['top'].set_visible(False)
-    ax2.spines['right'].set_visible(False)
-    ax2.spines['left'].set_linewidth(2)
-    ax2.spines['bottom'].set_linewidth(2)
-    ax2.yaxis.grid(True, linestyle=':', alpha=0.3, linewidth=1, color='gray')
-    ax2.set_axisbelow(True)
-    ax2.set_title('Hospice Discharge Among End-of-Life Patients\n(Hospice / [Hospice + Expired])',
-                 fontsize=16, fontweight='bold', pad=15)
-
-    plt.tight_layout()
-    plt.savefig(os.path.join(figures_dir, 'hospice_mortality_combined_trends.png'),
-                dpi=300, bbox_inches='tight', facecolor='white', edgecolor='none')
-    plt.close()
-
-
-    print("\n✅ Hospice trends analysis complete!")
-
-
-    # ==============================================================================
-    # ## CCI Hospice Trends
-    # ==============================================================================
-
-
-    # ============================================================================
-    # Merge CCI Results with Final TableOne (if not already done)
-    # ============================================================================
-    # final_tableone_df['admission_year'] = final_tableone_df['admission_dttm'].dt.year
-    # tableone_with_cci = final_tableone_df.merge(
-    #     cci_results[['hospitalization_id', 'cci_score']], 
-    #     on='hospitalization_id', 
-    #     how='left'
-    # )
-    tableone_with_cci = final_tableone_df[['encounter_block','cci_score','admission_year',
-                                            'expired_outcome', 'hospice_or_expired', 'hospice_outcome']]
-    # Create CCI Categories
-    tableone_with_cci['cci_category'] = pd.cut(
-        tableone_with_cci['cci_score'],
-        bins=[-np.inf, 0, 2, 4, np.inf],
-        labels=['0 (No comorbidity)', '1-2 (Mild)', '3-4 (Moderate)', '5+ (Severe)']
-    )
-
-    # ============================================================================
-    # Create Comprehensive Summary by CCI Category and Year
-    # ============================================================================
-
-    cci_summary = tableone_with_cci.groupby(['admission_year', 'cci_category']).agg({
-        'encounter_block': 'count',
-        'hospice_outcome': 'sum',
-        'expired_outcome': 'sum',
-        'hospice_or_expired': 'sum'
-    }).reset_index()
-
-    cci_summary.columns = ['year', 'cci_category', 'total_encounters', 
-                           'hospice_count', 'expired_count', 'hospice_or_expired_count']
-
-    # Calculate all key metrics
-    cci_summary['mortality_pct'] = (
-        cci_summary['expired_count'] / cci_summary['total_encounters'] * 100
-    )
-    cci_summary['hospice_pct'] = (
-        cci_summary['hospice_count'] / cci_summary['total_encounters'] * 100
-    )
-    cci_summary['combined_eol_pct'] = (
-        cci_summary['hospice_or_expired_count'] / cci_summary['total_encounters'] * 100
-    )
-    cci_summary['hospice_among_eol_pct'] = (
-        cci_summary['hospice_count'] / cci_summary['hospice_or_expired_count'] * 100
-    )
-    cci_summary['hospice_capture_rate'] = (
-        cci_summary['hospice_count'] / cci_summary['expired_count'] * 100
-    )
-
-    # Calculate confidence intervals for hospice among EOL
-    def calculate_ci(row):
-        if row['hospice_or_expired_count'] == 0:
-            return pd.Series({'hospice_eol_ci_lower': np.nan, 'hospice_eol_ci_upper': np.nan})
-        ci_low, ci_upp = proportion_confint(
-            row['hospice_count'], row['hospice_or_expired_count'], 
-            alpha=0.05, method='wilson'
-        )
-        return pd.Series({
-            'hospice_eol_ci_lower': ci_low * 100, 
-            'hospice_eol_ci_upper': ci_upp * 100
-        })
-
-    cci_summary[['hospice_eol_ci_lower', 'hospice_eol_ci_upper']] = cci_summary.apply(calculate_ci, axis=1)
-
-    # Reorder columns for clarity
-    cci_summary = cci_summary[[
-        'year', 'cci_category', 'total_encounters',
-        'expired_count', 'mortality_pct',
-        'hospice_count', 'hospice_pct',
-        'hospice_or_expired_count', 'combined_eol_pct',
-        'hospice_among_eol_pct', 'hospice_eol_ci_lower', 'hospice_eol_ci_upper',
-        'hospice_capture_rate'
-    ]]
-
-    # Save comprehensive summary
-    _cci_summary_path = os.path.join(output_dir, 'cci_hospice_mortality_comprehensive_summary.csv')
-    cci_summary.to_csv(_cci_summary_path, index=False)
-    print(f"✅ Saved: {_cci_summary_path}")
-
-    # Save the plotting data ("data behind the figure") to a separate CSV file
-    # This replicates the data used for each panel in the grid:
-    plot_data = []
-    categories = ['0 (No comorbidity)', '1-2 (Mild)', '3-4 (Moderate)', '5+ (Severe)']
-
-    for category in categories:
-        cat_data = cci_summary[cci_summary['cci_category'] == category].sort_values('year')
-        plot_data.append(
-            cat_data.assign(cci_category_label=category)
+        # Calculate hospice proportion among end-of-life patients
+        hospice_trends['hospice_among_eol_pct'] = (
+            hospice_trends['hospice'] / hospice_trends['hospice_or_expired'] * 100
         )
 
-    plot_data_df = pd.concat(plot_data, axis=0)
+        # Calculate Wilson score confidence intervals
+        def calculate_ci(successes, n, confidence=0.95):
+            """Calculate Wilson score confidence interval for proportions"""
+            if n == 0:
+                return 0, 0
+            ci_low, ci_upp = proportion_confint(successes, n, alpha=1-confidence, method='wilson')
+            return ci_low * 100, ci_upp * 100
 
-    _cci_plot_path = os.path.join(output_dir, 'cci_mortality_hospice_trends_by_year_category_plotdata.csv')
-    plot_data_df.to_csv(_cci_plot_path, index=False)
-    print(f"✅ Saved plotting data for figure: {_cci_plot_path}")
+        # CIs for hospice among end-of-life
+        ci_results = [
+            calculate_ci(row['hospice'], row['hospice_or_expired'])
+            for _, row in hospice_trends.iterrows()
+        ]
+        hospice_trends['hospice_among_eol_ci_lower'] = [x[0] for x in ci_results]
+        hospice_trends['hospice_among_eol_ci_upper'] = [x[1] for x in ci_results]
 
-    # Display summary statistics
-    print("\n" + "="*80)
-    print("COMPREHENSIVE CCI HOSPICE-MORTALITY SUMMARY")
-    print("="*80)
-    print(f"\nTotal records: {len(cci_summary)}")
-    print(f"Years covered: {cci_summary['year'].min():.0f} - {cci_summary['year'].max():.0f}")
-    print(f"CCI categories: {cci_summary['cci_category'].nunique()}")
-    print(f"\nTotal encounters across all years: {cci_summary['total_encounters'].sum():,}")
-    print(f"Total deaths: {cci_summary['expired_count'].sum():,}")
-    print(f"Total hospice discharges: {cci_summary['hospice_count'].sum():,}")
+        # ============================================================================
+        # Save Results DataFrame
+        # ============================================================================
 
-    # ============================================================================
-    # Create Unified Visualization: 2x2 Grid with Mortality vs Hospice
-    # ============================================================================
+        _hts_path = os.path.join(output_dir, 'hospice_trends_summary.csv')
+        hospice_trends.to_csv(_hts_path, index=False)
+        print(f"✅ Saved: {_hts_path}")
 
-    fig, axes = plt.subplots(2, 2, figsize=(18, 12))
-    axes = axes.flatten()
+        # ============================================================================
+        # Create Combined Figure
+        # ============================================================================
 
-    colors_mortality = '#666666'
-    colors_hospice = '#000000'
+        fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(14, 10))
 
-    for i, (category, ax) in enumerate(zip(categories, axes)):
-        data = cci_summary[cci_summary['cci_category'] == category].sort_values('year')
-
-        # Check if data is empty or insufficient
-        if data.empty or len(data) == 0:
-            ax.text(0.5, 0.5, f'No data available\nfor CCI: {category}',
-                    ha='center', va='center', fontsize=12,
-                    fontweight='bold', color='#666666',
-                    transform=ax.transAxes)
-            ax.set_title(f'CCI: {category}', fontsize=14, fontweight='bold', pad=10)
-            ax.set_xticks([])
-            ax.set_yticks([])
-            ax.spines['top'].set_visible(False)
-            ax.spines['right'].set_visible(False)
-            ax.spines['left'].set_visible(False)
-            ax.spines['bottom'].set_visible(False)
-            continue
-
-        x_labels = data['year'].astype(str).tolist()
+        x_labels = hospice_trends['year'].astype(str).tolist()
         x_pos = np.arange(len(x_labels))
 
-        mortality_pct = data['mortality_pct'].values
-        hospice_pct = data['hospice_pct'].values
+        # ----------------------------------------------------------------------------
+        # TOP PANEL: Mortality vs Hospice Trends (% of all encounters)
+        # ----------------------------------------------------------------------------
+
+        mortality_pct = hospice_trends['mortality_pct'].values
+        hospice_pct = hospice_trends['hospice_pct'].values
 
         # Plot MORTALITY line
-        ax.plot(x_pos, mortality_pct,
-                marker='o', markersize=12,
-                color=colors_mortality,
-                linewidth=3,
-                markerfacecolor=colors_mortality,
-                markeredgecolor='black',
-                markeredgewidth=1,
-                label='MORTALITY',
-                zorder=3)
+        ax1.plot(x_pos, mortality_pct, 
+                 marker='o', markersize=14, 
+                 color='#666666', 
+                 linewidth=3,
+                 markerfacecolor='#666666',
+                 markeredgecolor='black',
+                 markeredgewidth=1,
+                 label='MORTALITY',
+                 zorder=3)
 
         # Plot HOSPICE line
-        ax.plot(x_pos, hospice_pct,
-                marker='s', markersize=10,
-                color=colors_hospice,
-                linewidth=3,
-                markerfacecolor=colors_hospice,
-                markeredgecolor='black',
-                markeredgewidth=1,
-                label='HOSPICE',
-                zorder=3)
+        ax1.plot(x_pos, hospice_pct,
+                 marker='s', markersize=12,
+                 color='#000000',
+                 linewidth=3,
+                 markerfacecolor='#000000',
+                 markeredgecolor='black',
+                 markeredgewidth=1,
+                 label='HOSPICE',
+                 zorder=3)
 
         # Add percentage labels
-        for j, (mort, hosp) in enumerate(zip(mortality_pct, hospice_pct)):
-            ax.text(j, mort + 0.5, f'{mort:.1f}%',
-                    ha='center', va='bottom',
-                    fontsize=9, fontweight='bold',
-                    color='#333333')
+        for i, (mort, hosp) in enumerate(zip(mortality_pct, hospice_pct)):
+            ax1.text(i, mort + 0.2, f'{mort:.2f}%', 
+                     ha='center', va='bottom', 
+                     fontsize=11, fontweight='bold',
+                     color='#333333')
+    
+            ax1.text(i, hosp - 0.2, f'{hosp:.2f}%',
+                     ha='center', va='top',
+                     fontsize=11, fontweight='bold',
+                     color='#000000')
 
-            ax.text(j, hosp - 0.5, f'{hosp:.1f}%',
-                    ha='center', va='top',
-                    fontsize=9, fontweight='bold',
-                    color='#000000')
-
-        # Add text labels in plot area
+        # Add text labels
         mid_y_mortality = np.mean(mortality_pct)
         mid_y_hospice = np.mean(hospice_pct)
 
-        if mid_y_mortality - mid_y_hospice > 3:
-            ax.text(len(x_pos)/2, mid_y_mortality + 1, 'MORTALITY',
-                    fontsize=13, fontweight='normal',
-                    color='#666666', ha='center',
-                    style='italic', alpha=0.7)
+        ax1.text(len(x_pos)/2, mid_y_mortality + 0.1, 'MORTALITY', 
+                 fontsize=16, fontweight='normal',
+                 color='#666666', ha='center',
+                 style='italic')
 
-            ax.text(len(x_pos)/2, mid_y_hospice - 1, 'HOSPICE',
-                    fontsize=13, fontweight='normal',
-                    color='#000000', ha='center',
-                    style='italic', alpha=0.7)
+        ax1.text(len(x_pos)/2, mid_y_hospice - 0.1, 'HOSPICE',
+                 fontsize=16, fontweight='normal',
+                 color='#000000', ha='center',
+                 style='italic')
 
         # Customize axes
-        ax.set_ylabel('PERCENT OF ALL ENCOUNTERS', fontsize=11, fontweight='bold')
-        ax.set_xlabel('YEAR', fontsize=11, fontweight='bold')
-        ax.set_title(f'CCI: {category}', fontsize=14, fontweight='bold', pad=10)
-        ax.set_xticks(x_pos)
-        ax.set_xticklabels(x_labels, fontsize=10, fontweight='bold')
+        ax1.set_ylabel('PERCENT OF ALL ENCOUNTERS', fontsize=14, fontweight='bold', labelpad=10)
+        ax1.set_xticks(x_pos)
+        ax1.set_xticklabels(x_labels, fontsize=12, fontweight='bold')
 
-        # Calculate y_max with defensive checks for NaN/Inf values
-        mort_max = np.nanmax(mortality_pct) if len(mortality_pct) > 0 and not np.all(np.isnan(mortality_pct)) else 0
-        hosp_max = np.nanmax(hospice_pct) if len(hospice_pct) > 0 and not np.all(np.isnan(hospice_pct)) else 0
-        y_max = max(mort_max, hosp_max)
+        # Calculate ylim with defensive checks for NaN/Inf values
+        hosp_min = np.nanmin(hospice_pct) if len(hospice_pct) > 0 and not np.all(np.isnan(hospice_pct)) else 0
+        mort_max = np.nanmax(mortality_pct) if len(mortality_pct) > 0 and not np.all(np.isnan(mortality_pct)) else 10
 
-        # Provide default if still invalid
-        if np.isnan(y_max) or np.isinf(y_max) or y_max == 0:
-            y_max = 10  # Default axis range
+        # Provide defaults if still invalid
+        if np.isnan(hosp_min) or np.isinf(hosp_min):
+            hosp_min = 0
+        if np.isnan(mort_max) or np.isinf(mort_max):
+            mort_max = 10
 
-        ax.set_ylim(0, y_max + 3)
+        ax1.set_ylim(hosp_min - 0.5, mort_max + 1)
+        ax1.spines['top'].set_visible(False)
+        ax1.spines['right'].set_visible(False)
+        ax1.spines['left'].set_linewidth(2)
+        ax1.spines['bottom'].set_linewidth(2)
+        ax1.yaxis.grid(True, linestyle=':', alpha=0.3, linewidth=1, color='gray')
+        ax1.set_axisbelow(True)
+        ax1.set_title('End-of-Life Outcomes Over Time', fontsize=16, fontweight='bold', pad=15)
 
-        ax.spines['top'].set_visible(False)
-        ax.spines['right'].set_visible(False)
-        ax.spines['left'].set_linewidth(2)
-        ax.spines['bottom'].set_linewidth(2)
+        # ----------------------------------------------------------------------------
+        # BOTTOM PANEL: Hospice Proportion Among End-of-Life Patients
+        # ----------------------------------------------------------------------------
 
-        ax.yaxis.grid(True, linestyle=':', alpha=0.3, linewidth=1, color='gray')
-        ax.set_axisbelow(True)
+        hospice_among_eol_pct = hospice_trends['hospice_among_eol_pct'].values
+        ci_lower = hospice_trends['hospice_among_eol_ci_lower'].values
+        ci_upper = hospice_trends['hospice_among_eol_ci_upper'].values
 
-        if i == 0:
-            ax.legend(loc='upper left', fontsize=10, frameon=True,
-                     fancybox=True, shadow=True)
+        # Plot line with confidence interval
+        ax2.plot(x_pos, hospice_among_eol_pct,
+                 marker='D', markersize=12,
+                 color='#2E86AB',
+                 linewidth=3,
+                 markerfacecolor='#2E86AB',
+                 markeredgecolor='black',
+                 markeredgewidth=1,
+                 zorder=3)
 
-    plt.suptitle('Mortality vs Hospice Trends by Comorbidity Burden',
-                 fontsize=18, fontweight='bold', y=0.995)
-    plt.tight_layout()
-    plt.savefig(os.path.join(figures_dir, 'cci_mortality_hospice_comprehensive.png'),
-                dpi=300, bbox_inches='tight', facecolor='white', edgecolor='none')
-    plt.close()
+        # Add confidence interval shading
+        ax2.fill_between(x_pos, ci_lower, ci_upper,
+                         alpha=0.3, color='#2E86AB')
 
-    checkpoint("12. Hospice/CCI Analysis Complete")
+        # Add percentage labels
+        for i, pct in enumerate(hospice_among_eol_pct):
+            ax2.text(i, pct + 1.5, f'{pct:.1f}%',
+                     ha='center', va='bottom',
+                     fontsize=11, fontweight='bold',
+                     color='#2E86AB')
+
+        # Customize axes
+        ax2.set_xlabel('YEAR', fontsize=14, fontweight='bold', labelpad=10)
+        ax2.set_ylabel('PERCENT', fontsize=14, fontweight='bold', labelpad=10)
+        ax2.set_xticks(x_pos)
+        ax2.set_xticklabels(x_labels, fontsize=12, fontweight='bold')
+
+        # Calculate ylim with defensive checks for NaN/Inf values
+        ci_upper_max = np.nanmax(ci_upper) if len(ci_upper) > 0 and not np.all(np.isnan(ci_upper)) else 100
+        if np.isnan(ci_upper_max) or np.isinf(ci_upper_max):
+            ci_upper_max = 100  # Default to 100% for percentage plot
+
+        ax2.set_ylim(0, ci_upper_max + 5)
+        ax2.spines['top'].set_visible(False)
+        ax2.spines['right'].set_visible(False)
+        ax2.spines['left'].set_linewidth(2)
+        ax2.spines['bottom'].set_linewidth(2)
+        ax2.yaxis.grid(True, linestyle=':', alpha=0.3, linewidth=1, color='gray')
+        ax2.set_axisbelow(True)
+        ax2.set_title('Hospice Discharge Among End-of-Life Patients\n(Hospice / [Hospice + Expired])',
+                     fontsize=16, fontweight='bold', pad=15)
+
+        plt.tight_layout()
+        plt.savefig(os.path.join(figures_dir, 'hospice_mortality_combined_trends.png'),
+                    dpi=300, bbox_inches='tight', facecolor='white', edgecolor='none')
+        plt.close()
+
+
+        print("\n✅ Hospice trends analysis complete!")
+
+
+        # ==============================================================================
+        # ## CCI Hospice Trends
+        # ==============================================================================
+
+
+        # ============================================================================
+        # Merge CCI Results with Final TableOne (if not already done)
+        # ============================================================================
+        # final_tableone_df['admission_year'] = final_tableone_df['admission_dttm'].dt.year
+        # tableone_with_cci = final_tableone_df.merge(
+        #     cci_results[['hospitalization_id', 'cci_score']], 
+        #     on='hospitalization_id', 
+        #     how='left'
+        # )
+        tableone_with_cci = final_tableone_df[['encounter_block','cci_score','admission_year',
+                                                'expired_outcome', 'hospice_or_expired', 'hospice_outcome']]
+        # Create CCI Categories
+        tableone_with_cci['cci_category'] = pd.cut(
+            tableone_with_cci['cci_score'],
+            bins=[-np.inf, 0, 2, 4, np.inf],
+            labels=['0 (No comorbidity)', '1-2 (Mild)', '3-4 (Moderate)', '5+ (Severe)']
+        )
+
+        # ============================================================================
+        # Create Comprehensive Summary by CCI Category and Year
+        # ============================================================================
+
+        cci_summary = tableone_with_cci.groupby(['admission_year', 'cci_category']).agg({
+            'encounter_block': 'count',
+            'hospice_outcome': 'sum',
+            'expired_outcome': 'sum',
+            'hospice_or_expired': 'sum'
+        }).reset_index()
+
+        cci_summary.columns = ['year', 'cci_category', 'total_encounters', 
+                               'hospice_count', 'expired_count', 'hospice_or_expired_count']
+
+        # Calculate all key metrics
+        cci_summary['mortality_pct'] = (
+            cci_summary['expired_count'] / cci_summary['total_encounters'] * 100
+        )
+        cci_summary['hospice_pct'] = (
+            cci_summary['hospice_count'] / cci_summary['total_encounters'] * 100
+        )
+        cci_summary['combined_eol_pct'] = (
+            cci_summary['hospice_or_expired_count'] / cci_summary['total_encounters'] * 100
+        )
+        cci_summary['hospice_among_eol_pct'] = (
+            cci_summary['hospice_count'] / cci_summary['hospice_or_expired_count'] * 100
+        )
+        cci_summary['hospice_capture_rate'] = (
+            cci_summary['hospice_count'] / cci_summary['expired_count'] * 100
+        )
+
+        # Calculate confidence intervals for hospice among EOL
+        def calculate_ci(row):
+            if row['hospice_or_expired_count'] == 0:
+                return pd.Series({'hospice_eol_ci_lower': np.nan, 'hospice_eol_ci_upper': np.nan})
+            ci_low, ci_upp = proportion_confint(
+                row['hospice_count'], row['hospice_or_expired_count'], 
+                alpha=0.05, method='wilson'
+            )
+            return pd.Series({
+                'hospice_eol_ci_lower': ci_low * 100, 
+                'hospice_eol_ci_upper': ci_upp * 100
+            })
+
+        cci_summary[['hospice_eol_ci_lower', 'hospice_eol_ci_upper']] = cci_summary.apply(calculate_ci, axis=1)
+
+        # Reorder columns for clarity
+        cci_summary = cci_summary[[
+            'year', 'cci_category', 'total_encounters',
+            'expired_count', 'mortality_pct',
+            'hospice_count', 'hospice_pct',
+            'hospice_or_expired_count', 'combined_eol_pct',
+            'hospice_among_eol_pct', 'hospice_eol_ci_lower', 'hospice_eol_ci_upper',
+            'hospice_capture_rate'
+        ]]
+
+        # Save comprehensive summary
+        _cci_summary_path = os.path.join(output_dir, 'cci_hospice_mortality_comprehensive_summary.csv')
+        cci_summary.to_csv(_cci_summary_path, index=False)
+        print(f"✅ Saved: {_cci_summary_path}")
+
+        # Save the plotting data ("data behind the figure") to a separate CSV file
+        # This replicates the data used for each panel in the grid:
+        plot_data = []
+        categories = ['0 (No comorbidity)', '1-2 (Mild)', '3-4 (Moderate)', '5+ (Severe)']
+
+        for category in categories:
+            cat_data = cci_summary[cci_summary['cci_category'] == category].sort_values('year')
+            plot_data.append(
+                cat_data.assign(cci_category_label=category)
+            )
+
+        plot_data_df = pd.concat(plot_data, axis=0)
+
+        _cci_plot_path = os.path.join(output_dir, 'cci_mortality_hospice_trends_by_year_category_plotdata.csv')
+        plot_data_df.to_csv(_cci_plot_path, index=False)
+        print(f"✅ Saved plotting data for figure: {_cci_plot_path}")
+
+        # Display summary statistics
+        print("\n" + "="*80)
+        print("COMPREHENSIVE CCI HOSPICE-MORTALITY SUMMARY")
+        print("="*80)
+        print(f"\nTotal records: {len(cci_summary)}")
+        print(f"Years covered: {cci_summary['year'].min():.0f} - {cci_summary['year'].max():.0f}")
+        print(f"CCI categories: {cci_summary['cci_category'].nunique()}")
+        print(f"\nTotal encounters across all years: {cci_summary['total_encounters'].sum():,}")
+        print(f"Total deaths: {cci_summary['expired_count'].sum():,}")
+        print(f"Total hospice discharges: {cci_summary['hospice_count'].sum():,}")
+
+        # ============================================================================
+        # Create Unified Visualization: 2x2 Grid with Mortality vs Hospice
+        # ============================================================================
+
+        fig, axes = plt.subplots(2, 2, figsize=(18, 12))
+        axes = axes.flatten()
+
+        colors_mortality = '#666666'
+        colors_hospice = '#000000'
+
+        for i, (category, ax) in enumerate(zip(categories, axes)):
+            data = cci_summary[cci_summary['cci_category'] == category].sort_values('year')
+
+            # Check if data is empty or insufficient
+            if data.empty or len(data) == 0:
+                ax.text(0.5, 0.5, f'No data available\nfor CCI: {category}',
+                        ha='center', va='center', fontsize=12,
+                        fontweight='bold', color='#666666',
+                        transform=ax.transAxes)
+                ax.set_title(f'CCI: {category}', fontsize=14, fontweight='bold', pad=10)
+                ax.set_xticks([])
+                ax.set_yticks([])
+                ax.spines['top'].set_visible(False)
+                ax.spines['right'].set_visible(False)
+                ax.spines['left'].set_visible(False)
+                ax.spines['bottom'].set_visible(False)
+                continue
+
+            x_labels = data['year'].astype(str).tolist()
+            x_pos = np.arange(len(x_labels))
+
+            mortality_pct = data['mortality_pct'].values
+            hospice_pct = data['hospice_pct'].values
+
+            # Plot MORTALITY line
+            ax.plot(x_pos, mortality_pct,
+                    marker='o', markersize=12,
+                    color=colors_mortality,
+                    linewidth=3,
+                    markerfacecolor=colors_mortality,
+                    markeredgecolor='black',
+                    markeredgewidth=1,
+                    label='MORTALITY',
+                    zorder=3)
+
+            # Plot HOSPICE line
+            ax.plot(x_pos, hospice_pct,
+                    marker='s', markersize=10,
+                    color=colors_hospice,
+                    linewidth=3,
+                    markerfacecolor=colors_hospice,
+                    markeredgecolor='black',
+                    markeredgewidth=1,
+                    label='HOSPICE',
+                    zorder=3)
+
+            # Add percentage labels
+            for j, (mort, hosp) in enumerate(zip(mortality_pct, hospice_pct)):
+                ax.text(j, mort + 0.5, f'{mort:.1f}%',
+                        ha='center', va='bottom',
+                        fontsize=9, fontweight='bold',
+                        color='#333333')
+
+                ax.text(j, hosp - 0.5, f'{hosp:.1f}%',
+                        ha='center', va='top',
+                        fontsize=9, fontweight='bold',
+                        color='#000000')
+
+            # Add text labels in plot area
+            mid_y_mortality = np.mean(mortality_pct)
+            mid_y_hospice = np.mean(hospice_pct)
+
+            if mid_y_mortality - mid_y_hospice > 3:
+                ax.text(len(x_pos)/2, mid_y_mortality + 1, 'MORTALITY',
+                        fontsize=13, fontweight='normal',
+                        color='#666666', ha='center',
+                        style='italic', alpha=0.7)
+
+                ax.text(len(x_pos)/2, mid_y_hospice - 1, 'HOSPICE',
+                        fontsize=13, fontweight='normal',
+                        color='#000000', ha='center',
+                        style='italic', alpha=0.7)
+
+            # Customize axes
+            ax.set_ylabel('PERCENT OF ALL ENCOUNTERS', fontsize=11, fontweight='bold')
+            ax.set_xlabel('YEAR', fontsize=11, fontweight='bold')
+            ax.set_title(f'CCI: {category}', fontsize=14, fontweight='bold', pad=10)
+            ax.set_xticks(x_pos)
+            ax.set_xticklabels(x_labels, fontsize=10, fontweight='bold')
+
+            # Calculate y_max with defensive checks for NaN/Inf values
+            mort_max = np.nanmax(mortality_pct) if len(mortality_pct) > 0 and not np.all(np.isnan(mortality_pct)) else 0
+            hosp_max = np.nanmax(hospice_pct) if len(hospice_pct) > 0 and not np.all(np.isnan(hospice_pct)) else 0
+            y_max = max(mort_max, hosp_max)
+
+            # Provide default if still invalid
+            if np.isnan(y_max) or np.isinf(y_max) or y_max == 0:
+                y_max = 10  # Default axis range
+
+            ax.set_ylim(0, y_max + 3)
+
+            ax.spines['top'].set_visible(False)
+            ax.spines['right'].set_visible(False)
+            ax.spines['left'].set_linewidth(2)
+            ax.spines['bottom'].set_linewidth(2)
+
+            ax.yaxis.grid(True, linestyle=':', alpha=0.3, linewidth=1, color='gray')
+            ax.set_axisbelow(True)
+
+            if i == 0:
+                ax.legend(loc='upper left', fontsize=10, frameon=True,
+                         fancybox=True, shadow=True)
+
+        plt.suptitle('Mortality vs Hospice Trends by Comorbidity Burden',
+                     fontsize=18, fontweight='bold', y=0.995)
+        plt.tight_layout()
+        plt.savefig(os.path.join(figures_dir, 'cci_mortality_hospice_comprehensive.png'),
+                    dpi=300, bbox_inches='tight', facecolor='white', edgecolor='none')
+        plt.close()
+
+        checkpoint("12. Hospice/CCI Analysis Complete")
 
     strobe_counts
 
@@ -6015,18 +6022,6 @@ def main(memory_monitor=None, cohort_mode='critical_illness') -> bool:
                 print(f"    ✅ sofa_mortality")
             except Exception as e:
                 print(f"    ❌ sofa_mortality: {e}")
-
-            try:
-                generate_hospice_trends(strat_df, strat_output_dir, suffix=strat_suffix)
-                print(f"    ✅ hospice_trends")
-            except Exception as e:
-                print(f"    ❌ hospice_trends: {e}")
-
-            try:
-                generate_cci_hospice_mortality(strat_df, strat_output_dir, suffix=strat_suffix)
-                print(f"    ✅ cci_hospice_mortality")
-            except Exception as e:
-                print(f"    ❌ cci_hospice_mortality: {e}")
 
             try:
                 generate_demographic_crosstab(strat_patient, strat_output_dir, suffix=strat_suffix)
