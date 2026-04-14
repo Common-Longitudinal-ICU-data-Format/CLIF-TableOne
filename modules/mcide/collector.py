@@ -56,9 +56,13 @@ class MCIDEStatsCollector:
             mcide_dir as _mcide_dir,
             summary_stats_dir as _summary_stats_dir,
             tableone_dir as _tableone_dir,
+            parse_stratum,
         )
         self.mcide_dir = _mcide_dir()
         self.stats_dir = _summary_stats_dir(stratum=stratum_name)
+        # Sub-strata (e.g. 'advanced_resp/icu') resolve to the parent directory;
+        # the suffix is applied to filenames so outputs stay flat.
+        self._suffix = parse_stratum(stratum_name)[1] if stratum_name else ''
         # Kept for backwards-compat with internal references that may use it.
         self.output_dir = _tableone_dir()
 
@@ -172,18 +176,19 @@ class MCIDEStatsCollector:
             Output format: 'json', 'csv', or 'both'
         """
         try:
+            suffixed_name = f"{name}{self._suffix}"
             if format in ['json', 'both']:
                 # Convert to dictionary for JSON
                 stats_dict = stats.to_dicts()
-                json_path = self.stats_dir / f"{name}.json"
+                json_path = self.stats_dir / f"{suffixed_name}.json"
                 with open(json_path, 'w', encoding='utf-8') as f:
                     json.dump(stats_dict, f, indent=2, default=str)
-                logger.info(f"✓ Saved stats JSON: {name}.json")
+                logger.info(f"✓ Saved stats JSON: {suffixed_name}.json")
 
             if format in ['csv', 'both']:
-                csv_path = self.stats_dir / f"{name}.csv"
+                csv_path = self.stats_dir / f"{suffixed_name}.csv"
                 stats.write_csv(csv_path)
-                logger.info(f"✓ Saved stats CSV: {name}.csv")
+                logger.info(f"✓ Saved stats CSV: {suffixed_name}.csv")
 
         except Exception as e:
             logger.error(f"Error saving summary stats for {name}: {e}")

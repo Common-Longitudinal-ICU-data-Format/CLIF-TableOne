@@ -192,7 +192,11 @@ Every flag is a 0/1 indicator on the stitched encounter block. The strata in §9
 | `death_enc` | Encounter ever had a row with `discharge_category in ('expired', 'hospice')` | `generator.py:1534, 1540` |
 | `ward_enc` | Encounter ever had a row with `location_category == 'ward'` | `generator.py:1535, 1541` |
 | `high_support_enc` | Encounter ever received `imv` / `nippv` / `cpap` / `high flow nc` (`respiratory_support.device_category`) | `generator.py:1646, 1659` |
+| `nippv_hfnc_enc` | Encounter ever received `nippv` or `high flow nc` with `lpm_set >= 30` (`respiratory_support.device_category`) | `generator.py:1725-1740` |
 | `vaso_support_enc` | Encounter ever received `norepinephrine`, `epinephrine`, `phenylephrine`, `vasopressin`, `dopamine`, or `angiotensin` (`medication_admin_continuous.med_category`) | `generator.py:1693, 1706` |
+| `no_imv_enc` | Encounter is in the critical-illness cohort AND never received invasive mechanical ventilation (`on_vent == 0`) | `generator.py:3449` |
+| `no_imv_icu_enc` | `no_imv_enc AND icu_enc` | `generator.py:3450-3452` |
+| `no_imv_no_icu_enc` | `no_imv_enc AND NOT icu_enc` | `generator.py:3453-3455` |
 | `is_procedural_ld_only` | No ICU AND only `procedural` / `l&d` locations — in critical-illness mode this zeros out the support flags so a procedural-only encounter cannot be flagged as advanced resp / vaso | `generator.py:1584-1587, 1727-1729` |
 | `other_critically_ill` | `death_enc==1 AND icu_enc==0 AND vaso_support_enc==0 AND high_support_enc==0` (died in ED/ward without escalation) | `generator.py:1764-1769` |
 
@@ -228,20 +232,28 @@ The legacy comment at `modules/tableone/generator.py:22-23` describes inclusion 
 
 ## 9. Strata
 
-The strata directories under `output/final/strata/` are subsets of the **critical-illness cohort**, filtered by a single flag. The mapping is the single source of truth in `modules/strata.py:24-33`:
+The strata directories under `output/final/strata/` are subsets of the **critical-illness cohort**, filtered by a single flag. The mapping is the single source of truth in `modules/strata.py:24-39`:
 
-| Directory | Flag | Definition |
-|---|---|---|
-| `strata/icu/` | `icu_enc` | Encounter touched a location with `location_category == 'icu'` |
-| `strata/advanced_resp/` | `high_support_enc` | Received `imv` / `nippv` / `cpap` / `high flow nc` at any point |
-| `strata/advanced_resp/icu/` | `high_support_icu_enc` | Advanced resp **AND** ICU |
-| `strata/advanced_resp/no_icu/` | `high_support_no_icu_enc` | Advanced resp **AND NOT** ICU (by construction these are deaths) |
-| `strata/vaso/` | `vaso_support_enc` | Received `norepinephrine`, `epinephrine`, `phenylephrine`, `vasopressin`, `dopamine`, or `angiotensin` |
-| `strata/vaso/icu/` | `vaso_icu_enc` | Vaso **AND** ICU |
-| `strata/vaso/no_icu/` | `vaso_no_icu_enc` | Vaso **AND NOT** ICU (by construction deaths) |
-| `strata/deaths/` | `death_enc` | `discharge_category in ('expired', 'hospice')` |
+| Directory | Flag | Definition | ECDF temporal window |
+|---|---|---|---|
+| `strata/icu/` | `icu_enc` | Encounter touched a location with `location_category == 'icu'` | ICU stay (`in_dttm` → `out_dttm` from ADT) |
+| `strata/advanced_resp/` | `high_support_enc` | Received `imv` / `nippv` / `cpap` / `high flow nc` at any point | First qualifying device `recorded_dttm` → `discharge_dttm` |
+| `strata/advanced_resp/icu/` | `high_support_icu_enc` | Advanced resp **AND** ICU | Same as `advanced_resp/` |
+| `strata/advanced_resp/no_icu/` | `high_support_no_icu_enc` | Advanced resp **AND NOT** ICU (by construction these are deaths) | Same as `advanced_resp/` |
+| `strata/nippv_hfnc/` | `nippv_hfnc_enc` | Received `nippv` or `high flow nc` with `lpm_set >= 30` | First qualifying device `recorded_dttm` → `discharge_dttm` |
+| `strata/nippv_hfnc/icu/` | `nippv_hfnc_icu_enc` | NIPPV/HFNC **AND** ICU | Same as `nippv_hfnc/` |
+| `strata/nippv_hfnc/no_icu/` | `nippv_hfnc_no_icu_enc` | NIPPV/HFNC **AND NOT** ICU (by construction deaths) | Same as `nippv_hfnc/` |
+| `strata/vaso/` | `vaso_support_enc` | Received `norepinephrine`, `epinephrine`, `phenylephrine`, `vasopressin`, `dopamine`, or `angiotensin` | First vasopressor `admin_dttm` → `discharge_dttm` |
+| `strata/vaso/icu/` | `vaso_icu_enc` | Vaso **AND** ICU | Same as `vaso/` |
+| `strata/vaso/no_icu/` | `vaso_no_icu_enc` | Vaso **AND NOT** ICU (by construction deaths) | Same as `vaso/` |
+| `strata/no_imv/` | `no_imv_enc` | Critically ill but **never** received invasive mechanical ventilation (`on_vent == 0`) | ICU stay |
+| `strata/no_imv/icu/` | `no_imv_icu_enc` | No IMV **AND** ICU | Same as `no_imv/` |
+| `strata/no_imv/no_icu/` | `no_imv_no_icu_enc` | No IMV **AND NOT** ICU (by construction deaths) | Same as `no_imv/` |
+| `strata/deaths/` | `death_enc` | `discharge_category in ('expired', 'hospice')` | ICU stay (`in_dttm` → `out_dttm` from ADT) |
 
 Strata are not independent cohorts — every stratum is a subset of `cohort_enc == 1`. So `strata/vaso/no_icu/` is "patients in the critical-illness cohort who got a vasopressor but never touched an ICU" — and because the cohort selector at line 1549 already requires ICU OR death, every patient in that stratum is necessarily a death.
+
+> **ECDF temporal windows:** The `overall/`, `icu`, `deaths`, and `no_imv` strata use ICU stay windows from the ADT table. The `vaso`, `advanced_resp`, and `nippv_hfnc` strata (including their `/icu` and `/no_icu` sub-strata) use **event-onset windows** — starting from the first qualifying medication or device placement through `discharge_dttm`. This ensures that `/no_icu` sub-strata (which have no ICU windows) still produce ECDF/bins output, and that the distributions reflect physiology from the onset of the clinical escalation. See `modules/ecdf/generator.py:STRATUM_WINDOW_TYPE` for the mapping.
 
 ---
 
@@ -261,7 +273,9 @@ output/final/
 ├── strata/                     Stratified critical-illness subsets
 │   ├── icu/                    {tableone,figures,ecdf,bins,summary_stats}/
 │   ├── advanced_resp/          {... + icu/ + no_icu/}
+│   ├── nippv_hfnc/             {... + icu/ + no_icu/}
 │   ├── vaso/                   {... + icu/ + no_icu/}
+│   ├── no_imv/                 {... + icu/ + no_icu/}
 │   └── deaths/                 {tableone,figures,ecdf,bins,summary_stats}/
 ├── validation/                 Data quality assessment
 │   ├── json_reports/           <table>_dqa.json + supporting CSVs

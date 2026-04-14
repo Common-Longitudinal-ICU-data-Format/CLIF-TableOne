@@ -17,9 +17,15 @@ output/final/
 │   ├── advanced_resp/                                      (high_support_enc)
 │   │   ├── icu/                                            (high_support_icu_enc)
 │   │   └── no_icu/                                         (high_support_no_icu_enc)
+│   ├── nippv_hfnc/                                         (nippv_hfnc_enc)
+│   │   ├── icu/                                            (nippv_hfnc_icu_enc)
+│   │   └── no_icu/                                         (nippv_hfnc_no_icu_enc)
 │   ├── vaso/                                               (vaso_support_enc)
 │   │   ├── icu/                                            (vaso_icu_enc)
 │   │   └── no_icu/                                         (vaso_no_icu_enc)
+│   ├── no_imv/                                             (no_imv_enc)
+│   │   ├── icu/                                            (no_imv_icu_enc)
+│   │   └── no_icu/                                         (no_imv_no_icu_enc)
 │   └── deaths/                                             (death_enc)
 ├── validation/             Data quality assessment (cohort-agnostic — runs on the raw CLIF tables)
 ├── stats/                  Per-stratum collection-coverage tables
@@ -39,7 +45,7 @@ The same six subdirectories appear under every cohort/stratum directory. The "Co
 |---|---|---|---|
 | `tableone/` | Demographics, mortality, comorbidities, ventilator settings, medications, code status, SOFA, CCI, STROBE counts, upset data — see the per-file table below | Encounter blocks where the parent flag = 1 | `modules/tableone/generator.py` |
 | `figures/` | CONSORT, sankey, venn, upset, area curves, ventilator-table PNG/HTML/PDF — see the per-file table below | Same as `tableone/` | `modules/tableone/generator.py` (HTML medication area curves come from `modules/medications/visualizer.py`) |
-| `ecdf/{labs,vitals,respiratory_support}/*.parquet` | Empirical CDF — distinct `(value, probability)` pairs | Parent cohort/stratum **AND** value timestamp ∈ `[in_dttm, out_dttm]` for any ICU stay window of that encounter (the **entire ICU stay**, not the first 168 h or 72 h) | `modules/ecdf/generator.py:compute_ecdf_compact` (`:280`) |
+| `ecdf/{labs,vitals,respiratory_support}/*.parquet` | Empirical CDF — distinct `(value, probability)` pairs | Parent cohort/stratum **AND** value timestamp ∈ `[in_dttm, out_dttm]` where the time window depends on the stratum: ICU stay windows for `overall/`, `icu`, `deaths`; first vasopressor → discharge for `vaso` family; first qualifying device → discharge for `advanced_resp` and `nippv_hfnc` families. See `STRATUM_WINDOW_TYPE` in `generator.py`. | `modules/ecdf/generator.py:compute_ecdf_compact` |
 | `bins/{labs,vitals,respiratory_support}/*.parquet` | Quantile bins with auto-extreme splitting (first/last bin split into 5 sub-bins when configured) | Same as `ecdf/` | `modules/ecdf/generator.py` via `modules/ecdf/utils.create_all_bins` |
 | `summary_stats/*.{csv,json}` | Per-category mean/median/IQR for labs / vitals / meds / patient_assessments / CRRT | Critical-illness cohort (only generated under `overall/`) | `modules/mcide/collector.py` |
 | `mcide/*.csv` | Minimum CDE value counts for categorical columns across CLIF tables | Critical-illness cohort (only generated under `overall/`) | `modules/mcide/collector.py:155` |
@@ -48,18 +54,24 @@ The same six subdirectories appear under every cohort/stratum directory. The "Co
 
 ### What "cohort filter" means in plain English
 
-- `overall/` → adults whose encounter block touched an ICU **or** discharged as `expired`/`hospice`
+- `overall/` → adults whose encounter block touched an ICU **or** discharged as `expired`/`hospice`. ECDF window: ICU stay.
 - `overall_ward/` → adults whose encounter block touched a ward at any point
-- `strata/icu/` → encounters in the critical-illness cohort whose `icu_enc == 1`
-- `strata/advanced_resp/` → encounters in the critical-illness cohort that ever received `imv` / `nippv` / `cpap` / `high flow nc`
-- `strata/advanced_resp/icu/` → above **AND** `icu_enc == 1`
-- `strata/advanced_resp/no_icu/` → above **AND** `icu_enc == 0` (these are by construction deaths)
-- `strata/vaso/` → encounters in the critical-illness cohort that ever received `norepinephrine`, `epinephrine`, `phenylephrine`, `vasopressin`, `dopamine`, or `angiotensin`
-- `strata/vaso/icu/` → above **AND** `icu_enc == 1`
-- `strata/vaso/no_icu/` → above **AND** `icu_enc == 0` (by construction deaths)
-- `strata/deaths/` → encounters in the critical-illness cohort with `death_enc == 1` (`discharge_category in ('expired', 'hospice')`)
+- `strata/icu/` → encounters in the critical-illness cohort whose `icu_enc == 1`. ECDF window: ICU stay.
+- `strata/advanced_resp/` → encounters in the critical-illness cohort that ever received `imv` / `nippv` / `cpap` / `high flow nc`. ECDF window: first qualifying device `recorded_dttm` → `discharge_dttm`.
+- `strata/advanced_resp/icu/` → above **AND** `icu_enc == 1`. ECDF window: same as `advanced_resp/`.
+- `strata/advanced_resp/no_icu/` → above **AND** `icu_enc == 0` (these are by construction deaths). ECDF window: same as `advanced_resp/`.
+- `strata/nippv_hfnc/` → encounters in the critical-illness cohort that ever received `nippv` (BiPAP) or `high flow nc` with `lpm_set >= 30`. ECDF window: first qualifying device `recorded_dttm` → `discharge_dttm`.
+- `strata/nippv_hfnc/icu/` → above **AND** `icu_enc == 1`. ECDF window: same as `nippv_hfnc/`.
+- `strata/nippv_hfnc/no_icu/` → above **AND** `icu_enc == 0` (by construction deaths). ECDF window: same as `nippv_hfnc/`.
+- `strata/vaso/` → encounters in the critical-illness cohort that ever received `norepinephrine`, `epinephrine`, `phenylephrine`, `vasopressin`, `dopamine`, or `angiotensin`. ECDF window: first vasopressor `admin_dttm` → `discharge_dttm`.
+- `strata/vaso/icu/` → above **AND** `icu_enc == 1`. ECDF window: same as `vaso/`.
+- `strata/vaso/no_icu/` → above **AND** `icu_enc == 0` (by construction deaths). ECDF window: same as `vaso/`.
+- `strata/no_imv/` → encounters in the critical-illness cohort that never received invasive mechanical ventilation (`on_vent == 0`). ECDF window: ICU stay.
+- `strata/no_imv/icu/` → above **AND** `icu_enc == 1`. ECDF window: same as `no_imv/`.
+- `strata/no_imv/no_icu/` → above **AND** `icu_enc == 0` (by construction deaths). ECDF window: same as `no_imv/`.
+- `strata/deaths/` → encounters in the critical-illness cohort with `death_enc == 1` (`discharge_category in ('expired', 'hospice')`). ECDF window: ICU stay.
 
-The flag definitions live in `modules/strata.py:24-33` and the inclusion code is at `modules/tableone/generator.py:1547-1549`.
+The flag definitions live in `modules/strata.py:24-39`, the inclusion code is at `modules/tableone/generator.py:1547-1549`, and the stratum-to-window mapping is at `modules/ecdf/generator.py:STRATUM_WINDOW_TYPE`.
 
 ---
 
@@ -82,6 +94,8 @@ The rows that go into this file are every albumin measurement (lab_category = `a
 
 The same file under `output/final/strata/icu/ecdf/labs/albumin_g_dL.parquet` is the same computation but additionally restricted to encounters where `icu_enc == 1`. In the critical-illness cohort this just drops the small set of non-ICU deaths.
 
+Under `strata/vaso/`, the temporal window is different: instead of ICU stay windows, it uses **first vasopressor `admin_dttm` → `discharge_dttm`**. So `strata/vaso/ecdf/labs/albumin_g_dL.parquet` contains albumin values drawn between the first vasopressor administration and discharge for patients who received vasopressors. Similarly, `strata/advanced_resp/` and `strata/nippv_hfnc/` use first qualifying device `recorded_dttm` → `discharge_dttm`.
+
 There is **no 168-hour cap**. A 30-day ICU stay contributes all 30 days of albumin draws. The 24h/48h/72h numbers in `stats/collection_statistics.csv` are *coverage statistics on observation counts*, not the ECDF input filter (`modules/ecdf/statistics.py:196-200`).
 
 ---
@@ -96,7 +110,7 @@ Generated by `modules/tableone/generator.py`. The same set of files is written u
 | `table_one_by_year.csv` | Same, stratified by admission year |
 | `mortality_rates.csv` | In-hospital and discharge mortality counts/rates |
 | `strobe_counts.csv` | STROBE enrollment flow counts |
-| `upset_data.csv` | Cohort subset membership (ICU, advanced resp, vaso, death) for the upset plot |
+| `upset_data.csv` | Cohort subset membership (ICU, advanced resp, NIPPV/HFNC, vaso, death) for the upset plot |
 | `comorbidities_per_1000_hospitalizations.csv` | Charlson/Elixhauser rates normalized per 1000 stays |
 | `comorbidities_per_1000_hospitalizations_summary.csv` | Summary stats for the above |
 | `code_status_counts_by_encounter_type.csv` | Code status value counts by encounter type |
@@ -118,6 +132,18 @@ Generated by `modules/tableone/generator.py`. The same set of files is written u
 | `mode_proportions_first_24h.csv` | Ventilator mode breakdown in first 24 h of mechanical ventilation |
 | `medications_hourly_data.csv` | Paralytic / sedative / vasoactive doses by hour-since-ICU-admit |
 | `medications_summary_stats.csv` | Mean/median/IQR for the above |
+| `pf_sf_summary_24h.csv` | Per-encounter PF/SF ratios in the first 24 h of respiratory failure onset. Only under `strata/advanced_resp/` and `strata/no_imv/` (with `_icu`/`_no_icu` suffixed variants). |
+| `pf_sf_aggregate_stats.csv` | Aggregate PF/SF statistics (n, mean, sd, median, Q25, Q75) segmented by onset device. Same strata as above. |
+
+**Additional rows in strata Table One CSVs:**
+
+Certain strata table ones (`table_one_<stratum>_by_year.csv`) include extra rows that do not appear in the overall Table One:
+
+| Row(s) | Appears in strata | Description |
+|---|---|---|
+| `Resp. device onset, n (%)` / `Pre-device LOS (days)` / `Post-device LOS (days)` | `advanced_resp`, `nippv_hfnc`, `no_imv` (+ `/icu`, `/no_icu` splits) | Time from admission to first respiratory device onset, and from onset to discharge. Only encounters with a detected onset are counted. |
+| `28-day VFD (IMV encounters), n (%)` / `VFD, median [Q1, Q3]` | Any stratum with IMV encounters | 28-day ventilator-free days. VFD = 0 for death within 28 days (uses `death_dttm` or `discharge_dttm` when `discharge_category` is expired/hospice) or if still on IMV at day 28. Intermediate free days between reintubation episodes do not count. |
+| `Norepinephrine equivalent (NEE), n (%)` / `Peak NEE` / `Median NEE` | `vaso`, `vaso/icu`, `vaso/no_icu` | Vasopressor intensity per encounter in norepinephrine-equivalent mcg/kg/min. Peak = maximum concurrent intensity; Median = typical intensity. Weights: norepinephrine 1.0, epinephrine 1.0, phenylephrine 0.1, dopamine 0.01, vasopressin 2.5, angiotensin 10.0. Concurrent doses aligned by rounding to nearest hour. |
 
 ---
 
@@ -128,7 +154,7 @@ Generated by `modules/tableone/generator.py` (with HTML medication curves from `
 | File | Contents |
 |---|---|
 | `consort_flow_diagram.png` | CONSORT enrollment flow chart |
-| `cohort_intersect_upset_plot.png` | UpSet plot of cohort overlaps (ICU, resp, vaso, death) |
+| `cohort_intersect_upset_plot.png` | UpSet plot of cohort overlaps (ICU, resp, NIPPV/HFNC, vaso, death) |
 | `venn_all_4_groups.png` | 4-way Venn of cohort intersections |
 | `code_status_stacked_bar_with_missingness_excl_missing_cat.png` | Code status stacked bar |
 | `comorbidities_per_1000_barplot.png` | Charlson/Elixhauser bar chart |
@@ -153,6 +179,7 @@ Generated by `modules/tableone/generator.py` (with HTML medication curves from `
 | `vasoactive_area_curve_7d.html` | Interactive 7-day area curve: vasoactive dose by hour |
 | `vasoactive_median_dose_by_hour.html` | Median vasoactive dose by hour |
 | `ventilator_settings_table.png` / `.pdf` | Ventilator settings summary table rendered as image + PDF |
+| `pf_sf_comparison_overall_icu_noicu.png` | Box plot comparing PF/SF distributions across Overall/ICU/No-ICU splits. Only under `strata/advanced_resp/figures/` and `strata/no_imv/figures/`. |
 
 ---
 
@@ -224,9 +251,9 @@ Cohort-agnostic — runs on the raw CLIF tables, not the cohort-filtered views.
 | File | Contents | Generator |
 |---|---|---|
 | `collection_statistics.csv` | Per `(data_type, category, reference_unit)`: total stays, total observations, total distinct values, mean ICU LOS, whole-stay mean/median/IQR, **first 24h / 48h / 72h count distributions**. The cohort is the critical-illness cohort. | `modules/ecdf/statistics.py:421` |
-| `collection_statistics_<stratum>.csv` | Same, restricted to each stratum (`icu`, `advanced_resp`, `advanced_resp_icu`, `vaso`, `vaso_icu`, `deaths`) | `modules/ecdf/statistics.py` |
+| `collection_statistics_<stratum>.csv` | Same, restricted to each stratum (`icu`, `advanced_resp`, `advanced_resp_icu`, `nippv_hfnc`, `nippv_hfnc_icu`, `vaso`, `vaso_icu`, `no_imv`, `no_imv_icu`, `deaths`) | `modules/ecdf/statistics.py` |
 
-> The 24h/48h/72h numbers here are **coverage stats on observation counts**, not the ECDF input filter. The ECDF/bins parquets always cover the full ICU stay window.
+> The 24h/48h/72h numbers here are **coverage stats on observation counts**, not the ECDF input filter. The ECDF/bins parquets cover the full time window for that stratum: ICU stay windows for `overall/`, `icu`, `deaths`; event-onset → discharge for `vaso`, `advanced_resp`, and `nippv_hfnc` families.
 
 ---
 

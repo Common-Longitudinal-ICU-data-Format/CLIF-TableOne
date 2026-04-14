@@ -89,6 +89,9 @@ STRATUM_WINDOW_TYPE = {
     'nippv_hfnc': 'nippv_hfnc',
     'nippv_hfnc/icu': 'nippv_hfnc',
     'nippv_hfnc/no_icu': 'nippv_hfnc',
+    'no_imv': 'icu',
+    'no_imv/icu': 'icu',
+    'no_imv/no_icu': 'icu',
 }
 
 

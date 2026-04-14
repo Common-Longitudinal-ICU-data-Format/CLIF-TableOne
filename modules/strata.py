@@ -32,6 +32,9 @@ ENCOUNTER_TYPE_STRATA = {
     'vaso': 'vaso_support_enc',
     'vaso/icu': 'vaso_icu_enc',
     'vaso/no_icu': 'vaso_no_icu_enc',
+    'no_imv': 'no_imv_enc',
+    'no_imv/icu': 'no_imv_icu_enc',
+    'no_imv/no_icu': 'no_imv_no_icu_enc',
     'deaths': 'death_enc',
 }
 

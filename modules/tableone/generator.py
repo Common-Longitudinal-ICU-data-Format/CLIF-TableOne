@@ -3435,6 +3435,17 @@ def main(memory_monitor=None, cohort_mode='critical_illness') -> bool:
 
         print(f"✅ Saved: {_mp24v_path}")
 
+        # ── 28-day Ventilator-Free Days ────────────────────────────────
+        from modules.tableone.vfd_calculator import calculate_ventilator_free_days
+        vfd_df = calculate_ventilator_free_days(resp_stitched, final_tableone_df)
+        if len(vfd_df) > 0:
+            final_tableone_df = final_tableone_df.merge(
+                vfd_df, on='encounter_block', how='left'
+            )
+            print(f"  ✅ VFDs computed for {len(vfd_df):,} IMV encounters")
+            print(f"     VFD median: {vfd_df['vfd_28'].median():.0f}, "
+                  f"mean: {vfd_df['vfd_28'].mean():.1f}")
+
         # Memory cleanup: Clear respiratory detailed analysis
         print("Clearing respiratory detailed analysis data from memory...")
         del resp_stitched, resp_stitched_imv, imv_encounters
@@ -3444,6 +3455,20 @@ def main(memory_monitor=None, cohort_mode='critical_illness') -> bool:
 
         final_tableone_df.columns
 
+    # "No IMV" stratum — critically ill encounters that were never intubated
+    if 'on_vent' in final_tableone_df.columns:
+        final_tableone_df['no_imv_enc'] = (final_tableone_df['on_vent'] == 0).astype(int)
+        final_tableone_df['no_imv_icu_enc'] = (
+            (final_tableone_df['no_imv_enc'] == 1) & (final_tableone_df['icu_enc'] == 1)
+        ).astype(int)
+        final_tableone_df['no_imv_no_icu_enc'] = (
+            (final_tableone_df['no_imv_enc'] == 1) & (final_tableone_df['icu_enc'] == 0)
+        ).astype(int)
+        _n_no_imv = final_tableone_df['no_imv_enc'].sum()
+        _n_no_imv_icu = final_tableone_df['no_imv_icu_enc'].sum()
+        _n_no_imv_no_icu = final_tableone_df['no_imv_no_icu_enc'].sum()
+        print(f"\nNo-IMV stratum: {_n_no_imv:,} encounters "
+              f"(ICU: {_n_no_imv_icu:,}, no ICU: {_n_no_imv_no_icu:,})")
 
     # ==============================================================================
     # # Meds
@@ -3672,6 +3697,50 @@ def main(memory_monitor=None, cohort_mode='critical_illness') -> bool:
         print("\n⚠️ No vasopressor data found for statistics")
 
     # ============================================================================
+    # 3b. Norepinephrine Equivalent (NEE) — peak vasopressor intensity
+    # ============================================================================
+    # NEE weights from Khanna et al. / CLIF-epidemiology-of-CRRT.
+    # Catecholamines in mcg/kg/min; vasopressin originally u/min (× 2.5).
+    # All doses here are post-clifpy conversion (mcg/kg/min).
+    _NEE_WEIGHTS = {
+        'norepinephrine': 1.0,
+        'epinephrine': 1.0,
+        'phenylephrine': 0.1,
+        'dopamine': 0.01,
+        'vasopressin': 2.5,
+        'angiotensin': 10.0,
+    }
+
+    if len(vaso_df) > 0:
+        print("\nComputing Norepinephrine Equivalent (NEE)...")
+        _nee_df = vaso_df[['encounter_block', 'admin_dttm', 'med_category', 'med_dose']].copy()
+        _nee_df['weighted_dose'] = _nee_df['med_category'].map(_NEE_WEIGHTS).fillna(0) * _nee_df['med_dose']
+
+        # Round to nearest hour to align concurrent medications
+        _nee_df['hour'] = _nee_df['admin_dttm'].dt.floor('h')
+
+        # Sum weighted doses per encounter per hour → instantaneous NEE
+        _hourly_nee = (
+            _nee_df.groupby(['encounter_block', 'hour'])['weighted_dose']
+            .sum()
+            .reset_index(name='nee')
+        )
+
+        # Per-encounter peak and median NEE
+        nee_per_enc = (
+            _hourly_nee.groupby('encounter_block')['nee']
+            .agg(nee_peak='max', nee_median='median')
+            .reset_index()
+        )
+        print(f"  ✅ NEE computed for {len(nee_per_enc):,} encounters")
+        print(f"     Peak NEE median: {nee_per_enc['nee_peak'].median():.3f}, "
+              f"Median NEE median: {nee_per_enc['nee_median'].median():.3f} mcg/kg/min")
+
+        del _nee_df, _hourly_nee
+    else:
+        nee_per_enc = pd.DataFrame(columns=['encounter_block', 'nee_peak', 'nee_median'])
+
+    # ============================================================================
     # 4. Merge Everything to final_tableone_df
     # ============================================================================
 
@@ -3702,8 +3771,15 @@ def main(memory_monitor=None, cohort_mode='critical_illness') -> bool:
             on='encounter_block',
             how='left'
         )
-    
+
         vaso_stat_cols = [col for col in vaso_stats.columns if col != 'encounter_block']
+
+    # Merge NEE
+    if len(nee_per_enc) > 0:
+        final_tableone_df = final_tableone_df.merge(
+            nee_per_enc, on='encounter_block', how='left'
+        )
+        print(f"✅ Added nee_peak column")
         print(f"✅ Added {len(vaso_stat_cols)} vasopressor dose statistic columns")
 
     new_cols = len(final_tableone_df.columns) - initial_cols
@@ -5800,7 +5876,8 @@ def main(memory_monitor=None, cohort_mode='critical_illness') -> bool:
 
         from modules.strata import ENCOUNTER_TYPE_STRATA as encounter_type_strata
         from modules.utils.output_paths import parse_stratum
-        _pf_sf_strata_data = {}  # Collect PF/SF data for comparison figure
+        _pf_sf_strata_data = {}  # Collect PF/SF data for advanced_resp comparison figure
+        _no_imv_pf_sf_data = {}  # Collect PF/SF data for no_imv comparison figure
 
         for stratum_name, col in encounter_type_strata.items():
             if col not in tableone_df.columns:
@@ -5839,6 +5916,174 @@ def main(memory_monitor=None, cohort_mode='critical_illness') -> bool:
                 .rename(columns={'index': 'Variable'})
             )
 
+            # ── Pre/post respiratory device LOS rows ──────────────────────
+            _DEVICE_LOS_STRATA = {
+                'advanced_resp', 'advanced_resp/icu', 'advanced_resp/no_icu',
+                'nippv_hfnc', 'nippv_hfnc/icu', 'nippv_hfnc/no_icu',
+                'no_imv', 'no_imv/icu', 'no_imv/no_icu',
+            }
+            if (stratum_name in _DEVICE_LOS_STRATA
+                    and resp_failure_onset_df is not None
+                    and len(resp_failure_onset_df) > 0):
+                _onset_cols = resp_failure_onset_df[['encounter_block', 'onset_dttm']]
+                _strat_onset = df_strat.merge(_onset_cols, on='encounter_block', how='inner')
+
+                if len(_strat_onset) > 0:
+                    _strat_onset['pre_device_los_days'] = (
+                        _strat_onset['onset_dttm'] - _strat_onset['admission_dttm']
+                    ).dt.total_seconds() / 86400
+                    _strat_onset['post_device_los_days'] = (
+                        _strat_onset['discharge_dttm'] - _strat_onset['onset_dttm']
+                    ).dt.total_seconds() / 86400
+
+                    def _device_los_stat(series):
+                        d = series.dropna()
+                        if len(d) == 0:
+                            return ''
+                        return f"{d.median():.1f} [{d.quantile(0.25):.1f}, {d.quantile(0.75):.1f}]"
+
+                    _los_new = {'Variable': [
+                        'Resp. device onset, n (%)',
+                        '  Pre-device LOS (days), median [Q1, Q3]',
+                        '  Post-device LOS (days), median [Q1, Q3]',
+                    ]}
+                    for _col in strat_table.columns:
+                        if _col == 'Variable':
+                            continue
+                        if _col == 'Overall':
+                            _n = len(_strat_onset)
+                            _N = len(df_strat)
+                            _los_new[_col] = [
+                                f"{_n:,} ({100*_n/_N:.1f}%)",
+                                _device_los_stat(_strat_onset['pre_device_los_days']),
+                                _device_los_stat(_strat_onset['post_device_los_days']),
+                            ]
+                        else:  # year columns
+                            _yr_onset = _strat_onset[_strat_onset['admission_year'] == int(_col)]
+                            _yr_strat = df_strat[df_strat['admission_year'] == int(_col)]
+                            _n_yr = len(_yr_onset)
+                            _N_yr = len(_yr_strat)
+                            _pct = f"{100*_n_yr/_N_yr:.1f}%" if _N_yr > 0 else "0.0%"
+                            _los_new[_col] = [
+                                f"{_n_yr:,} ({_pct})",
+                                _device_los_stat(_yr_onset['pre_device_los_days']),
+                                _device_los_stat(_yr_onset['post_device_los_days']),
+                            ]
+
+                    _los_rows = pd.DataFrame(_los_new)
+                    _los_idx = strat_table[
+                        strat_table['Variable'].str.contains('length of stay', case=False, na=False)
+                    ].index
+                    _insert_pos = _los_idx[-1] + 1 if len(_los_idx) > 0 else len(strat_table)
+                    strat_table = pd.concat([
+                        strat_table.iloc[:_insert_pos],
+                        _los_rows,
+                        strat_table.iloc[_insert_pos:],
+                    ], ignore_index=True)
+                    print(f"  ✅ Added pre/post device LOS rows ({len(_strat_onset):,} with onset)")
+
+            # ── 28-day VFD rows (any stratum with IMV encounters) ────────
+            if 'vfd_28' in df_strat.columns:
+                _vfd_data = df_strat['vfd_28'].dropna()
+                if len(_vfd_data) > 0:
+                    def _vfd_stat(series):
+                        d = series.dropna()
+                        if len(d) == 0:
+                            return ''
+                        return f"{d.median():.0f} [{d.quantile(0.25):.0f}, {d.quantile(0.75):.0f}]"
+
+                    _vfd_new = {'Variable': [
+                        '28-day VFD (IMV encounters), n (%)',
+                        '  VFD, median [Q1, Q3]',
+                    ]}
+                    for _col in strat_table.columns:
+                        if _col == 'Variable':
+                            continue
+                        if _col == 'Overall':
+                            _n_imv = len(_vfd_data)
+                            _N = len(df_strat)
+                            _vfd_new[_col] = [
+                                f"{_n_imv:,} ({100*_n_imv/_N:.1f}%)",
+                                _vfd_stat(_vfd_data),
+                            ]
+                        else:  # year columns
+                            _yr_vfd = df_strat.loc[
+                                df_strat['admission_year'] == int(_col), 'vfd_28'
+                            ].dropna()
+                            _yr_N = len(df_strat[df_strat['admission_year'] == int(_col)])
+                            _pct = f"{100*len(_yr_vfd)/_yr_N:.1f}%" if _yr_N > 0 else "0.0%"
+                            _vfd_new[_col] = [
+                                f"{len(_yr_vfd):,} ({_pct})",
+                                _vfd_stat(_yr_vfd),
+                            ]
+
+                    _vfd_rows = pd.DataFrame(_vfd_new)
+                    # Insert after pre/post device LOS rows, or after LOS section
+                    _vfd_idx = strat_table[
+                        strat_table['Variable'].str.contains(
+                            'Post-device LOS|length of stay', case=False, na=False
+                        )
+                    ].index
+                    _vfd_insert = _vfd_idx[-1] + 1 if len(_vfd_idx) > 0 else len(strat_table)
+                    strat_table = pd.concat([
+                        strat_table.iloc[:_vfd_insert],
+                        _vfd_rows,
+                        strat_table.iloc[_vfd_insert:],
+                    ], ignore_index=True)
+                    print(f"  ✅ Added VFD rows ({len(_vfd_data):,} IMV encounters, "
+                          f"median VFD={_vfd_data.median():.0f})")
+
+            # ── NEE rows (vaso strata) ─────────────────────────────────
+            _NEE_STRATA = {
+                'vaso', 'vaso/icu', 'vaso/no_icu',
+            }
+            if stratum_name in _NEE_STRATA and 'nee_peak' in df_strat.columns:
+                _nee_peak = df_strat['nee_peak'].dropna()
+                _nee_med = df_strat['nee_median'].dropna() if 'nee_median' in df_strat.columns else pd.Series(dtype=float)
+                if len(_nee_peak) > 0:
+                    def _nee_stat(series):
+                        d = series.dropna()
+                        if len(d) == 0:
+                            return ''
+                        return f"{d.median():.3f} [{d.quantile(0.25):.3f}, {d.quantile(0.75):.3f}]"
+
+                    _nee_new = {'Variable': [
+                        'Peak NEE (mcg/kg/min), median [Q1, Q3]',
+                        'Median NEE (mcg/kg/min), median [Q1, Q3]',
+                    ]}
+                    for _col in strat_table.columns:
+                        if _col == 'Variable':
+                            continue
+                        if _col == 'Overall':
+                            _nee_new[_col] = [
+                                _nee_stat(_nee_peak),
+                                _nee_stat(_nee_med),
+                            ]
+                        else:  # year columns
+                            _yr_mask = df_strat['admission_year'] == int(_col)
+                            _yr_peak = df_strat.loc[_yr_mask, 'nee_peak'].dropna()
+                            _yr_med = df_strat.loc[_yr_mask, 'nee_median'].dropna() if 'nee_median' in df_strat.columns else pd.Series(dtype=float)
+                            _nee_new[_col] = [
+                                _nee_stat(_yr_peak),
+                                _nee_stat(_yr_med),
+                            ]
+
+                    _nee_rows = pd.DataFrame(_nee_new)
+                    # Insert after VFD rows, or after LOS section
+                    _nee_idx = strat_table[
+                        strat_table['Variable'].str.contains(
+                            'VFD|Post-device LOS|length of stay', case=False, na=False
+                        )
+                    ].index
+                    _nee_insert = _nee_idx[-1] + 1 if len(_nee_idx) > 0 else len(strat_table)
+                    strat_table = pd.concat([
+                        strat_table.iloc[:_nee_insert],
+                        _nee_rows,
+                        strat_table.iloc[_nee_insert:],
+                    ], ignore_index=True)
+                    print(f"  ✅ Added NEE rows ({len(_nee_peak):,} encounters, "
+                          f"peak NEE median={_nee_peak.median():.3f})")
+
             # Slugify stratum_name for the filename — sub-strata resolve to the
             # parent directory so no nested icu/no_icu subdirs are created.
             _strat_slug = stratum_name.replace('/', '_')
@@ -5849,7 +6094,10 @@ def main(memory_monitor=None, cohort_mode='critical_illness') -> bool:
             print(f"  ✅ Saved: {out_path}")
 
             # PF/SF CSV output for advanced_resp strata
-            _PFVSF_STRATA = {'advanced_resp', 'advanced_resp/icu', 'advanced_resp/no_icu'}
+            _PFVSF_STRATA = {
+                        'advanced_resp', 'advanced_resp/icu', 'advanced_resp/no_icu',
+                        'no_imv', 'no_imv/icu', 'no_imv/no_icu',
+                    }
             if stratum_name in _PFVSF_STRATA and pf_sf_per_encounter is not None and len(pf_sf_per_encounter) > 0:
                 from modules.tableone.pf_sf_calculator import generate_aggregate_stats
                 strat_enc_ids = df_strat['encounter_block'].unique()
@@ -5866,10 +6114,13 @@ def main(memory_monitor=None, cohort_mode='critical_illness') -> bool:
                     agg_path = os.path.join(strat_tableone_dir, _suffixed('pf_sf_aggregate_stats.csv', _strat_suffix))
                     agg_stats.to_csv(agg_path, index=False)
                     print(f"  ✅ PF/SF aggregate stats: {agg_path}")
-                    # Collect for comparison figure
-                    _fig_label = {'advanced_resp': 'Overall', 'advanced_resp/icu': 'ICU', 'advanced_resp/no_icu': 'No ICU'}
-                    if stratum_name in _fig_label:
-                        _pf_sf_strata_data[_fig_label[stratum_name]] = strat_pf_sf
+                    # Collect for comparison figures
+                    _adv_fig_label = {'advanced_resp': 'Overall', 'advanced_resp/icu': 'ICU', 'advanced_resp/no_icu': 'No ICU'}
+                    if stratum_name in _adv_fig_label:
+                        _pf_sf_strata_data[_adv_fig_label[stratum_name]] = strat_pf_sf
+                    _nimv_fig_label = {'no_imv': 'Overall', 'no_imv/icu': 'ICU', 'no_imv/no_icu': 'No ICU'}
+                    if stratum_name in _nimv_fig_label:
+                        _no_imv_pf_sf_data[_nimv_fig_label[stratum_name]] = strat_pf_sf
 
         # Generate PF/SF comparison figure across strata
         if len(_pf_sf_strata_data) > 0 and pf_sf_per_encounter is not None:
@@ -5881,6 +6132,17 @@ def main(memory_monitor=None, cohort_mode='critical_illness') -> bool:
                 print(f"  ✅ PF/SF comparison figure: {_fig_path}")
             except Exception as e:
                 print(f"  ⚠️ PF/SF comparison figure failed: {e}")
+
+        # Generate PF/SF comparison figure for no_imv strata
+        if len(_no_imv_pf_sf_data) > 0 and pf_sf_per_encounter is not None:
+            from modules.tableone.pf_sf_calculator import generate_pf_sf_comparison_figure
+            _nimv_fig_dir = os.path.join(str(project_root), 'output', 'final', 'strata', 'no_imv', 'figures')
+            _nimv_fig_path = os.path.join(_nimv_fig_dir, 'pf_sf_comparison_overall_icu_noicu.png')
+            try:
+                generate_pf_sf_comparison_figure(_no_imv_pf_sf_data, _nimv_fig_path)
+                print(f"  ✅ PF/SF comparison figure (no_imv): {_nimv_fig_path}")
+            except Exception as e:
+                print(f"  ⚠️ PF/SF comparison figure (no_imv) failed: {e}")
 
     # ============================================================================
     # NIH Enrollment Report — race × ethnicity × sex cross-tabulation
