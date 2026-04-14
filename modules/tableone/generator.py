@@ -1723,6 +1723,24 @@ def main(memory_monitor=None, cohort_mode='critical_illness') -> bool:
         how='left'
     )
 
+    # Identify hospitalizations on NIPPV (BiPAP) or HFNC (>= 30 LPM)
+    print(f"\nIdentifying hospitalizations with NIPPV/HFNC...")
+    nippv_hfnc_hosp_ids = clif.respiratory_support.df.loc[
+        (clif.respiratory_support.df['device_category'] == 'nippv')
+        | (
+            (clif.respiratory_support.df['device_category'] == 'high flow nc')
+            & (clif.respiratory_support.df['lpm_set'] >= 30)
+        ),
+        'encounter_block'
+    ].unique()
+    print(f"Hospitalizations with NIPPV/HFNC: {len(nippv_hfnc_hosp_ids):,}")
+
+    nippv_hfnc_df = pd.DataFrame({
+        'encounter_block': nippv_hfnc_hosp_ids,
+        'nippv_hfnc_enc': 1
+    })
+    final_cohort = final_cohort.merge(nippv_hfnc_df, on='encounter_block', how='left')
+
     # Detect respiratory failure onset for PF/SF calculation
     print("Detecting respiratory failure onset for PF/SF ratios...")
     from modules.tableone.pf_sf_calculator import detect_respiratory_failure_onset
@@ -1735,7 +1753,7 @@ def main(memory_monitor=None, cohort_mode='critical_illness') -> bool:
 
     # Memory cleanup: Clear respiratory support intermediate data
     print("Clearing respiratory support intermediate data from memory...")
-    del advanced_support_df
+    del advanced_support_df, nippv_hfnc_df
     gc.collect()
     checkpoint("3. Respiratory Support Processed")
 
@@ -1780,12 +1798,12 @@ def main(memory_monitor=None, cohort_mode='critical_illness') -> bool:
         how='left'
     )
 
-    # Missing high_support_en means not on advanced support
+    # Missing flags mean not on that support type
     final_cohort['vaso_support_enc'] = final_cohort['vaso_support_enc'].fillna(0).astype(int)
-    # Missing high_support_en means not on advanced support
     final_cohort['high_support_enc'] = final_cohort['high_support_enc'].fillna(0).astype(int)
+    final_cohort['nippv_hfnc_enc'] = final_cohort['nippv_hfnc_enc'].fillna(0).astype(int)
 
-    # Set high_support_enc and vaso_support_enc to 0 if is_procedural_ld_only is 1
+    # Set support flags to 0 if is_procedural_ld_only is 1
     # (procedural/L&D only encounters without ICU should not count as having support).
     # In ward mode, ward-touching is the inclusion criterion, so support metrics for
     # ward+procedural encounters should be reported as-is (the procedural visit doesn't
@@ -1793,7 +1811,9 @@ def main(memory_monitor=None, cohort_mode='critical_illness') -> bool:
     if cohort_mode != 'ward':
         final_cohort.loc[final_cohort['is_procedural_ld_only'] == 1, 'high_support_enc'] = 0
         final_cohort.loc[final_cohort['is_procedural_ld_only'] == 1, 'vaso_support_enc'] = 0
+        final_cohort.loc[final_cohort['is_procedural_ld_only'] == 1, 'nippv_hfnc_enc'] = 0
     strobe_counts["2_advanced_resp_support_hospitalizations"] = (final_cohort['high_support_enc'] == 1).sum()
+    strobe_counts["2b_nippv_hfnc_hospitalizations"] = (final_cohort['nippv_hfnc_enc'] == 1).sum()
     strobe_counts["3_vasoactive_hospitalizations"] = (final_cohort['vaso_support_enc'] == 1).sum()
 
     # Memory cleanup: Clear medication initial load data
@@ -1820,6 +1840,12 @@ def main(memory_monitor=None, cohort_mode='critical_illness') -> bool:
     ).astype(int)
     final_cohort['high_support_no_icu_enc'] = (
         (final_cohort['high_support_enc'] == 1) & (final_cohort['icu_enc'] == 0)
+    ).astype(int)
+    final_cohort['nippv_hfnc_icu_enc'] = (
+        (final_cohort['nippv_hfnc_enc'] == 1) & (final_cohort['icu_enc'] == 1)
+    ).astype(int)
+    final_cohort['nippv_hfnc_no_icu_enc'] = (
+        (final_cohort['nippv_hfnc_enc'] == 1) & (final_cohort['icu_enc'] == 0)
     ).astype(int)
     # death_enc is already on final_cohort (carried in the select at line ~1565).
     # "Other critically ill" = died in ED/ward without ICU/vaso/resp escalation.

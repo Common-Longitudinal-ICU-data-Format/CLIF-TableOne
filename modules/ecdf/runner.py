@@ -273,7 +273,8 @@ class ECDFRunner:
             from .generator import (
                 load_configs, extract_icu_time_windows, discover_lab_category_units,
                 load_discharge_times, extract_vaso_event_windows,
-                extract_advanced_resp_event_windows, STRATUM_WINDOW_TYPE,
+                extract_advanced_resp_event_windows, extract_nippv_hfnc_event_windows,
+                STRATUM_WINDOW_TYPE,
             )
             from .statistics import compute_collection_statistics
             import polars as pl
@@ -302,10 +303,16 @@ class ECDFRunner:
                 clif_config['file_type'],
                 discharge_times,
             )
+            nippv_hfnc_windows = extract_nippv_hfnc_event_windows(
+                clif_config['tables_path'],
+                clif_config['file_type'],
+                discharge_times,
+            )
             all_time_windows = {
                 'icu': icu_windows,
                 'vaso': vaso_windows,
                 'resp': resp_windows,
+                'nippv_hfnc': nippv_hfnc_windows,
             }
 
             # Discover lab category-unit combinations

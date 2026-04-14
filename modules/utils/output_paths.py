@@ -64,13 +64,39 @@ META = FINAL / 'meta'
 STATS = FINAL / 'stats'
 
 
+def parse_stratum(stratum: str) -> tuple:
+    """Decompose a stratum key into (parent_dir_key, filename_suffix).
+
+    Sub-strata keys contain a slash (e.g. 'advanced_resp/icu').  The part
+    before the slash is the parent directory key; the part after becomes a
+    filename suffix so that all outputs land in the parent directory.
+
+    Examples:
+        'advanced_resp/icu'    -> ('advanced_resp', '_icu')
+        'advanced_resp/no_icu' -> ('advanced_resp', '_no_icu')
+        'vaso/icu'             -> ('vaso', '_icu')
+        'icu'                  -> ('icu', '')
+        'deaths'               -> ('deaths', '')
+    """
+    if '/' in stratum:
+        parent, sub = stratum.rsplit('/', 1)
+        return parent, f'_{sub}'
+    return stratum, ''
+
+
 def cohort_dir(stratum: Optional[str] = None) -> Path:
     """Return the cohort root directory.
 
     Args:
-        stratum: stratum name (e.g. 'icu', 'deaths'). None means the overall cohort.
+        stratum: stratum name (e.g. 'icu', 'deaths', 'advanced_resp/icu').
+            Sub-strata (containing '/') resolve to the parent directory so
+            that outputs are flattened with filename suffixes instead of
+            nested subdirectories.
     """
-    return OVERALL if stratum is None else STRATA / stratum
+    if stratum is None:
+        return OVERALL
+    parent, _suffix = parse_stratum(stratum)
+    return STRATA / parent
 
 
 def tableone_dir(stratum: Optional[str] = None) -> Path:
@@ -186,7 +212,10 @@ def ward_cohort_dir(stratum: Optional[str] = None) -> Path:
         stratum: stratum name (e.g. 'icu', 'deaths') for a subset within the ward
             cohort. None means the full ward cohort.
     """
-    return OVERALL_WARD if stratum is None else STRATA_WARD / stratum
+    if stratum is None:
+        return OVERALL_WARD
+    parent, _suffix = parse_stratum(stratum)
+    return STRATA_WARD / parent
 
 
 def ward_tableone_dir(stratum: Optional[str] = None) -> Path:
@@ -238,11 +267,12 @@ def ward_validation_json_reports_dir() -> Path:
 
 
 # Strata names known to the pipeline. Mirrors modules.strata.ENCOUNTER_TYPE_STRATA keys.
-# Slash-prefixed entries are sub-strata that resolve to nested directories
-# (e.g. 'vaso/icu' → output/final/strata/vaso/icu/,
-#       'advanced_resp/icu' → output/final/strata/advanced_resp/icu/).
+# Slash-prefixed entries are sub-strata that resolve to the *parent* directory
+# (e.g. 'vaso/icu' → output/final/strata/vaso/) with filename suffix '_icu'.
+# See parse_stratum() for the decomposition logic.
 STRATA_NAMES = ('icu',
                 'advanced_resp', 'advanced_resp/icu', 'advanced_resp/no_icu',
+                'nippv_hfnc', 'nippv_hfnc/icu', 'nippv_hfnc/no_icu',
                 'vaso', 'vaso/icu', 'vaso/no_icu',
                 'deaths')
 

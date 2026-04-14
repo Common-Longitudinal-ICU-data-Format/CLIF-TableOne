@@ -65,6 +65,33 @@ from modules.utils.output_paths import (
 )
 
 
+# Canonical qualifying-event definitions — must match modules/tableone/generator.py
+VASOACTIVE_MEDS = [
+    'norepinephrine', 'epinephrine', 'phenylephrine',
+    'vasopressin', 'dopamine', 'angiotensin',
+]
+ADVANCED_RESP_DEVICES = ['imv', 'nippv', 'cpap', 'high flow nc']
+NIPPV_HFNC_DEVICES = ['nippv', 'high flow nc']
+
+# Maps each stratum to its temporal window source.
+# 'icu' = ICU ADT windows, 'vaso' = first vasopressor → discharge,
+# 'resp' = first qualifying device → discharge,
+# 'nippv_hfnc' = first NIPPV/HFNC device → discharge.
+STRATUM_WINDOW_TYPE = {
+    'icu': 'icu',
+    'deaths': 'icu',
+    'vaso': 'vaso',
+    'vaso/icu': 'vaso',
+    'vaso/no_icu': 'vaso',
+    'advanced_resp': 'resp',
+    'advanced_resp/icu': 'resp',
+    'advanced_resp/no_icu': 'resp',
+    'nippv_hfnc': 'nippv_hfnc',
+    'nippv_hfnc/icu': 'nippv_hfnc',
+    'nippv_hfnc/no_icu': 'nippv_hfnc',
+}
+
+
 # ============================================================================
 # Configuration Loading
 # ============================================================================
@@ -274,6 +301,180 @@ def extract_icu_time_windows(
 
 
 # ============================================================================
+# Discharge Times & Event-Based Time Windows
+# ============================================================================
+
+def load_discharge_times(
+    tables_path: str,
+    file_type: str,
+) -> pl.DataFrame:
+    """
+    Load discharge_dttm from the hospitalization table.
+
+    Returns:
+        Polars DataFrame with columns:
+        - hospitalization_id: str
+        - discharge_dttm: datetime (timezone-naive)
+    """
+    hosp_path = os.path.join(tables_path, f'clif_hospitalization.{file_type}')
+    if not os.path.exists(hosp_path):
+        raise FileNotFoundError(f"Hospitalization file not found: {hosp_path}")
+
+    print(f"Loading discharge times from {hosp_path}...")
+
+    df = (
+        pl.scan_parquet(hosp_path)
+        .select(['hospitalization_id', 'discharge_dttm'])
+        .filter(pl.col('discharge_dttm').is_not_null())
+        .collect(streaming=True)
+    )
+
+    df = df.with_columns(
+        pl.col('discharge_dttm').dt.replace_time_zone(None)
+    )
+
+    print(f"✓ Loaded discharge times for {len(df):,} hospitalizations")
+    return df
+
+
+def extract_vaso_event_windows(
+    tables_path: str,
+    file_type: str,
+    discharge_times: pl.DataFrame,
+) -> pl.DataFrame:
+    """
+    Build time windows anchored to the first vasopressor administration.
+
+    Window = min(admin_dttm) for qualifying meds → discharge_dttm.
+
+    Returns:
+        Polars DataFrame with columns matching ICU windows:
+        - hospitalization_id, in_dttm, out_dttm
+    """
+    meds_path = os.path.join(tables_path, f'clif_medication_admin_continuous.{file_type}')
+    if not os.path.exists(meds_path):
+        raise FileNotFoundError(f"Medication file not found: {meds_path}")
+
+    print(f"Extracting vasopressor event windows from {meds_path}...")
+
+    first_admin = (
+        pl.scan_parquet(meds_path)
+        .filter(
+            pl.col('med_category').str.to_lowercase().str.strip_chars().is_in(VASOACTIVE_MEDS)
+        )
+        .group_by('hospitalization_id')
+        .agg(pl.col('admin_dttm').min().alias('in_dttm'))
+        .collect(streaming=True)
+    )
+
+    first_admin = first_admin.with_columns(
+        pl.col('in_dttm').dt.replace_time_zone(None)
+    )
+
+    # Join with discharge times to get the end bound
+    windows = (
+        first_admin
+        .join(discharge_times, on='hospitalization_id', how='inner')
+        .rename({'discharge_dttm': 'out_dttm'})
+        .select(['hospitalization_id', 'in_dttm', 'out_dttm'])
+    )
+
+    print(f"✓ Found {len(windows):,} vasopressor event windows")
+    return windows
+
+
+def extract_advanced_resp_event_windows(
+    tables_path: str,
+    file_type: str,
+    discharge_times: pl.DataFrame,
+) -> pl.DataFrame:
+    """
+    Build time windows anchored to the first qualifying respiratory device.
+
+    Window = min(recorded_dttm) for qualifying devices → discharge_dttm.
+
+    Returns:
+        Polars DataFrame with columns matching ICU windows:
+        - hospitalization_id, in_dttm, out_dttm
+    """
+    resp_path = os.path.join(tables_path, f'clif_respiratory_support.{file_type}')
+    if not os.path.exists(resp_path):
+        raise FileNotFoundError(f"Respiratory support file not found: {resp_path}")
+
+    print(f"Extracting advanced resp event windows from {resp_path}...")
+
+    first_device = (
+        pl.scan_parquet(resp_path)
+        .filter(
+            pl.col('device_category').str.to_lowercase().str.strip_chars().is_in(ADVANCED_RESP_DEVICES)
+        )
+        .group_by('hospitalization_id')
+        .agg(pl.col('recorded_dttm').min().alias('in_dttm'))
+        .collect(streaming=True)
+    )
+
+    first_device = first_device.with_columns(
+        pl.col('in_dttm').dt.replace_time_zone(None)
+    )
+
+    # Join with discharge times to get the end bound
+    windows = (
+        first_device
+        .join(discharge_times, on='hospitalization_id', how='inner')
+        .rename({'discharge_dttm': 'out_dttm'})
+        .select(['hospitalization_id', 'in_dttm', 'out_dttm'])
+    )
+
+    print(f"✓ Found {len(windows):,} advanced resp event windows")
+    return windows
+
+
+def extract_nippv_hfnc_event_windows(
+    tables_path: str,
+    file_type: str,
+    discharge_times: pl.DataFrame,
+) -> pl.DataFrame:
+    """
+    Build time windows anchored to the first NIPPV (BiPAP) or HFNC device.
+
+    Window = min(recorded_dttm) for NIPPV/HFNC devices → discharge_dttm.
+
+    Returns:
+        Polars DataFrame with columns: hospitalization_id, in_dttm, out_dttm
+    """
+    resp_path = os.path.join(tables_path, f'clif_respiratory_support.{file_type}')
+    if not os.path.exists(resp_path):
+        raise FileNotFoundError(f"Respiratory support file not found: {resp_path}")
+
+    print(f"Extracting NIPPV/HFNC event windows from {resp_path}...")
+
+    first_device = (
+        pl.scan_parquet(resp_path)
+        .filter(
+            pl.col('device_category').str.to_lowercase().str.strip_chars()
+            .is_in(NIPPV_HFNC_DEVICES)
+        )
+        .group_by('hospitalization_id')
+        .agg(pl.col('recorded_dttm').min().alias('in_dttm'))
+        .collect(streaming=True)
+    )
+
+    first_device = first_device.with_columns(
+        pl.col('in_dttm').dt.replace_time_zone(None)
+    )
+
+    windows = (
+        first_device
+        .join(discharge_times, on='hospitalization_id', how='inner')
+        .rename({'discharge_dttm': 'out_dttm'})
+        .select(['hospitalization_id', 'in_dttm', 'out_dttm'])
+    )
+
+    print(f"✓ Found {len(windows):,} NIPPV/HFNC event windows")
+    return windows
+
+
+# ============================================================================
 # ECDF Computation
 # ============================================================================
 
@@ -392,7 +593,8 @@ def process_category(
     outlier_range: Dict[str, float],
     cat_config: Dict[str, Any],
     output_dir: str,
-    extreme_bins_count: int = 5
+    extreme_bins_count: int = 5,
+    suffix: str = ''
 ) -> Dict[str, Any]:
     """
     Process a single lab/vital category:
@@ -567,9 +769,9 @@ def process_category(
         else:
             unit_for_filename = unit if unit != '(no units)' else 'no_units'
         unit_safe = sanitize_unit_for_filename(unit_for_filename)
-        filename = f'{category}_{unit_safe}.parquet'
+        filename = f'{category}_{unit_safe}{suffix}.parquet'
     else:
-        filename = f'{category}.parquet'
+        filename = f'{category}{suffix}.parquet'
 
     ecdf_path = os.path.join(ecdf_dir, filename)
     ecdf_df.write_parquet(ecdf_path)
@@ -643,7 +845,8 @@ def process_respiratory_column(
     file_type: str,
     outlier_range: Dict[str, float],
     output_dir: str,
-    num_bins: int = 10
+    num_bins: int = 10,
+    suffix: str = ''
 ) -> Dict[str, Any]:
     """
     Process a single respiratory support column:
@@ -741,7 +944,7 @@ def process_respiratory_column(
     # Save ECDF
     ecdf_dir = os.path.join(output_dir, 'ecdf', 'respiratory_support')
     os.makedirs(ecdf_dir, exist_ok=True)
-    ecdf_path = os.path.join(ecdf_dir, f'{column_name}.parquet')
+    ecdf_path = os.path.join(ecdf_dir, f'{column_name}{suffix}.parquet')
     ecdf_df.write_parquet(ecdf_path)
 
     # ========================================================================
@@ -756,7 +959,7 @@ def process_respiratory_column(
     # Save bins
     bins_dir = os.path.join(output_dir, 'bins', 'respiratory_support')
     os.makedirs(bins_dir, exist_ok=True)
-    bins_path = os.path.join(bins_dir, f'{column_name}.parquet')
+    bins_path = os.path.join(bins_dir, f'{column_name}{suffix}.parquet')
     bins_df.write_parquet(bins_path)
 
     # Return statistics
@@ -780,7 +983,8 @@ def run_ecdf_pipeline(
     outlier_config: Dict,
     lab_vital_config: Dict,
     output_dir: str,
-    label: str = "overall"
+    label: str = "overall",
+    suffix: str = ''
 ) -> Tuple[List, List, List, List]:
     """
     Run the full ECDF/bins pipeline for a given set of ICU windows.
@@ -846,7 +1050,8 @@ def run_ecdf_pipeline(
                 outlier_range=labs_outlier[category],
                 cat_config=labs_config[category],
                 output_dir=output_dir,
-                extreme_bins_count=5
+                extreme_bins_count=5,
+                suffix=suffix
             )
             labs_stats.append(stats)
 
@@ -892,7 +1097,8 @@ def run_ecdf_pipeline(
                 outlier_range=vitals_outlier[category],
                 cat_config=vitals_config[category],
                 output_dir=output_dir,
-                extreme_bins_count=extreme_bins
+                extreme_bins_count=extreme_bins,
+                suffix=suffix
             )
             vitals_stats.append(stats)
 
@@ -941,7 +1147,8 @@ def run_ecdf_pipeline(
                 file_type=clif_config['file_type'],
                 outlier_range=resp_outlier[column],
                 output_dir=output_dir,
-                num_bins=10
+                num_bins=10,
+                suffix=suffix
             )
             resp_stats.append(stats)
 
@@ -1004,6 +1211,41 @@ def main():
     print()
 
     # ========================================================================
+    # Compute Event-Based Time Windows for Strata
+    # ========================================================================
+
+    discharge_times = load_discharge_times(
+        clif_config['tables_path'],
+        clif_config['file_type']
+    )
+
+    vaso_windows = extract_vaso_event_windows(
+        clif_config['tables_path'],
+        clif_config['file_type'],
+        discharge_times,
+    )
+
+    resp_windows = extract_advanced_resp_event_windows(
+        clif_config['tables_path'],
+        clif_config['file_type'],
+        discharge_times,
+    )
+
+    nippv_hfnc_windows = extract_nippv_hfnc_event_windows(
+        clif_config['tables_path'],
+        clif_config['file_type'],
+        discharge_times,
+    )
+
+    all_time_windows = {
+        'icu': icu_windows,
+        'vaso': vaso_windows,
+        'resp': resp_windows,
+        'nippv_hfnc': nippv_hfnc_windows,
+    }
+    print()
+
+    # ========================================================================
     # Discover Lab Category-Unit Combinations
     # ========================================================================
 
@@ -1036,21 +1278,31 @@ def main():
     # ========================================================================
 
     try:
-        from modules.strata import load_strata_hospitalization_ids, filter_icu_windows_by_stratum
+        from modules.strata import load_strata_hospitalization_ids
+        from modules.utils.output_paths import parse_stratum, cohort_dir
 
         strata_hosp_ids = load_strata_hospitalization_ids()
 
         for stratum_name, hosp_ids in strata_hosp_ids.items():
-            filtered_windows = filter_icu_windows_by_stratum(icu_windows, hosp_ids)
+            # Select the right temporal windows for this stratum
+            window_type = STRATUM_WINDOW_TYPE.get(stratum_name, 'icu')
+            base_windows = all_time_windows[window_type]
+
+            filtered_windows = base_windows.filter(
+                pl.col('hospitalization_id').is_in(list(hosp_ids))
+            )
             if len(filtered_windows) == 0:
-                print(f"  ⚠️ Skipping {stratum_name}: no ICU windows")
+                print(f"  ⚠️ Skipping {stratum_name}: no time windows")
                 continue
 
+            window_label = {'icu': 'ICU', 'vaso': 'vaso-onset→discharge', 'resp': 'resp-onset→discharge', 'nippv_hfnc': 'nippv/hfnc-onset→discharge'}
             print(f"\n{'='*80}")
-            print(f"STRATIFIED ECDF: {stratum_name} ({len(filtered_windows):,} ICU windows)")
+            print(f"STRATIFIED ECDF: {stratum_name} "
+                  f"({len(filtered_windows):,} {window_label[window_type]} windows)")
             print(f"{'='*80}\n")
 
-            stratum_output_dir = str(STRATA / stratum_name)
+            _, stratum_suffix = parse_stratum(stratum_name)
+            stratum_output_dir = str(cohort_dir(stratum_name))
             os.makedirs(stratum_output_dir, exist_ok=True)
 
             s_labs, s_vitals, s_resp, s_log = run_ecdf_pipeline(
@@ -1060,7 +1312,8 @@ def main():
                 outlier_config=outlier_config,
                 lab_vital_config=lab_vital_config,
                 output_dir=stratum_output_dir,
-                label=stratum_name
+                label=stratum_name,
+                suffix=stratum_suffix
             )
             log_entries.extend(s_log)
             print(f"  ✅ {stratum_name}: {len(s_labs)} labs, {len(s_vitals)} vitals, {len(s_resp)} resp")

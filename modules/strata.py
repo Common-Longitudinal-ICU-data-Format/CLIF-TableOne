@@ -17,15 +17,18 @@ import polars as pl
 # Canonical strata definition — used by all pipelines.
 #
 # Slash-prefixed keys ('advanced_resp/icu', 'advanced_resp/no_icu', 'vaso/icu',
-# 'vaso/no_icu') are sub-strata that split a parent stratum by ICU touch. The
-# slash makes Path-based output helpers (cohort_dir, tableone_dir, ecdf_dir, ...)
-# resolve them as nested directories under output/final/strata/<parent>/, while
-# still letting the existing per-stratum loops iterate them uniformly.
+# 'vaso/no_icu') are sub-strata that split a parent stratum by ICU touch.
+# parse_stratum() in output_paths.py decomposes 'advanced_resp/icu' into parent
+# dir key 'advanced_resp' and filename suffix '_icu', so sub-strata outputs land
+# in the parent directory with suffixed filenames (no nested subdirectories).
 ENCOUNTER_TYPE_STRATA = {
     'icu': 'icu_enc',
     'advanced_resp': 'high_support_enc',
     'advanced_resp/icu': 'high_support_icu_enc',
     'advanced_resp/no_icu': 'high_support_no_icu_enc',
+    'nippv_hfnc': 'nippv_hfnc_enc',
+    'nippv_hfnc/icu': 'nippv_hfnc_icu_enc',
+    'nippv_hfnc/no_icu': 'nippv_hfnc_no_icu_enc',
     'vaso': 'vaso_support_enc',
     'vaso/icu': 'vaso_icu_enc',
     'vaso/no_icu': 'vaso_no_icu_enc',
