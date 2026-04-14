@@ -14,7 +14,7 @@ from html import escape
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
-import polars as pl
+import pandas as pd
 import yaml
 
 
@@ -93,24 +93,24 @@ def _read_metric_data(
     if not os.path.exists(bins_path) or not os.path.exists(ecdf_path):
         return None
 
-    bins_df = pl.read_parquet(bins_path)
-    ecdf_df = pl.read_parquet(ecdf_path).sort('value')
+    bins_df = pd.read_parquet(bins_path)
+    ecdf_df = pd.read_parquet(ecdf_path).sort_values('value')
 
     bins_list = []
-    for row in bins_df.to_dicts():
+    for _, row in bins_df.iterrows():
         bins_list.append({
             'segment': row.get('segment', 'flat'),
             'bin_min': row['bin_min'],
             'bin_max': row['bin_max'],
-            'count': row['count'],
-            'percentage': round(row['percentage'], 1),
+            'count': int(row['count']),
+            'percentage': round(float(row['percentage']), 1),
             'interval': row.get('interval', ''),
         })
 
     return {
         'bins': bins_list,
-        'ecdf_values': ecdf_df['value'].to_list(),
-        'ecdf_probs': ecdf_df['probability'].to_list(),
+        'ecdf_values': ecdf_df['value'].tolist(),
+        'ecdf_probs': ecdf_df['probability'].tolist(),
     }
 
 

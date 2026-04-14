@@ -269,7 +269,6 @@ class ECDFRunner:
         print(f"{'='*80}\n")
 
         try:
-            # Import necessary functions
             from .generator import (
                 load_configs, extract_icu_time_windows, discover_lab_category_units,
                 load_discharge_times, extract_vaso_event_windows,
@@ -277,37 +276,24 @@ class ECDFRunner:
                 STRATUM_WINDOW_TYPE,
             )
             from .statistics import compute_collection_statistics
-            import polars as pl
+            from modules.utils.clif_loader import ClifDB
 
             # Load configurations
             clif_config, outlier_config, lab_vital_config = load_configs()
 
+            # Initialise shared DuckDB connection
+            db = ClifDB(clif_config['tables_path'], clif_config['file_type'])
+
             # Extract ICU time windows
-            icu_windows = extract_icu_time_windows(
-                clif_config['tables_path'],
-                clif_config['file_type']
-            )
+            icu_windows = extract_icu_time_windows(db)
 
             # Compute event-based time windows
-            discharge_times = load_discharge_times(
-                clif_config['tables_path'],
-                clif_config['file_type']
-            )
-            vaso_windows = extract_vaso_event_windows(
-                clif_config['tables_path'],
-                clif_config['file_type'],
-                discharge_times,
-            )
-            resp_windows = extract_advanced_resp_event_windows(
-                clif_config['tables_path'],
-                clif_config['file_type'],
-                discharge_times,
-            )
-            nippv_hfnc_windows = extract_nippv_hfnc_event_windows(
-                clif_config['tables_path'],
-                clif_config['file_type'],
-                discharge_times,
-            )
+            discharge_times = load_discharge_times(db)
+            db.register('discharge_times', discharge_times)
+
+            vaso_windows = extract_vaso_event_windows(db)
+            resp_windows = extract_advanced_resp_event_windows(db)
+            nippv_hfnc_windows = extract_nippv_hfnc_event_windows(db)
             all_time_windows = {
                 'icu': icu_windows,
                 'vaso': vaso_windows,
@@ -316,19 +302,13 @@ class ECDFRunner:
             }
 
             # Discover lab category-unit combinations
-            lab_category_units = discover_lab_category_units(
-                clif_config['tables_path'],
-                clif_config['file_type']
-            )
+            lab_category_units = discover_lab_category_units(db)
 
-            # Compute statistics. compute_collection_statistics() builds
-            # `<output_dir>/stats/collection_statistics.csv`, so we pass the
-            # final directory itself (stats lives at the top level).
+            # Compute statistics
             output_dir = self.project_root / 'output' / 'final'
             stats_path = compute_collection_statistics(
                 icu_windows=icu_windows,
-                tables_path=clif_config['tables_path'],
-                file_type=clif_config['file_type'],
+                db=db,
                 lab_category_units=lab_category_units,
                 lab_vital_config=lab_vital_config,
                 output_dir=str(output_dir)
@@ -352,9 +332,9 @@ class ECDFRunner:
                 for stratum_name, hosp_ids in strata_hosp_ids.items():
                     window_type = STRATUM_WINDOW_TYPE.get(stratum_name, 'icu')
                     base_windows = all_time_windows[window_type]
-                    filtered_windows = base_windows.filter(
-                        pl.col('hospitalization_id').is_in(list(hosp_ids))
-                    )
+                    filtered_windows = base_windows[
+                        base_windows['hospitalization_id'].isin(hosp_ids)
+                    ]
                     if len(filtered_windows) == 0:
                         print(f"  ⚠️ Skipping collection statistics for {stratum_name}: no time windows")
                         continue
@@ -363,8 +343,7 @@ class ECDFRunner:
                           f"({len(filtered_windows):,} time windows)...")
                     compute_collection_statistics(
                         icu_windows=filtered_windows,
-                        tables_path=clif_config['tables_path'],
-                        file_type=clif_config['file_type'],
+                        db=db,
                         lab_category_units=lab_category_units,
                         lab_vital_config=lab_vital_config,
                         output_dir=str(output_dir),
@@ -372,6 +351,8 @@ class ECDFRunner:
                     )
             except FileNotFoundError as e:
                 print(f"\n  ⚠️ Skipping stratified collection statistics: {e}")
+
+            db.close()
 
             return True
 

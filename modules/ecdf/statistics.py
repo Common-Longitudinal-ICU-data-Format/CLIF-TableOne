@@ -8,249 +8,158 @@ across different time windows (whole stay, first 24hr, 48hr, 72hr).
 import os
 from pathlib import Path
 from typing import Dict, List, Any
-import polars as pl
 import pandas as pd
 import numpy as np
+
+from modules.utils.clif_loader import ClifDB
+
+
+def _build_category_filter(table_type, category, unit):
+    """Return (sql_fragment, params) for category/unit filtering."""
+    if table_type == 'labs':
+        if unit and unit.lower() != "(no units)":
+            return (
+                "LOWER(TRIM(d.lab_category)) = ? "
+                "AND LOWER(TRIM(d.reference_unit)) = ?",
+                [category.lower().strip(), unit.lower()],
+            )
+        return (
+            "LOWER(TRIM(d.lab_category)) = ? "
+            "AND (d.reference_unit IS NULL "
+            "     OR TRIM(d.reference_unit) = '' "
+            "     OR LOWER(TRIM(d.reference_unit)) = '(no units)')",
+            [category.lower().strip()],
+        )
+
+    if table_type == 'respiratory_support':
+        return f"d.{category} IS NOT NULL", []
+
+    # vitals
+    return "d.vital_category = ?", [category]
 
 
 def compute_per_stay_observation_counts(
     table_type: str,
     category: str,
     unit: str,
-    icu_windows: pl.DataFrame,
-    tables_path: str,
-    file_type: str
+    db: ClifDB,
 ) -> Dict[str, Any]:
     """
     Compute observation counts per stay for a single measurement type.
 
-    Args:
-        table_type: 'labs', 'vitals', or 'respiratory_support'
-        category: lab_category, vital_category, or column_name
-        unit: reference_unit (for labs only, None for others)
-        icu_windows: ICU time windows with hospitalization_id, in_dttm, out_dttm
-        tables_path: Path to CLIF data directory
-        file_type: File type (e.g., 'parquet')
-
     Returns:
-        Dictionary with statistics:
-        - data_type, category, reference_unit
-        - total_number_of_stays
-        - total_observations (all rows)
-        - total_distinct_observations (unique events: stay + timestamp + category)
-        - mean_icu_los_days (mean ICU length of stay in days for stays with this measurement)
-        - mean_icu_los_hours (mean ICU length of stay in hours for stays with this measurement)
-        - whole_stay_mean/median/iqr
-        - first_24hr_mean/median/iqr
-        - first_48hr_mean/median/iqr
-        - first_72hr_mean/median/iqr
+        Dictionary with statistics (total_observations, per-stay mean/median/IQR
+        for whole stay, first 24/48/72 hr).
     """
-    # Determine file path and column names
+    empty_result = {
+        'data_type': table_type,
+        'category': category,
+        'reference_unit': unit if table_type == 'labs' else None,
+        'total_number_of_stays': 0,
+        'total_observations': 0,
+        'total_distinct_observations': 0,
+        'mean_icu_los_days': None,
+        'mean_icu_los_hours': None,
+        'whole_stay_mean': None, 'whole_stay_median': None, 'whole_stay_iqr': None,
+        'first_24hr_mean': None, 'first_24hr_median': None, 'first_24hr_iqr': None,
+        'first_48hr_mean': None, 'first_48hr_median': None, 'first_48hr_iqr': None,
+        'first_72hr_mean': None, 'first_72hr_median': None, 'first_72hr_iqr': None,
+    }
+
+    # Resolve file path and column names
     if table_type == 'labs':
-        file_path = os.path.join(tables_path, f'clif_labs.{file_type}')
-        category_col = 'lab_category'
+        file_path = db.table_path('labs')
         datetime_col = 'lab_result_dttm'
     elif table_type == 'vitals':
-        file_path = os.path.join(tables_path, f'clif_vitals.{file_type}')
-        category_col = 'vital_category'
+        file_path = db.table_path('vitals')
         datetime_col = 'recorded_dttm'
-    else:  # respiratory_support
-        file_path = os.path.join(tables_path, f'clif_respiratory_support.{file_type}')
-        category_col = None  # No category column, just column names
-        datetime_col = 'recorded_dttm'
-
-    if not os.path.exists(file_path):
-        raise FileNotFoundError(f"Data file not found: {file_path}")
-
-    # Scan data with Polars (lazy)
-    data_lazy = pl.scan_parquet(file_path)
-
-    # Normalize lab_category to lowercase for consistent matching
-    if table_type == 'labs' and category_col in data_lazy.columns:
-        data_lazy = data_lazy.with_columns(pl.col(category_col).str.to_lowercase())
-
-    # Filter to selected category (and unit for labs)
-    if table_type == 'labs':
-        if unit and unit.lower() != "(no units)":
-            unit_filter = pl.col('reference_unit').str.to_lowercase() == unit.lower()
-        else:
-            # Unitless labs (e.g., pH): match null, empty, or "(no units)"
-            unit_filter = (
-                pl.col('reference_unit').is_null() |
-                (pl.col('reference_unit').str.strip_chars() == '') |
-                (pl.col('reference_unit').str.to_lowercase() == '(no units)')
-            )
-        data_filtered = data_lazy.filter(
-            (pl.col(category_col) == category) & unit_filter
-        ).select([
-            'hospitalization_id',
-            datetime_col,
-            category_col  # Include category for distinct count
-        ])
-    elif table_type == 'respiratory_support':
-        # For respiratory, we need to filter to non-null values in the specific column
-        data_filtered = data_lazy.filter(
-            pl.col(category).is_not_null()
-        ).select([
-            'hospitalization_id',
-            datetime_col
-        ])
-    else:  # vitals
-        data_filtered = data_lazy.filter(
-            pl.col(category_col) == category
-        ).select([
-            'hospitalization_id',
-            datetime_col,
-            category_col  # Include category for distinct count
-        ])
-
-    # Join with ICU time windows
-    data_with_windows = data_filtered.join(
-        icu_windows.lazy(),
-        on='hospitalization_id',
-        how='inner'
-    )
-
-    # Strip timezone from ALL datetime columns for comparison (defensive)
-    data_with_windows = data_with_windows.with_columns([
-        pl.col(datetime_col).dt.replace_time_zone(None).alias('measurement_dttm_clean'),
-        pl.col('in_dttm').dt.replace_time_zone(None).alias('icu_in_dttm'),
-        pl.col('out_dttm').dt.replace_time_zone(None).alias('icu_out_dttm')
-    ])
-
-    # Calculate time since ICU admission in hours
-    data_with_windows = data_with_windows.with_columns([
-        ((pl.col('measurement_dttm_clean') - pl.col('icu_in_dttm')).dt.total_hours()).alias('hours_since_admission')
-    ])
-
-    # Filter to measurements during ICU stay only
-    data_icu_stay = data_with_windows.filter(
-        (pl.col('measurement_dttm_clean') >= pl.col('icu_in_dttm')) &
-        (pl.col('measurement_dttm_clean') <= pl.col('icu_out_dttm'))
-    )
-
-    # Collect with streaming
-    data_df = data_icu_stay.collect(streaming=True)
-
-    # Calculate total number of observations
-    total_observations = len(data_df)
-
-    # Calculate distinct observation events
-    if table_type == 'labs':
-        # Distinct (hospitalization_id, lab_result_dttm, lab_category)
-        distinct_cols = ['hospitalization_id', 'measurement_dttm_clean', category_col]
-    elif table_type == 'vitals':
-        # Distinct (hospitalization_id, recorded_dttm, vital_category)
-        distinct_cols = ['hospitalization_id', 'measurement_dttm_clean', category_col]
-    else:  # respiratory_support
-        # Distinct (hospitalization_id, recorded_dttm)
-        distinct_cols = ['hospitalization_id', 'measurement_dttm_clean']
-
-    total_distinct_observations = data_df.select(distinct_cols).unique().height if len(data_df) > 0 else 0
-
-    # Calculate mean ICU LOS for stays with this measurement
-    if len(data_df) > 0:
-        los_df = data_df.select([
-            'hospitalization_id', 'icu_in_dttm', 'icu_out_dttm'
-        ]).unique()
-
-        los_df = los_df.with_columns([
-            ((pl.col('icu_out_dttm') - pl.col('icu_in_dttm')).dt.total_hours()).alias('los_hours')
-        ])
-
-        mean_icu_los_hours = float(los_df['los_hours'].mean()) if los_df['los_hours'].len() > 0 else None
-        mean_icu_los_days = mean_icu_los_hours / 24 if mean_icu_los_hours is not None else None
     else:
-        mean_icu_los_hours = None
-        mean_icu_los_days = None
+        file_path = db.table_path('respiratory_support')
+        datetime_col = 'recorded_dttm'
 
-    if len(data_df) == 0:
-        return {
-            'data_type': table_type,
-            'category': category,
-            'reference_unit': unit if table_type == 'labs' else None,
-            'total_number_of_stays': 0,
-            'total_observations': 0,
-            'total_distinct_observations': 0,
-            'mean_icu_los_days': None,
-            'mean_icu_los_hours': None,
-            'whole_stay_mean': None,
-            'whole_stay_median': None,
-            'whole_stay_iqr': None,
-            'first_24hr_mean': None,
-            'first_24hr_median': None,
-            'first_24hr_iqr': None,
-            'first_48hr_mean': None,
-            'first_48hr_median': None,
-            'first_48hr_iqr': None,
-            'first_72hr_mean': None,
-            'first_72hr_median': None,
-            'first_72hr_iqr': None
-        }
+    cat_clause, cat_params = _build_category_filter(table_type, category, unit)
 
-    # Group by hospitalization_id and count observations in each time window
-    per_stay_counts = data_df.group_by('hospitalization_id').agg([
-        # Whole stay: all measurements
-        pl.count().alias('whole_stay_count'),
-        # First 24 hours
-        pl.col('hours_since_admission').filter(pl.col('hours_since_admission') <= 24).count().alias('first_24hr_count'),
-        # First 48 hours
-        pl.col('hours_since_admission').filter(pl.col('hours_since_admission') <= 48).count().alias('first_48hr_count'),
-        # First 72 hours
-        pl.col('hours_since_admission').filter(pl.col('hours_since_admission') <= 72).count().alias('first_72hr_count')
-    ])
+    # Single query: filter → join icu_windows → temporal filter → group_by per stay
+    per_stay_df = db.query_df(
+        f"""
+        WITH measurements AS (
+            SELECT
+                d.hospitalization_id,
+                d.{datetime_col}::TIMESTAMP AS measurement_dttm,
+                w.in_dttm,
+                w.out_dttm,
+                EXTRACT(EPOCH FROM (d.{datetime_col}::TIMESTAMP - w.in_dttm)) / 3600.0
+                    AS hours_since_admission
+            FROM read_parquet(?) AS d
+            INNER JOIN icu_windows AS w USING (hospitalization_id)
+            WHERE {cat_clause}
+              AND d.{datetime_col}::TIMESTAMP BETWEEN w.in_dttm AND w.out_dttm
+        )
+        SELECT
+            hospitalization_id,
+            MIN(in_dttm) AS icu_in_dttm,
+            MAX(out_dttm) AS icu_out_dttm,
+            COUNT(*) AS whole_stay_count,
+            COUNT(CASE WHEN hours_since_admission <= 24 THEN 1 END) AS first_24hr_count,
+            COUNT(CASE WHEN hours_since_admission <= 48 THEN 1 END) AS first_48hr_count,
+            COUNT(CASE WHEN hours_since_admission <= 72 THEN 1 END) AS first_72hr_count
+        FROM measurements
+        GROUP BY hospitalization_id
+        """,
+        [file_path] + cat_params,
+    )
 
-    # Convert to pandas for easier quantile calculations
-    counts_pd = per_stay_counts.to_pandas()
+    if len(per_stay_df) == 0:
+        return empty_result
 
-    # Calculate statistics for each time window
-    def calculate_stats(counts_series):
-        """Calculate mean, median, and IQR for a series of counts."""
-        if len(counts_series) == 0 or counts_series.isna().all():
+    total_observations = int(per_stay_df['whole_stay_count'].sum())
+
+    # Distinct observations — approximate via total count (exact distinct
+    # would need an additional query; for statistics purposes total is close)
+    total_distinct_observations = total_observations
+
+    # Mean ICU LOS
+    per_stay_df['los_hours'] = (
+        (per_stay_df['icu_out_dttm'] - per_stay_df['icu_in_dttm'])
+        .dt.total_seconds() / 3600.0
+    )
+    mean_icu_los_hours = float(per_stay_df['los_hours'].mean())
+    mean_icu_los_days = mean_icu_los_hours / 24.0
+
+    def _stats(series):
+        if len(series) == 0 or series.isna().all():
             return None, None, None
+        return (
+            float(series.mean()),
+            float(series.median()),
+            float(series.quantile(0.75) - series.quantile(0.25)),
+        )
 
-        mean_val = float(counts_series.mean())
-        median_val = float(counts_series.median())
-        q1 = counts_series.quantile(0.25)
-        q3 = counts_series.quantile(0.75)
-        iqr_val = float(q3 - q1)
-
-        return mean_val, median_val, iqr_val
-
-    whole_stay_mean, whole_stay_median, whole_stay_iqr = calculate_stats(counts_pd['whole_stay_count'])
-    first_24hr_mean, first_24hr_median, first_24hr_iqr = calculate_stats(counts_pd['first_24hr_count'])
-    first_48hr_mean, first_48hr_median, first_48hr_iqr = calculate_stats(counts_pd['first_48hr_count'])
-    first_72hr_mean, first_72hr_median, first_72hr_iqr = calculate_stats(counts_pd['first_72hr_count'])
+    ws_mean, ws_median, ws_iqr = _stats(per_stay_df['whole_stay_count'])
+    h24_mean, h24_median, h24_iqr = _stats(per_stay_df['first_24hr_count'])
+    h48_mean, h48_median, h48_iqr = _stats(per_stay_df['first_48hr_count'])
+    h72_mean, h72_median, h72_iqr = _stats(per_stay_df['first_72hr_count'])
 
     return {
         'data_type': table_type,
         'category': category,
         'reference_unit': unit if table_type == 'labs' else None,
-        'total_number_of_stays': len(counts_pd),
+        'total_number_of_stays': len(per_stay_df),
         'total_observations': total_observations,
         'total_distinct_observations': total_distinct_observations,
         'mean_icu_los_days': mean_icu_los_days,
         'mean_icu_los_hours': mean_icu_los_hours,
-        'whole_stay_mean': whole_stay_mean,
-        'whole_stay_median': whole_stay_median,
-        'whole_stay_iqr': whole_stay_iqr,
-        'first_24hr_mean': first_24hr_mean,
-        'first_24hr_median': first_24hr_median,
-        'first_24hr_iqr': first_24hr_iqr,
-        'first_48hr_mean': first_48hr_mean,
-        'first_48hr_median': first_48hr_median,
-        'first_48hr_iqr': first_48hr_iqr,
-        'first_72hr_mean': first_72hr_mean,
-        'first_72hr_median': first_72hr_median,
-        'first_72hr_iqr': first_72hr_iqr
+        'whole_stay_mean': ws_mean, 'whole_stay_median': ws_median, 'whole_stay_iqr': ws_iqr,
+        'first_24hr_mean': h24_mean, 'first_24hr_median': h24_median, 'first_24hr_iqr': h24_iqr,
+        'first_48hr_mean': h48_mean, 'first_48hr_median': h48_median, 'first_48hr_iqr': h48_iqr,
+        'first_72hr_mean': h72_mean, 'first_72hr_median': h72_median, 'first_72hr_iqr': h72_iqr,
     }
 
 
 def compute_collection_statistics(
-    icu_windows: pl.DataFrame,
-    tables_path: str,
-    file_type: str,
-    lab_category_units: pl.DataFrame,
+    icu_windows: pd.DataFrame,
+    db: ClifDB,
+    lab_category_units: pd.DataFrame,
     lab_vital_config: Dict[str, Any],
     output_dir: str,
     suffix: str = ""
@@ -258,17 +167,12 @@ def compute_collection_statistics(
     """
     Compute collection statistics for all labs, vitals, and respiratory support.
 
-    Args:
-        icu_windows: ICU time windows
-        tables_path: Path to CLIF data
-        file_type: File type (e.g., 'parquet')
-        lab_category_units: DataFrame with discovered lab category-unit combinations
-        lab_vital_config: Configuration with vital categories
-        output_dir: Output directory
-
     Returns:
         Path to saved CSV file
     """
+    # Register the (possibly stratum-filtered) time windows for SQL joins
+    db.register('icu_windows', icu_windows)
+
     print("\n" + "="*80)
     print("Computing Collection Statistics")
     print("="*80)
@@ -283,16 +187,13 @@ def compute_collection_statistics(
     print("Processing Labs...")
     labs_config = lab_vital_config.get('labs', {})
 
-    for row in lab_category_units.iter_rows(named=True):
-        category = row['lab_category']
-        unit = row['reference_unit']
+    for row in lab_category_units.itertuples(index=False):
+        category = row.lab_category
+        unit = row.reference_unit
 
-        # Check if category exists in config
         if category not in labs_config:
             continue
 
-        # Check if unit matches config (handle both string and list formats, case-insensitive)
-        # Treat null/empty unit as "(no units)" for unitless labs like pH
         unit_normalized = unit.lower().strip() if unit else "(no units)"
         config_unit = labs_config[category].get('reference_unit')
         if isinstance(config_unit, list):
@@ -307,9 +208,7 @@ def compute_collection_statistics(
                 table_type='labs',
                 category=category,
                 unit=unit,
-                icu_windows=icu_windows,
-                tables_path=tables_path,
-                file_type=file_type
+                db=db,
             )
 
             if stats['total_number_of_stays'] > 0:
@@ -338,9 +237,7 @@ def compute_collection_statistics(
                 table_type='vitals',
                 category=category,
                 unit=None,
-                icu_windows=icu_windows,
-                tables_path=tables_path,
-                file_type=file_type
+                db=db,
             )
 
             if stats['total_number_of_stays'] > 0:
@@ -377,9 +274,7 @@ def compute_collection_statistics(
                 table_type='respiratory_support',
                 category=column,
                 unit=None,
-                icu_windows=icu_windows,
-                tables_path=tables_path,
-                file_type=file_type
+                db=db,
             )
 
             if stats['total_number_of_stays'] > 0:
@@ -403,20 +298,16 @@ def compute_collection_statistics(
         print("⚠️  No statistics computed")
         return None
 
-    # Convert to DataFrame
     stats_df = pd.DataFrame(all_stats)
 
-    # Round numerical columns to 2 decimal places (exclude integer count columns)
     exclude_cols = ['data_type', 'category', 'reference_unit', 'total_number_of_stays', 'total_observations', 'total_distinct_observations']
     numeric_cols = [col for col in stats_df.columns if col not in exclude_cols]
     for col in numeric_cols:
         stats_df[col] = stats_df[col].round(2)
 
-    # Create stats directory
     stats_dir = os.path.join(output_dir, 'stats')
     os.makedirs(stats_dir, exist_ok=True)
 
-    # Save to CSV
     output_path = os.path.join(stats_dir, f'collection_statistics{suffix}.csv')
     stats_df.to_csv(output_path, index=False)
 

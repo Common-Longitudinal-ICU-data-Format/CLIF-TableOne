@@ -11,7 +11,7 @@ by the tableone pipeline first.
 from pathlib import Path
 from typing import Dict, Optional, Set
 
-import polars as pl
+import pandas as pd
 
 
 # Canonical strata definition — used by all pipelines.
@@ -66,40 +66,14 @@ def load_strata_hospitalization_ids(
             "Run the tableone pipeline first to generate this file."
         )
 
-    # Read only the columns we need
-    cols_needed = ['hospitalization_id'] + list(ENCOUNTER_TYPE_STRATA.values())
-    df = pl.scan_parquet(str(parquet_path)).select(cols_needed).collect()
+    # Read the intermediate file (one row per hospitalization — small)
+    df = pd.read_parquet(str(parquet_path))
 
     result = {}
     for stratum_name, flag_col in ENCOUNTER_TYPE_STRATA.items():
         if flag_col not in df.columns:
             continue
-        hosp_ids = (
-            df.filter(pl.col(flag_col) == 1)
-            .get_column('hospitalization_id')
-            .unique()
-            .to_list()
-        )
+        hosp_ids = df.loc[df[flag_col] == 1, 'hospitalization_id'].unique().tolist()
         result[stratum_name] = set(hosp_ids)
 
     return result
-
-
-def filter_icu_windows_by_stratum(
-    icu_windows: pl.DataFrame,
-    stratum_hosp_ids: Set[str],
-) -> pl.DataFrame:
-    """Filter ICU time windows to only hospitalization_ids in the stratum."""
-    return icu_windows.filter(
-        pl.col('hospitalization_id').is_in(list(stratum_hosp_ids))
-    )
-
-
-def filter_lazy_frame_by_stratum(
-    lf: pl.LazyFrame,
-    stratum_hosp_ids: Set[str],
-) -> pl.LazyFrame:
-    """Filter a LazyFrame to only hospitalization_ids in the stratum."""
-    return lf.filter(
-        pl.col('hospitalization_id').is_in(list(stratum_hosp_ids))
-    )

@@ -47,7 +47,6 @@ import os
 import shutil
 from pathlib import Path
 from typing import Dict, List, Any, Tuple
-import polars as pl
 import pandas as pd
 import numpy as np
 from datetime import datetime
@@ -63,6 +62,7 @@ from modules.utils.output_paths import (
     meta_dir,
     ensure_output_tree,
 )
+from modules.utils.clif_loader import ClifDB
 
 
 # Canonical qualifying-event definitions — must match modules/tableone/generator.py
@@ -178,50 +178,37 @@ def copy_configs_to_output(
 # ============================================================================
 
 def discover_lab_category_units(
-    tables_path: str,
-    file_type: str
-) -> pl.DataFrame:
+    db: ClifDB,
+) -> pd.DataFrame:
     """
     Discover all unique (lab_category, reference_unit) combinations
     in the labs data.
 
     Returns:
-        Polars DataFrame with columns:
+        pandas DataFrame with columns:
         - lab_category: str
         - reference_unit: str
     """
-    labs_path = os.path.join(tables_path, f'clif_labs.{file_type}')
-
-    if not os.path.exists(labs_path):
-        raise FileNotFoundError(f"Labs file not found: {labs_path}")
+    labs_path = db.table_path('labs')
 
     print(f"Discovering lab category-unit combinations from {labs_path}...")
 
-    # Scan labs with Polars (lazy evaluation)
-    labs_lazy = pl.scan_parquet(labs_path)
-
-    # Get distinct (lab_category, reference_unit) pairs, normalized to lowercase/stripped
-    category_units = labs_lazy.select([
-        pl.col('lab_category').str.strip_chars().str.to_lowercase().alias('lab_category'),
-        pl.col('reference_unit').str.strip_chars().str.to_lowercase().alias('reference_unit')
-    ]).unique()
-
-    # Collect with streaming
-    category_units_df = category_units.collect(streaming=True)
-
-    # Filter out null lab_category only - keep null reference_unit (will be matched with "(no units)")
-    category_units_df = category_units_df.filter(
-        pl.col('lab_category').is_not_null()
+    df = db.query_df(
+        """
+        SELECT DISTINCT
+            LOWER(TRIM(lab_category)) AS lab_category,
+            COALESCE(
+                NULLIF(LOWER(TRIM(reference_unit)), ''),
+                '(no units)'
+            ) AS reference_unit
+        FROM read_parquet(?)
+        WHERE lab_category IS NOT NULL
+        """,
+        [labs_path],
     )
 
-    # Replace null reference_unit with "(no units)" sentinel value
-    category_units_df = category_units_df.with_columns(
-        pl.col('reference_unit').fill_null('(no units)')
-    )
-
-    print(f"✓ Found {len(category_units_df):,} unique (category, unit) combinations")
-
-    return category_units_df
+    print(f"✓ Found {len(df):,} unique (category, unit) combinations")
+    return df
 
 
 def sanitize_unit_for_filename(unit: str) -> str:
@@ -254,231 +241,136 @@ def sanitize_unit_for_filename(unit: str) -> str:
 # ICU Time Window Extraction
 # ============================================================================
 
-def extract_icu_time_windows(
-    tables_path: str,
-    file_type: str
-) -> pl.DataFrame:
+def extract_icu_time_windows(db: ClifDB) -> pd.DataFrame:
     """
     Extract ICU time windows from ADT table.
 
     Returns:
-        Polars DataFrame with columns:
+        pandas DataFrame with columns:
         - hospitalization_id: str
-        - in_dttm: datetime
-        - out_dttm: datetime
+        - in_dttm: datetime (timezone-naive)
+        - out_dttm: datetime (timezone-naive)
     """
-    adt_path = os.path.join(tables_path, f'clif_adt.{file_type}')
-
-    if not os.path.exists(adt_path):
-        raise FileNotFoundError(f"ADT file not found: {adt_path}")
+    adt_path = db.table_path('adt')
 
     print(f"Loading ICU time windows from {adt_path}...")
 
-    # Scan ADT with Polars (lazy evaluation)
-    adt_lazy = pl.scan_parquet(adt_path)
+    df = db.query_df(
+        """
+        SELECT hospitalization_id,
+               in_dttm::TIMESTAMP AS in_dttm,
+               out_dttm::TIMESTAMP AS out_dttm
+        FROM read_parquet(?)
+        WHERE LOWER(location_category) = 'icu'
+        """,
+        [adt_path],
+    )
 
-    # Filter to ICU locations only, select relevant columns
-    icu_windows = adt_lazy.filter(
-        pl.col('location_category').str.to_lowercase() == 'icu'
-    ).select([
-        'hospitalization_id',
-        'in_dttm',
-        'out_dttm'
-    ])
-
-    # Collect with streaming
-    icu_windows_df = icu_windows.collect(streaming=True)
-
-    # Strip timezone from datetime columns to enable comparison with other datetime columns
-    icu_windows_df = icu_windows_df.with_columns([
-        pl.col('in_dttm').dt.replace_time_zone(None),
-        pl.col('out_dttm').dt.replace_time_zone(None)
-    ])
-
-    print(f"✓ Found {len(icu_windows_df):,} ICU time windows")
-
-    return icu_windows_df
+    print(f"✓ Found {len(df):,} ICU time windows")
+    return df
 
 
 # ============================================================================
 # Discharge Times & Event-Based Time Windows
 # ============================================================================
 
-def load_discharge_times(
-    tables_path: str,
-    file_type: str,
-) -> pl.DataFrame:
+def load_discharge_times(db: ClifDB) -> pd.DataFrame:
     """
     Load discharge_dttm from the hospitalization table.
 
     Returns:
-        Polars DataFrame with columns:
+        pandas DataFrame with columns:
         - hospitalization_id: str
         - discharge_dttm: datetime (timezone-naive)
     """
-    hosp_path = os.path.join(tables_path, f'clif_hospitalization.{file_type}')
-    if not os.path.exists(hosp_path):
-        raise FileNotFoundError(f"Hospitalization file not found: {hosp_path}")
+    hosp_path = db.table_path('hospitalization')
 
     print(f"Loading discharge times from {hosp_path}...")
 
-    df = (
-        pl.scan_parquet(hosp_path)
-        .select(['hospitalization_id', 'discharge_dttm'])
-        .filter(pl.col('discharge_dttm').is_not_null())
-        .collect(streaming=True)
-    )
-
-    df = df.with_columns(
-        pl.col('discharge_dttm').dt.replace_time_zone(None)
+    df = db.query_df(
+        """
+        SELECT hospitalization_id,
+               discharge_dttm::TIMESTAMP AS discharge_dttm
+        FROM read_parquet(?)
+        WHERE discharge_dttm IS NOT NULL
+        """,
+        [hosp_path],
     )
 
     print(f"✓ Loaded discharge times for {len(df):,} hospitalizations")
     return df
 
 
-def extract_vaso_event_windows(
-    tables_path: str,
-    file_type: str,
-    discharge_times: pl.DataFrame,
-) -> pl.DataFrame:
+def _extract_event_windows(
+    db: ClifDB,
+    file_path: str,
+    category_col: str,
+    datetime_col: str,
+    qualifying_values: List[str],
+    label: str,
+) -> pd.DataFrame:
+    """Shared implementation for vaso / resp / nippv-hfnc event windows.
+
+    Finds the earliest qualifying event per hospitalization and bounds
+    the window by discharge_dttm (which must already be registered as
+    ``discharge_times`` on *db*).
     """
-    Build time windows anchored to the first vasopressor administration.
+    placeholders = ', '.join(['?'] * len(qualifying_values))
 
-    Window = min(admin_dttm) for qualifying meds → discharge_dttm.
+    df = db.query_df(
+        f"""
+        SELECT e.hospitalization_id, e.in_dttm, d.discharge_dttm AS out_dttm
+        FROM (
+            SELECT hospitalization_id,
+                   MIN({datetime_col}::TIMESTAMP) AS in_dttm
+            FROM read_parquet(?)
+            WHERE LOWER(TRIM({category_col})) IN ({placeholders})
+            GROUP BY hospitalization_id
+        ) e
+        INNER JOIN discharge_times d USING (hospitalization_id)
+        """,
+        [file_path] + qualifying_values,
+    )
 
-    Returns:
-        Polars DataFrame with columns matching ICU windows:
-        - hospitalization_id, in_dttm, out_dttm
-    """
-    meds_path = os.path.join(tables_path, f'clif_medication_admin_continuous.{file_type}')
-    if not os.path.exists(meds_path):
-        raise FileNotFoundError(f"Medication file not found: {meds_path}")
+    print(f"✓ Found {len(df):,} {label} event windows")
+    return df
 
+
+def extract_vaso_event_windows(db: ClifDB) -> pd.DataFrame:
+    """Build time windows anchored to the first vasopressor administration."""
+    meds_path = db.table_path('medication_admin_continuous')
     print(f"Extracting vasopressor event windows from {meds_path}...")
-
-    first_admin = (
-        pl.scan_parquet(meds_path)
-        .filter(
-            pl.col('med_category').str.to_lowercase().str.strip_chars().is_in(VASOACTIVE_MEDS)
-        )
-        .group_by('hospitalization_id')
-        .agg(pl.col('admin_dttm').min().alias('in_dttm'))
-        .collect(streaming=True)
+    return _extract_event_windows(
+        db, meds_path, 'med_category', 'admin_dttm',
+        VASOACTIVE_MEDS, 'vasopressor',
     )
 
-    first_admin = first_admin.with_columns(
-        pl.col('in_dttm').dt.replace_time_zone(None)
-    )
 
-    # Join with discharge times to get the end bound
-    windows = (
-        first_admin
-        .join(discharge_times, on='hospitalization_id', how='inner')
-        .rename({'discharge_dttm': 'out_dttm'})
-        .select(['hospitalization_id', 'in_dttm', 'out_dttm'])
-    )
-
-    print(f"✓ Found {len(windows):,} vasopressor event windows")
-    return windows
-
-
-def extract_advanced_resp_event_windows(
-    tables_path: str,
-    file_type: str,
-    discharge_times: pl.DataFrame,
-) -> pl.DataFrame:
-    """
-    Build time windows anchored to the first qualifying respiratory device.
-
-    Window = min(recorded_dttm) for qualifying devices → discharge_dttm.
-
-    Returns:
-        Polars DataFrame with columns matching ICU windows:
-        - hospitalization_id, in_dttm, out_dttm
-    """
-    resp_path = os.path.join(tables_path, f'clif_respiratory_support.{file_type}')
-    if not os.path.exists(resp_path):
-        raise FileNotFoundError(f"Respiratory support file not found: {resp_path}")
-
+def extract_advanced_resp_event_windows(db: ClifDB) -> pd.DataFrame:
+    """Build time windows anchored to the first qualifying respiratory device."""
+    resp_path = db.table_path('respiratory_support')
     print(f"Extracting advanced resp event windows from {resp_path}...")
-
-    first_device = (
-        pl.scan_parquet(resp_path)
-        .filter(
-            pl.col('device_category').str.to_lowercase().str.strip_chars().is_in(ADVANCED_RESP_DEVICES)
-        )
-        .group_by('hospitalization_id')
-        .agg(pl.col('recorded_dttm').min().alias('in_dttm'))
-        .collect(streaming=True)
+    return _extract_event_windows(
+        db, resp_path, 'device_category', 'recorded_dttm',
+        ADVANCED_RESP_DEVICES, 'advanced resp',
     )
 
-    first_device = first_device.with_columns(
-        pl.col('in_dttm').dt.replace_time_zone(None)
-    )
 
-    # Join with discharge times to get the end bound
-    windows = (
-        first_device
-        .join(discharge_times, on='hospitalization_id', how='inner')
-        .rename({'discharge_dttm': 'out_dttm'})
-        .select(['hospitalization_id', 'in_dttm', 'out_dttm'])
-    )
-
-    print(f"✓ Found {len(windows):,} advanced resp event windows")
-    return windows
-
-
-def extract_nippv_hfnc_event_windows(
-    tables_path: str,
-    file_type: str,
-    discharge_times: pl.DataFrame,
-) -> pl.DataFrame:
-    """
-    Build time windows anchored to the first NIPPV (BiPAP) or HFNC device.
-
-    Window = min(recorded_dttm) for NIPPV/HFNC devices → discharge_dttm.
-
-    Returns:
-        Polars DataFrame with columns: hospitalization_id, in_dttm, out_dttm
-    """
-    resp_path = os.path.join(tables_path, f'clif_respiratory_support.{file_type}')
-    if not os.path.exists(resp_path):
-        raise FileNotFoundError(f"Respiratory support file not found: {resp_path}")
-
+def extract_nippv_hfnc_event_windows(db: ClifDB) -> pd.DataFrame:
+    """Build time windows anchored to the first NIPPV/HFNC device."""
+    resp_path = db.table_path('respiratory_support')
     print(f"Extracting NIPPV/HFNC event windows from {resp_path}...")
-
-    first_device = (
-        pl.scan_parquet(resp_path)
-        .filter(
-            pl.col('device_category').str.to_lowercase().str.strip_chars()
-            .is_in(NIPPV_HFNC_DEVICES)
-        )
-        .group_by('hospitalization_id')
-        .agg(pl.col('recorded_dttm').min().alias('in_dttm'))
-        .collect(streaming=True)
+    return _extract_event_windows(
+        db, resp_path, 'device_category', 'recorded_dttm',
+        NIPPV_HFNC_DEVICES, 'NIPPV/HFNC',
     )
-
-    first_device = first_device.with_columns(
-        pl.col('in_dttm').dt.replace_time_zone(None)
-    )
-
-    windows = (
-        first_device
-        .join(discharge_times, on='hospitalization_id', how='inner')
-        .rename({'discharge_dttm': 'out_dttm'})
-        .select(['hospitalization_id', 'in_dttm', 'out_dttm'])
-    )
-
-    print(f"✓ Found {len(windows):,} NIPPV/HFNC event windows")
-    return windows
 
 
 # ============================================================================
 # ECDF Computation
 # ============================================================================
 
-def compute_ecdf_compact(values: np.ndarray) -> pl.DataFrame:
+def compute_ecdf_compact(values: np.ndarray) -> pd.DataFrame:
     """
     Compute ECDF and return distinct (value, probability) pairs.
 
@@ -486,36 +378,23 @@ def compute_ecdf_compact(values: np.ndarray) -> pl.DataFrame:
         values: Array of numeric values
 
     Returns:
-        Polars DataFrame with columns:
+        pandas DataFrame with columns:
         - value: float
         - probability: float (0 to 1)
     """
     if len(values) == 0:
-        return pl.DataFrame({
-            'value': [],
-            'probability': []
-        })
+        return pd.DataFrame({'value': pd.array([], dtype='float64'),
+                             'probability': pd.array([], dtype='float64')})
 
-    # Sort values
     sorted_values = np.sort(values)
-
-    # Calculate cumulative probabilities
     n = len(sorted_values)
-    probabilities = np.arange(1, n + 1) / n
 
-    # Create dataframe
-    ecdf_df = pl.DataFrame({
-        'value': sorted_values,
-        'probability': probabilities
-    })
+    # For duplicate values, CDF = cumulative count / n
+    unique_vals, counts = np.unique(sorted_values, return_counts=True)
+    cumulative = np.cumsum(counts)
+    probs = cumulative / n
 
-    # Group by value and keep max probability (prevents zigzag effect)
-    # For duplicate values, we only keep the highest probability (final occurrence)
-    ecdf_df = ecdf_df.group_by('value').agg(
-        pl.col('probability').max()
-    ).sort('value')
-
-    return ecdf_df
+    return pd.DataFrame({'value': unique_vals, 'probability': probs})
 
 
 # ============================================================================
@@ -580,51 +459,81 @@ def create_flat_bins(data: pd.Series, num_bins: int = 10) -> List[Dict[str, Any]
 
 
 # ============================================================================
-# Lab/Vital Data Processing
+# SQL helpers
+# ============================================================================
+
+def _build_unit_filter(unit) -> Tuple[str, List]:
+    """Build a SQL WHERE clause fragment for lab unit matching.
+
+    Returns (sql_fragment, params) where *sql_fragment* is a string like
+    ``"LOWER(TRIM(d.reference_unit)) = ?"`` and *params* are the bind values.
+    """
+    if unit is None:
+        return "TRUE", []
+
+    if isinstance(unit, list):
+        no_units = [u for u in unit if u.lower().strip() == '(no units)']
+        real_units = [u.lower().strip() for u in unit
+                      if u.lower().strip() != '(no units)']
+
+        parts = []
+        params = []
+        if real_units:
+            placeholders = ', '.join(['?'] * len(real_units))
+            parts.append(f"LOWER(TRIM(d.reference_unit)) IN ({placeholders})")
+            params.extend(real_units)
+        if no_units:
+            parts.append(
+                "(d.reference_unit IS NULL "
+                "OR TRIM(d.reference_unit) = '' "
+                "OR LOWER(TRIM(d.reference_unit)) = '(no units)')"
+            )
+        return '(' + ' OR '.join(parts) + ')', params
+
+    unit_l = unit.lower().strip()
+    if unit_l == '(no units)':
+        return (
+            "(d.reference_unit IS NULL "
+            "OR TRIM(d.reference_unit) = '' "
+            "OR LOWER(TRIM(d.reference_unit)) = '(no units)')"
+        ), []
+
+    return "LOWER(TRIM(d.reference_unit)) = ?", [unit_l]
+
+
+# ============================================================================
+# Lab / Vital Processing
 # ============================================================================
 
 def process_category(
     table_type: str,
     category: str,
-    unit: str,
-    icu_windows: pl.DataFrame,
-    tables_path: str,
-    file_type: str,
+    unit,
+    db: ClifDB,
     outlier_range: Dict[str, float],
-    cat_config: Dict[str, Any],
+    cat_config: Dict,
     output_dir: str,
     extreme_bins_count: int = 5,
     suffix: str = ''
 ) -> Dict[str, Any]:
     """
     Process a single lab/vital category:
-    1. Load data filtered to ICU time windows
+    1. Load data filtered to ICU time windows (via DuckDB join)
     2. Remove outliers
     3. Compute ECDF
-    4. Compute bins with auto-extreme-splitting
+    4. Compute quantile bins with auto-extreme-splitting
     5. Save results
-
-    Args:
-        unit: Reference unit (for labs only, pass None for vitals)
-        extreme_bins_count: Number of bins to split extreme bins into (default: 5)
-
-    Returns:
-        Dictionary with processing statistics
     """
-    # Determine file path and column names
     if table_type == 'labs':
-        file_path = os.path.join(tables_path, f'clif_labs.{file_type}')
+        file_path = db.table_path('labs')
         category_col = 'lab_category'
         value_col = 'lab_value_numeric'
         datetime_col = 'lab_result_dttm'
     else:  # vitals
-        file_path = os.path.join(tables_path, f'clif_vitals.{file_type}')
+        file_path = db.table_path('vitals')
         category_col = 'vital_category'
         value_col = 'vital_value'
         datetime_col = 'recorded_dttm'
-
-    if not os.path.exists(file_path):
-        raise FileNotFoundError(f"Data file not found: {file_path}")
 
     # Display name includes unit for labs
     if table_type == 'labs' and unit:
@@ -634,88 +543,16 @@ def process_category(
 
     print(f"  Loading {display_name}...")
 
-    # Scan data with Polars (lazy)
-    data_lazy = pl.scan_parquet(file_path)
-
-    # Normalize lab_category and reference_unit to lowercase for consistent matching
-    if table_type == 'labs':
-        data_lazy = data_lazy.with_columns(
-            pl.col(category_col).str.strip_chars().str.to_lowercase()
-        )
-        if 'reference_unit' in data_lazy.columns:
-            data_lazy = data_lazy.with_columns(
-                pl.col('reference_unit').str.strip_chars().str.to_lowercase()
-            )
-
-    # Filter to selected category (and unit for labs)
-    if table_type == 'labs' and unit:
-        if isinstance(unit, list):
-            unit_lower = [u.lower().strip() for u in unit]
-            unit_filter = pl.col('reference_unit').is_in(unit_lower)
-            if '(no units)' in unit_lower:
-                unit_filter = unit_filter | pl.col('reference_unit').is_null() | (pl.col('reference_unit').str.strip_chars() == '')
-        else:
-            unit_l = unit.lower().strip()
-            if unit_l == '(no units)':
-                unit_filter = (
-                    pl.col('reference_unit').is_null() |
-                    (pl.col('reference_unit').str.strip_chars() == '') |
-                    (pl.col('reference_unit') == '(no units)')
-                )
-            else:
-                unit_filter = pl.col('reference_unit') == unit_l
-        data_category = data_lazy.filter(
-            (pl.col(category_col) == category.lower().strip()) &
-            unit_filter
-        ).select([
-            'hospitalization_id',
-            datetime_col,
-            value_col
-        ])
-    else:
-        data_category = data_lazy.filter(
-            pl.col(category_col) == category.lower().strip() if table_type == 'labs' else pl.col(category_col) == category
-        ).select([
-            'hospitalization_id',
-            datetime_col,
-            value_col
-        ])
-    # if table_type == 'labs' and unit:
-    #     data_category = data_lazy.filter(
-    #         (pl.col(category_col) == category) &
-    #         (pl.col('reference_unit') == unit)
-    #     ).select([
-    #         'hospitalization_id',
-    #         datetime_col,
-    #         value_col
-    #     ])
-    # else:
-    #     data_category = data_lazy.filter(
-    #         pl.col(category_col) == category
-    #     ).select([
-    #         'hospitalization_id',
-    #         datetime_col,
-    #         value_col
-    #     ])
-
-    # Join with ICU time windows
-    data_icu = data_category.join(
-        icu_windows.lazy(),
-        on='hospitalization_id',
-        how='inner'
+    values = db.fetch_icu_values(
+        parquet_path=file_path,
+        value_col=value_col,
+        datetime_col=datetime_col,
+        category_col=category_col,
+        category_value=category.lower().strip(),
+        unit=unit if table_type == 'labs' else None,
     )
 
-    # Filter to values during ICU stay only (temporal filtering)
-    # Strip timezone from datetime column for comparison with timezone-naive ICU windows
-    data_filtered = data_icu.filter(
-        (pl.col(datetime_col).dt.replace_time_zone(None) >= pl.col('in_dttm')) &
-        (pl.col(datetime_col).dt.replace_time_zone(None) <= pl.col('out_dttm'))
-    ).select([value_col])
-
-    # Collect with streaming
-    values_df = data_filtered.collect(streaming=True)
-
-    original_count = len(values_df)
+    original_count = len(values)
 
     if original_count == 0:
         print(f"  ⚠️  No data found for {display_name} during ICU stays")
@@ -728,12 +565,9 @@ def process_category(
             'num_bins': 0
         }
 
-    # Remove outliers
-    values_clean = values_df.filter(
-        (pl.col(value_col) >= outlier_range['min']) &
-        (pl.col(value_col) <= outlier_range['max'])
-    )
-
+    # Remove outliers (numpy — fast, zero-copy)
+    mask = (values >= outlier_range['min']) & (values <= outlier_range['max'])
+    values_clean = values[mask]
     clean_count = len(values_clean)
 
     if clean_count == 0:
@@ -747,8 +581,7 @@ def process_category(
             'num_bins': 0
         }
 
-    # Extract values as numpy array
-    values_array = values_clean[value_col].to_numpy()
+    values_array = values_clean
 
     # ========================================================================
     # Compute ECDF
@@ -757,24 +590,23 @@ def process_category(
     ecdf_df = compute_ecdf_compact(values_array)
 
     # Save ECDF
-    ecdf_dir = os.path.join(output_dir, 'ecdf', table_type)
-    os.makedirs(ecdf_dir, exist_ok=True)
+    ecdf_dir_path = os.path.join(output_dir, 'ecdf', table_type)
+    os.makedirs(ecdf_dir_path, exist_ok=True)
 
     if table_type == 'labs' and unit:
         # Handle list of units - use first non-empty unit for filename
         if isinstance(unit, list):
-            # Filter out "(no units)" and empty strings for filename, use first real unit
             real_units = [u for u in unit if u and u != '(no units)']
             unit_for_filename = real_units[0] if real_units else 'no_units'
         else:
-            unit_for_filename = unit if unit != '(no units)' else 'no_units'
-        unit_safe = sanitize_unit_for_filename(unit_for_filename)
-        filename = f'{category}_{unit_safe}{suffix}.parquet'
+            unit_for_filename = unit
+        safe_unit = sanitize_unit_for_filename(unit_for_filename)
+        filename = f'{category}_{safe_unit}{suffix}.parquet'
     else:
         filename = f'{category}{suffix}.parquet'
 
-    ecdf_path = os.path.join(ecdf_dir, filename)
-    ecdf_df.write_parquet(ecdf_path)
+    ecdf_path = os.path.join(ecdf_dir_path, filename)
+    ecdf_df.to_parquet(ecdf_path, index=False)
 
     # ========================================================================
     # Compute Bins with Auto-Extreme-Splitting
@@ -803,25 +635,20 @@ def process_category(
     )
 
     # Add interval notation column
-    # First bin in each segment: [min, max] (closed both sides)
-    # Other bins: (min, max] (left-open, right-closed)
     for bin_info in bins:
         if bin_info['bin_num'] == 1:
-            # First bin is closed on both sides
             interval = f"[{bin_info['bin_min']:.2f}, {bin_info['bin_max']:.2f}]"
         else:
-            # Other bins are left-open, right-closed
             interval = f"({bin_info['bin_min']:.2f}, {bin_info['bin_max']:.2f}]"
         bin_info['interval'] = interval
 
-    # Convert to Polars DataFrame
-    bins_df = pl.DataFrame(bins)
+    bins_df = pd.DataFrame(bins)
 
     # Save bins
-    bins_dir = os.path.join(output_dir, 'bins', table_type)
-    os.makedirs(bins_dir, exist_ok=True)
-    bins_path = os.path.join(bins_dir, filename)
-    bins_df.write_parquet(bins_path)
+    bins_dir_path = os.path.join(output_dir, 'bins', table_type)
+    os.makedirs(bins_dir_path, exist_ok=True)
+    bins_path = os.path.join(bins_dir_path, filename)
+    bins_df.to_parquet(bins_path, index=False)
 
     # Return statistics
     return {
@@ -840,9 +667,7 @@ def process_category(
 
 def process_respiratory_column(
     column_name: str,
-    icu_windows: pl.DataFrame,
-    tables_path: str,
-    file_type: str,
+    db: ClifDB,
     outlier_range: Dict[str, float],
     output_dir: str,
     num_bins: int = 10,
@@ -855,54 +680,17 @@ def process_respiratory_column(
     3. Compute ECDF
     4. Compute flat 10 bins (no segmentation)
     5. Save results
-
-    Args:
-        column_name: Column name (e.g., 'fio2_set', 'peep_obs')
-        icu_windows: ICU time windows
-        tables_path: Path to data
-        file_type: File type
-        outlier_range: Dict with 'min' and 'max'
-        output_dir: Output directory
-        num_bins: Number of bins (default: 10)
-
-    Returns:
-        Dictionary with processing statistics
     """
-    file_path = os.path.join(tables_path, f'clif_respiratory_support.{file_type}')
-
-    if not os.path.exists(file_path):
-        raise FileNotFoundError(f"Respiratory support file not found: {file_path}")
+    file_path = db.table_path('respiratory_support')
 
     print(f"  Loading {column_name}...")
 
-    # Scan data with Polars (lazy)
-    data_lazy = pl.scan_parquet(file_path)
-
-    # Select only needed columns
-    data_selected = data_lazy.select([
-        'hospitalization_id',
-        'recorded_dttm',
-        column_name
-    ])
-
-    # Join with ICU time windows
-    data_icu = data_selected.join(
-        icu_windows.lazy(),
-        on='hospitalization_id',
-        how='inner'
+    values = db.fetch_icu_values(
+        parquet_path=file_path,
+        value_col=column_name,
+        datetime_col='recorded_dttm',
     )
-
-    # Filter to values during ICU stay only (temporal filtering)
-    # Strip timezone from datetime column for comparison with timezone-naive ICU windows
-    data_filtered = data_icu.filter(
-        (pl.col('recorded_dttm').dt.replace_time_zone(None) >= pl.col('in_dttm')) &
-        (pl.col('recorded_dttm').dt.replace_time_zone(None) <= pl.col('out_dttm'))
-    ).select([column_name])
-
-    # Collect with streaming
-    values_df = data_filtered.collect(streaming=True)
-
-    original_count = len(values_df)
+    original_count = len(values)
 
     if original_count == 0:
         print(f"  ⚠️  No data found for {column_name} during ICU stays")
@@ -915,11 +703,8 @@ def process_respiratory_column(
         }
 
     # Remove outliers
-    values_clean = values_df.filter(
-        (pl.col(column_name) >= outlier_range['min']) &
-        (pl.col(column_name) <= outlier_range['max'])
-    )
-
+    mask = (values >= outlier_range['min']) & (values <= outlier_range['max'])
+    values_clean = values[mask]
     clean_count = len(values_clean)
 
     if clean_count == 0:
@@ -932,8 +717,7 @@ def process_respiratory_column(
             'num_bins': 0
         }
 
-    # Extract values as numpy array
-    values_array = values_clean[column_name].to_numpy()
+    values_array = values_clean
 
     # ========================================================================
     # Compute ECDF
@@ -942,10 +726,10 @@ def process_respiratory_column(
     ecdf_df = compute_ecdf_compact(values_array)
 
     # Save ECDF
-    ecdf_dir = os.path.join(output_dir, 'ecdf', 'respiratory_support')
-    os.makedirs(ecdf_dir, exist_ok=True)
-    ecdf_path = os.path.join(ecdf_dir, f'{column_name}{suffix}.parquet')
-    ecdf_df.write_parquet(ecdf_path)
+    ecdf_dir_path = os.path.join(output_dir, 'ecdf', 'respiratory_support')
+    os.makedirs(ecdf_dir_path, exist_ok=True)
+    ecdf_path = os.path.join(ecdf_dir_path, f'{column_name}{suffix}.parquet')
+    ecdf_df.to_parquet(ecdf_path, index=False)
 
     # ========================================================================
     # Compute Flat Bins (15 bins, no segmentation)
@@ -953,14 +737,13 @@ def process_respiratory_column(
 
     bins = create_flat_bins(pd.Series(values_array), num_bins=num_bins)
 
-    # Convert to Polars DataFrame
-    bins_df = pl.DataFrame(bins)
+    bins_df = pd.DataFrame(bins)
 
     # Save bins
-    bins_dir = os.path.join(output_dir, 'bins', 'respiratory_support')
-    os.makedirs(bins_dir, exist_ok=True)
-    bins_path = os.path.join(bins_dir, f'{column_name}{suffix}.parquet')
-    bins_df.write_parquet(bins_path)
+    bins_dir_path = os.path.join(output_dir, 'bins', 'respiratory_support')
+    os.makedirs(bins_dir_path, exist_ok=True)
+    bins_path = os.path.join(bins_dir_path, f'{column_name}{suffix}.parquet')
+    bins_df.to_parquet(bins_path, index=False)
 
     # Return statistics
     return {
@@ -977,8 +760,9 @@ def process_respiratory_column(
 # ============================================================================
 
 def run_ecdf_pipeline(
-    icu_windows: pl.DataFrame,
-    lab_category_units: pl.DataFrame,
+    icu_windows: pd.DataFrame,
+    lab_category_units: pd.DataFrame,
+    db: ClifDB,
     clif_config: Dict,
     outlier_config: Dict,
     lab_vital_config: Dict,
@@ -995,6 +779,9 @@ def run_ecdf_pipeline(
     Returns:
         (labs_stats, vitals_stats, resp_stats, log_entries)
     """
+    # Register the (possibly stratum-filtered) time windows for SQL joins
+    db.register('icu_windows', icu_windows)
+
     log_entries = []
 
     # ========================================================================
@@ -1011,9 +798,9 @@ def run_ecdf_pipeline(
     labs_stats = []
     processed_categories = set()
 
-    for row in lab_category_units.iter_rows(named=True):
-        category = row['lab_category']
-        unit = row['reference_unit']
+    for row in lab_category_units.itertuples(index=False):
+        category = row.lab_category
+        unit = row.reference_unit
 
         if category in processed_categories:
             continue
@@ -1044,9 +831,7 @@ def run_ecdf_pipeline(
                 table_type='labs',
                 category=category,
                 unit=config_units,
-                icu_windows=icu_windows,
-                tables_path=clif_config['tables_path'],
-                file_type=clif_config['file_type'],
+                db=db,
                 outlier_range=labs_outlier[category],
                 cat_config=labs_config[category],
                 output_dir=output_dir,
@@ -1091,9 +876,7 @@ def run_ecdf_pipeline(
                 table_type='vitals',
                 category=category,
                 unit=None,
-                icu_windows=icu_windows,
-                tables_path=clif_config['tables_path'],
-                file_type=clif_config['file_type'],
+                db=db,
                 outlier_range=vitals_outlier[category],
                 cat_config=vitals_config[category],
                 output_dir=output_dir,
@@ -1142,9 +925,7 @@ def run_ecdf_pipeline(
         try:
             stats = process_respiratory_column(
                 column_name=column,
-                icu_windows=icu_windows,
-                tables_path=clif_config['tables_path'],
-                file_type=clif_config['file_type'],
+                db=db,
                 outlier_range=resp_outlier[column],
                 output_dir=output_dir,
                 num_bins=10,
@@ -1186,56 +967,41 @@ def main():
     # Setup Output Directory
     # ========================================================================
 
-    # Build the full output/final/ tree (overall, strata, validation, meta, ...)
     ensure_output_tree()
 
-    # The "overall" cohort is now its own subdirectory inside output/final/
     output_dir = str(OVERALL)
     print(f"Output directory: {output_dir}\n")
 
-    # Copy configs (always written to the top-level configs/ — argument ignored)
     copy_configs_to_output()
     print()
 
-    # Setup log file (now lives under meta/)
     log_file = str(meta_dir() / 'unit_mismatches.log')
+
+    # ========================================================================
+    # Initialise shared DuckDB connection
+    # ========================================================================
+
+    db = ClifDB(clif_config['tables_path'], clif_config['file_type'])
 
     # ========================================================================
     # Extract ICU Time Windows
     # ========================================================================
 
-    icu_windows = extract_icu_time_windows(
-        clif_config['tables_path'],
-        clif_config['file_type']
-    )
+    icu_windows = extract_icu_time_windows(db)
     print()
 
     # ========================================================================
     # Compute Event-Based Time Windows for Strata
     # ========================================================================
 
-    discharge_times = load_discharge_times(
-        clif_config['tables_path'],
-        clif_config['file_type']
-    )
+    discharge_times = load_discharge_times(db)
 
-    vaso_windows = extract_vaso_event_windows(
-        clif_config['tables_path'],
-        clif_config['file_type'],
-        discharge_times,
-    )
+    # Register discharge_times so event-window functions can join against it
+    db.register('discharge_times', discharge_times)
 
-    resp_windows = extract_advanced_resp_event_windows(
-        clif_config['tables_path'],
-        clif_config['file_type'],
-        discharge_times,
-    )
-
-    nippv_hfnc_windows = extract_nippv_hfnc_event_windows(
-        clif_config['tables_path'],
-        clif_config['file_type'],
-        discharge_times,
-    )
+    vaso_windows = extract_vaso_event_windows(db)
+    resp_windows = extract_advanced_resp_event_windows(db)
+    nippv_hfnc_windows = extract_nippv_hfnc_event_windows(db)
 
     all_time_windows = {
         'icu': icu_windows,
@@ -1253,10 +1019,7 @@ def main():
     print("Discovering Lab Category-Unit Combinations")
     print("="*80)
 
-    lab_category_units = discover_lab_category_units(
-        clif_config['tables_path'],
-        clif_config['file_type']
-    )
+    lab_category_units = discover_lab_category_units(db)
     print()
 
     # ========================================================================
@@ -1266,6 +1029,7 @@ def main():
     labs_stats, vitals_stats, resp_stats, log_entries = run_ecdf_pipeline(
         icu_windows=icu_windows,
         lab_category_units=lab_category_units,
+        db=db,
         clif_config=clif_config,
         outlier_config=outlier_config,
         lab_vital_config=lab_vital_config,
@@ -1288,9 +1052,9 @@ def main():
             window_type = STRATUM_WINDOW_TYPE.get(stratum_name, 'icu')
             base_windows = all_time_windows[window_type]
 
-            filtered_windows = base_windows.filter(
-                pl.col('hospitalization_id').is_in(list(hosp_ids))
-            )
+            filtered_windows = base_windows[
+                base_windows['hospitalization_id'].isin(hosp_ids)
+            ]
             if len(filtered_windows) == 0:
                 print(f"  ⚠️ Skipping {stratum_name}: no time windows")
                 continue
@@ -1308,6 +1072,7 @@ def main():
             s_labs, s_vitals, s_resp, s_log = run_ecdf_pipeline(
                 icu_windows=filtered_windows,
                 lab_category_units=lab_category_units,
+                db=db,
                 clif_config=clif_config,
                 outlier_config=outlier_config,
                 lab_vital_config=lab_vital_config,
@@ -1347,42 +1112,19 @@ def main():
     print()
 
     print(f"Labs: {len(labs_stats)} category-unit combinations processed")
-    for stat in labs_stats:
-        if stat['clean_count'] > 0:
-            compression_ratio = stat['clean_count'] / stat['ecdf_distinct_pairs'] if stat['ecdf_distinct_pairs'] > 0 else 0
-            unit_display = f" ({stat['unit']})" if stat['unit'] else ""
-            print(f"  - {stat['category']:20s}{unit_display:15s}: "
-                  f"{stat['clean_count']:>10,} values → "
-                  f"{stat['ecdf_distinct_pairs']:>8,} ECDF pairs "
-                  f"({compression_ratio:.1f}x compression), "
-                  f"{stat['num_bins']:>2} bins")
-
-    print()
     print(f"Vitals: {len(vitals_stats)} categories processed")
-    for stat in vitals_stats:
-        if stat['clean_count'] > 0:
-            compression_ratio = stat['clean_count'] / stat['ecdf_distinct_pairs'] if stat['ecdf_distinct_pairs'] > 0 else 0
-            print(f"  - {stat['category']:20s}: "
-                  f"{stat['clean_count']:>10,} values → "
-                  f"{stat['ecdf_distinct_pairs']:>8,} ECDF pairs "
-                  f"({compression_ratio:.1f}x compression), "
-                  f"{stat['num_bins']:>2} bins")
-
+    print(f"Respiratory Support: {len(resp_stats)} columns processed")
     print()
-    print(f"Total processing time: {duration:.1f} seconds")
-    print()
-    print(f"Output saved to: output/final/")
-    print(f"  - configs/                         (run config snapshot)")
-    print(f"  - overall/ecdf/{{labs,vitals,respiratory_support}}/*.parquet")
-    print(f"  - overall/bins/{{labs,vitals,respiratory_support}}/*.parquet")
-    print(f"  - strata/{{icu,advanced_resp,vaso,deaths}}/{{ecdf,bins}}/...")
-    if log_entries:
-        print(f"  - meta/unit_mismatches.log ({len(log_entries)} entries)")
-    print()
-    print("="*80)
-    print("✅ Done!")
-    print("="*80)
 
+    all_stats = labs_stats + vitals_stats + resp_stats
+    total_original = sum(s.get('original_count', 0) for s in all_stats)
+    total_clean = sum(s.get('clean_count', 0) for s in all_stats)
 
-if __name__ == '__main__':
-    main()
+    if total_original > 0:
+        pct = total_clean / total_original * 100
+        print(f"Data Retention: {total_clean:,} / {total_original:,} ({pct:.1f}%)")
+    print(f"Duration: {duration:.1f}s ({duration/60:.1f}m)")
+    print()
+
+    # Clean up
+    db.close()
