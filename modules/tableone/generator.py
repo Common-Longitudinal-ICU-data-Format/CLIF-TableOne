@@ -1844,6 +1844,14 @@ def main(memory_monitor=None, cohort_mode='critical_illness') -> bool:
         print(f"\nCohort filter: {_pre:,} → {len(final_cohort):,} encounter_blocks "
               f"(icu_enc|death_enc|high_support_enc|vaso_support_enc, excl procedural/L&D-only)")
 
+    # Propagate cohort_enc back to all_encounters so downstream merges
+    # (e.g. cohort_df at line ~2014) can pick it up.
+    _cohort_map = final_cohort[['encounter_block', 'cohort_enc']].drop_duplicates()
+    if 'cohort_enc' in all_encounters.columns:
+        all_encounters = all_encounters.drop(columns='cohort_enc')
+    all_encounters = all_encounters.merge(_cohort_map, on='encounter_block', how='left')
+    all_encounters['cohort_enc'] = all_encounters['cohort_enc'].fillna(0).astype(int)
+
     cohort_enc_hospitalization_ids = all_encounters[
         all_encounters['encounter_block'].isin(final_cohort['encounter_block'])
     ]['hospitalization_id'].unique().tolist()
