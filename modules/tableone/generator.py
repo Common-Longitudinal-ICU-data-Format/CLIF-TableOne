@@ -1554,16 +1554,11 @@ def main(memory_monitor=None, cohort_mode='critical_illness') -> bool:
     all_encounters['death_enc'] = death_mask.groupby(all_encounters['encounter_block']).transform('any').astype(int)
     all_encounters['ward_enc'] = ward_mask.groupby(all_encounters['encounter_block']).transform('any').astype(int)
 
-    # Cohort flag depends on cohort_mode:
-    # - critical_illness: any ICU stay OR died/hospice
-    # - ward: any encounter that touched a ward at any point
+    # Cohort flag deferred until after high_support_enc and vaso_support_enc
+    # are computed — see "Define cohort and filter" block after support flags.
+    # In ward mode the flag is simple enough to set now.
     if cohort_mode == 'ward':
         all_encounters['cohort_enc'] = all_encounters['ward_enc']
-    else:
-        all_encounters['cohort_enc'] = (all_encounters['icu_enc'] | all_encounters['death_enc']).astype(int)
-
-    # Store hospitalization_ids for cohort_enc==1 in a list (as before)
-    cohort_enc_hospitalization_ids = all_encounters.loc[all_encounters['cohort_enc'] == 1, 'hospitalization_id'].unique().tolist()
 
     # Identify encounters where death occurred
     death_encounters = all_encounters[all_encounters['death_enc'] == 1]
@@ -1607,9 +1602,19 @@ def main(memory_monitor=None, cohort_mode='critical_illness') -> bool:
         how='left'
     )
 
-    final_cohort = all_encounters[
-        all_encounters['hospitalization_id'].isin(cohort_enc_hospitalization_ids)
-    ][['encounter_block', 'icu_enc', 'death_enc', 'cohort_enc', 'is_procedural_ld_only']].drop_duplicates()
+    # Start final_cohort from ALL adult encounters — cohort_enc will be defined
+    # after high_support_enc and vaso_support_enc are computed.
+    if cohort_mode == 'ward':
+        _ward_hosp_ids = all_encounters.loc[
+            all_encounters['cohort_enc'] == 1, 'hospitalization_id'
+        ].unique()
+        final_cohort = all_encounters[
+            all_encounters['hospitalization_id'].isin(_ward_hosp_ids)
+        ][['encounter_block', 'icu_enc', 'death_enc', 'cohort_enc', 'is_procedural_ld_only']].drop_duplicates()
+    else:
+        final_cohort = all_encounters[
+            ['encounter_block', 'icu_enc', 'death_enc', 'is_procedural_ld_only']
+        ].drop_duplicates()
 
 
     # ==============================================================================
@@ -1657,12 +1662,24 @@ def main(memory_monitor=None, cohort_mode='critical_illness') -> bool:
     clif.respiratory_support.df = pd.merge(clif.respiratory_support.df, encounter_mapping,
                                             on='hospitalization_id', how='left')
 
-    # Filter to cohort encounters and run waterfall to fill sparse lpm_set
-    # (must precede HFNC >= 30 LPM threshold check which needs filled values)
-    _cohort_enc_blocks = final_cohort['encounter_block'].unique()
+    # Filter to encounters with at least one qualifying device or mode_category
+    # that the waterfall could infer as IMV/NIPPV.  Only these can contribute
+    # to high_support_enc; waterfalling non-qualifying encounters is wasted work.
+    _device_mask = clif.respiratory_support.df['device_category'].isin(
+        ['imv', 'nippv', 'cpap', 'high flow nc']
+    )
+    _mode_mask = clif.respiratory_support.df['mode_category'].str.contains(
+        r'(?:assist control-volume control|simv|pressure control)',
+        na=False, regex=True,
+    ) if 'mode_category' in clif.respiratory_support.df.columns else pd.Series(False, index=clif.respiratory_support.df.index)
+    _enc_with_qualifying = clif.respiratory_support.df.loc[
+        _device_mask | _mode_mask, 'encounter_block'
+    ].unique()
+    print(f"Encounters with qualifying resp devices/modes: {len(_enc_with_qualifying):,}")
     clif.respiratory_support.df = clif.respiratory_support.df[
-        clif.respiratory_support.df['encounter_block'].isin(_cohort_enc_blocks)
+        clif.respiratory_support.df['encounter_block'].isin(_enc_with_qualifying)
     ].copy()
+    del _device_mask, _mode_mask, _enc_with_qualifying
     clif.respiratory_support.df = clif.respiratory_support.df.sort_values(
         ['hospitalization_id', 'recorded_dttm']
     )
@@ -1813,6 +1830,24 @@ def main(memory_monitor=None, cohort_mode='critical_illness') -> bool:
         final_cohort.loc[final_cohort['is_procedural_ld_only'] == 1, 'high_support_enc'] = 0
         final_cohort.loc[final_cohort['is_procedural_ld_only'] == 1, 'vaso_support_enc'] = 0
         final_cohort.loc[final_cohort['is_procedural_ld_only'] == 1, 'nippv_hfnc_enc'] = 0
+    # ── Define cohort and filter ────────────────────────────────────────
+    # Critical-illness cohort: ICU stay OR died/hospice OR advanced resp
+    # support OR vasopressor support, excluding procedural/L&D-only encounters.
+    if cohort_mode != 'ward':
+        final_cohort['cohort_enc'] = (
+            (final_cohort['icu_enc'] | final_cohort['death_enc']
+             | final_cohort['high_support_enc'] | final_cohort['vaso_support_enc'])
+            & (~final_cohort['is_procedural_ld_only'].astype(bool))
+        ).astype(int)
+        _pre = len(final_cohort)
+        final_cohort = final_cohort[final_cohort['cohort_enc'] == 1].copy()
+        print(f"\nCohort filter: {_pre:,} → {len(final_cohort):,} encounter_blocks "
+              f"(icu_enc|death_enc|high_support_enc|vaso_support_enc, excl procedural/L&D-only)")
+
+    cohort_enc_hospitalization_ids = all_encounters[
+        all_encounters['encounter_block'].isin(final_cohort['encounter_block'])
+    ]['hospitalization_id'].unique().tolist()
+
     strobe_counts["2_advanced_resp_support_hospitalizations"] = (final_cohort['high_support_enc'] == 1).sum()
     strobe_counts["2b_nippv_hfnc_hospitalizations"] = (final_cohort['nippv_hfnc_enc'] == 1).sum()
     strobe_counts["3_vasoactive_hospitalizations"] = (final_cohort['vaso_support_enc'] == 1).sum()
@@ -1922,12 +1957,10 @@ def main(memory_monitor=None, cohort_mode='critical_illness') -> bool:
     final_cohort['nippv_hfnc_no_icu_enc'] = (
         (final_cohort['nippv_hfnc_enc'] == 1) & (final_cohort['icu_enc'] == 0)
     ).astype(int)
-    # death_enc is already on final_cohort (carried in the select at line ~1565).
     # "Other critically ill" = died in ED/ward without ICU/vaso/resp escalation.
-    # Tightened definition (added explicit death_enc==1) is a no-op in critical-illness
-    # mode (any encounter in the cohort with icu_enc==0 already had death_enc==1) and
-    # produces the correct semantics in ward mode (ward encounters that died without
-    # escalation, distinct from ward survivors with no critical care).
+    # With the broadened cohort (icu|death|high_support|vaso), encounters can have
+    # icu_enc==0 and death_enc==0 (ward survivors with resp/vaso support).  Those
+    # are captured by their respective support flags, not by other_critically_ill.
     final_cohort['other_critically_ill'] = (
         (final_cohort['death_enc'] == 1) &
         (final_cohort['icu_enc'] == 0) &
