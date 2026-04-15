@@ -194,6 +194,8 @@ Every flag is a 0/1 indicator on the stitched encounter block. The strata in §9
 | `high_support_enc` | Encounter ever received `imv` / `nippv` / `cpap` / `high flow nc` (`respiratory_support.device_category`) | `generator.py:1646, 1659` |
 | `nippv_hfnc_enc` | Encounter ever received `nippv` or `high flow nc` with `lpm_set >= 30` (`respiratory_support.device_category`) | `generator.py:1725-1740` |
 | `vaso_support_enc` | Encounter ever received `norepinephrine`, `epinephrine`, `phenylephrine`, `vasopressin`, `dopamine`, or `angiotensin` (`medication_admin_continuous.med_category`) | `generator.py:1693, 1706` |
+| `vaso_ed_icu_enc` | First vasopressor was administered in the ED AND any subsequent ADT location includes ICU | `generator.py:1904-1906` |
+| `vaso_ed_ward_enc` | First vasopressor was administered in the ED AND any subsequent ADT location includes ward but NOT ICU | `generator.py:1907-1909` |
 | `no_imv_enc` | Encounter is in the critical-illness cohort AND never received invasive mechanical ventilation (`on_vent == 0`) | `generator.py:3449` |
 | `no_imv_icu_enc` | `no_imv_enc AND icu_enc` | `generator.py:3450-3452` |
 | `no_imv_no_icu_enc` | `no_imv_enc AND NOT icu_enc` | `generator.py:3453-3455` |
@@ -232,7 +234,7 @@ The legacy comment at `modules/tableone/generator.py:22-23` describes inclusion 
 
 ## 9. Strata
 
-The strata directories under `output/final/strata/` are subsets of the **critical-illness cohort**, filtered by a single flag. The mapping is the single source of truth in `modules/strata.py:24-39`:
+The strata directories under `output/final/strata/` are subsets of the **critical-illness cohort**, filtered by a single flag. The mapping is the single source of truth in `modules/strata.py:24-41`:
 
 | Directory | Flag | Definition | ECDF temporal window |
 |---|---|---|---|
@@ -246,6 +248,8 @@ The strata directories under `output/final/strata/` are subsets of the **critica
 | `strata/vaso/` | `vaso_support_enc` | Received `norepinephrine`, `epinephrine`, `phenylephrine`, `vasopressin`, `dopamine`, or `angiotensin` | First vasopressor `admin_dttm` → `discharge_dttm` |
 | `strata/vaso/icu/` | `vaso_icu_enc` | Vaso **AND** ICU | Same as `vaso/` |
 | `strata/vaso/no_icu/` | `vaso_no_icu_enc` | Vaso **AND NOT** ICU (by construction deaths) | Same as `vaso/` |
+| `strata/vaso/ed_icu/` | `vaso_ed_icu_enc` | First vasopressor in ED **AND** any subsequent location includes ICU | Same as `vaso/` |
+| `strata/vaso/ed_ward/` | `vaso_ed_ward_enc` | First vasopressor in ED **AND** any subsequent location includes ward but **NOT** ICU | Same as `vaso/` |
 | `strata/no_imv/` | `no_imv_enc` | Critically ill but **never** received invasive mechanical ventilation (`on_vent == 0`) | ICU stay |
 | `strata/no_imv/icu/` | `no_imv_icu_enc` | No IMV **AND** ICU | Same as `no_imv/` |
 | `strata/no_imv/no_icu/` | `no_imv_no_icu_enc` | No IMV **AND NOT** ICU (by construction deaths) | Same as `no_imv/` |
@@ -274,7 +278,7 @@ output/final/
 │   ├── icu/                    {tableone,figures,ecdf,bins,summary_stats}/
 │   ├── advanced_resp/          {... + icu/ + no_icu/}
 │   ├── nippv_hfnc/             {... + icu/ + no_icu/}
-│   ├── vaso/                   {... + icu/ + no_icu/}
+│   ├── vaso/                   {... + icu/ + no_icu/ + ed_icu/ + ed_ward/}
 │   ├── no_imv/                 {... + icu/ + no_icu/}
 │   └── deaths/                 {tableone,figures,ecdf,bins,summary_stats}/
 ├── validation/                 Data quality assessment

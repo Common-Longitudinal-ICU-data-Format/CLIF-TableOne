@@ -83,6 +83,8 @@ STRATUM_WINDOW_TYPE = {
     'vaso': 'vaso',
     'vaso/icu': 'vaso',
     'vaso/no_icu': 'vaso',
+    'vaso/ed_icu': 'vaso',
+    'vaso/ed_ward': 'vaso',
     'advanced_resp': 'resp',
     'advanced_resp/icu': 'resp',
     'advanced_resp/no_icu': 'resp',

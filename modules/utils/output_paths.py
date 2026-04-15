@@ -273,7 +273,7 @@ def ward_validation_json_reports_dir() -> Path:
 STRATA_NAMES = ('icu',
                 'advanced_resp', 'advanced_resp/icu', 'advanced_resp/no_icu',
                 'nippv_hfnc', 'nippv_hfnc/icu', 'nippv_hfnc/no_icu',
-                'vaso', 'vaso/icu', 'vaso/no_icu',
+                'vaso', 'vaso/icu', 'vaso/no_icu', 'vaso/ed_icu', 'vaso/ed_ward',
                 'deaths')
 
 

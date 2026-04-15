@@ -1817,6 +1817,68 @@ def main(memory_monitor=None, cohort_mode='critical_illness') -> bool:
     strobe_counts["2b_nippv_hfnc_hospitalizations"] = (final_cohort['nippv_hfnc_enc'] == 1).sum()
     strobe_counts["3_vasoactive_hospitalizations"] = (final_cohort['vaso_support_enc'] == 1).sum()
 
+    # ------------------------------------------------------------------
+    # ED-vasopressor sub-strata: identify encounters where the first
+    # vasopressor was administered in the ED, then classify by whether
+    # the patient subsequently went to ICU or Ward.
+    # Must run BEFORE medication data is deleted below.
+    # ------------------------------------------------------------------
+    _vaso_meds_df = clif.medication_admin_continuous.df[
+        clif.medication_admin_continuous.df['med_category'].str.lower().isin(
+            [d.lower() for d in vasoactive_meds]
+        )
+    ]
+    # Earliest vasopressor admin_dttm per encounter_block
+    first_vaso_time = (
+        _vaso_meds_df
+        .groupby('encounter_block')['admin_dttm']
+        .min()
+        .reset_index()
+        .rename(columns={'admin_dttm': 'first_vaso_dttm'})
+    )
+    # ED ADT rows (location_category already lowercased at line ~1542)
+    ed_adt = all_encounters[
+        all_encounters['location_category'] == 'ed'
+    ][['encounter_block', 'in_dttm', 'out_dttm']].copy()
+
+    # Temporal join: first pressor falls within an ED ADT window
+    vaso_ed_check = first_vaso_time.merge(ed_adt, on='encounter_block', how='inner')
+    vaso_ed_check = vaso_ed_check[
+        (vaso_ed_check['first_vaso_dttm'] >= vaso_ed_check['in_dttm']) &
+        (vaso_ed_check['first_vaso_dttm'] < vaso_ed_check['out_dttm'])
+    ]
+    # Keep one row per encounter_block (first matching ED window)
+    first_vaso_in_ed_df = (
+        vaso_ed_check[['encounter_block', 'first_vaso_dttm']]
+        .drop_duplicates(subset='encounter_block')
+    )
+    ed_vaso_blocks = set(first_vaso_in_ed_df['encounter_block'])
+    print(f"Encounters with first vasopressor in ED: {len(ed_vaso_blocks):,}")
+
+    # Post-pressor ADT locations for ED-pressor encounters
+    _post_pressor_adt = all_encounters[
+        all_encounters['encounter_block'].isin(ed_vaso_blocks)
+    ][['encounter_block', 'in_dttm', 'location_category']].merge(
+        first_vaso_in_ed_df, on='encounter_block', how='inner'
+    )
+    _post_pressor_adt = _post_pressor_adt[
+        _post_pressor_adt['in_dttm'] > _post_pressor_adt['first_vaso_dttm']
+    ]
+
+    # Classify: any post-pressor ICU → ed_icu; any post-pressor ward (no ICU) → ed_ward
+    _post_locs = _post_pressor_adt.groupby('encounter_block')['location_category'].agg(set)
+    ed_vaso_icu_blocks = set(
+        _post_locs[_post_locs.apply(lambda locs: any('icu' in loc for loc in locs))].index
+    )
+    ed_vaso_ward_blocks = set(
+        _post_locs[
+            _post_locs.apply(lambda locs: 'ward' in locs and not any('icu' in loc for loc in locs))
+        ].index
+    )
+    print(f"  ED→ICU: {len(ed_vaso_icu_blocks):,}, ED→Ward: {len(ed_vaso_ward_blocks):,}")
+
+    del _vaso_meds_df, ed_adt, vaso_ed_check, _post_pressor_adt, _post_locs
+
     # Memory cleanup: Clear medication initial load data
     print("Clearing medication initial load data from memory...")
     del vasoactives_df, clif.medication_admin_continuous
@@ -1836,6 +1898,18 @@ def main(memory_monitor=None, cohort_mode='critical_illness') -> bool:
     final_cohort['vaso_no_icu_enc'] = (
         (final_cohort['vaso_support_enc'] == 1) & (final_cohort['icu_enc'] == 0)
     ).astype(int)
+    # ED-vasopressor sub-strata: first pressor in ED, split by post-pressor
+    # disposition (any subsequent ICU vs ward-only, excluding encounters with
+    # neither ICU nor ward after the ED pressor).
+    final_cohort['vaso_ed_icu_enc'] = (
+        final_cohort['encounter_block'].isin(ed_vaso_icu_blocks)
+    ).astype(int)
+    final_cohort['vaso_ed_ward_enc'] = (
+        final_cohort['encounter_block'].isin(ed_vaso_ward_blocks)
+    ).astype(int)
+    _n_ed_icu = final_cohort['vaso_ed_icu_enc'].sum()
+    _n_ed_ward = final_cohort['vaso_ed_ward_enc'].sum()
+    print(f"ED vaso sub-strata (final cohort): ED→ICU: {_n_ed_icu:,}, ED→Ward: {_n_ed_ward:,}")
     final_cohort['high_support_icu_enc'] = (
         (final_cohort['high_support_enc'] == 1) & (final_cohort['icu_enc'] == 1)
     ).astype(int)
@@ -2116,6 +2190,7 @@ def main(memory_monitor=None, cohort_mode='critical_illness') -> bool:
                                'nippv_hfnc_icu_enc', 'nippv_hfnc_no_icu_enc',
                                'vaso_support_enc',
                                'vaso_icu_enc', 'vaso_no_icu_enc',
+                               'vaso_ed_icu_enc', 'vaso_ed_ward_enc',
                                'other_critically_ill']
     if cohort_mode == 'ward':
         final_cohort_merge_cols.append('ward_no_critical_care')
@@ -2129,6 +2204,13 @@ def main(memory_monitor=None, cohort_mode='critical_illness') -> bool:
     final_tableone_df = final_tableone_df.merge(
         cohort_df[['hospitalization_id', 'hospital_id']].drop_duplicates(),
         on='hospitalization_id',
+        how='left'
+    )
+
+    # Merge first-pressor-in-ED timestamp for timing metric in stratified tables
+    final_tableone_df = final_tableone_df.merge(
+        first_vaso_in_ed_df[['encounter_block', 'first_vaso_dttm']],
+        on='encounter_block',
         how='left'
     )
 
@@ -2633,6 +2715,22 @@ def main(memory_monitor=None, cohort_mode='critical_illness') -> bool:
                 dpi=300, bbox_inches='tight')
     plt.close()
 
+
+
+    # ==============================================================================
+    # ADT Location Coverage (overall cohort only)
+    # ==============================================================================
+    if cohort_mode != 'ward':
+        from modules.tableone.adt_coverage import run_adt_location_coverage
+        try:
+            run_adt_location_coverage(
+                clif=clif,
+                hospitalization_ids=final_hosp_ids,
+                output_csv_dir=output_dir,
+                output_fig_dir=figures_dir,
+            )
+        except Exception as e:
+            print(f"[WARN] ADT location coverage analysis failed: {e}")
 
 
     # ==============================================================================
@@ -3716,8 +3814,10 @@ def main(memory_monitor=None, cohort_mode='critical_illness') -> bool:
         _nee_df = vaso_df[['encounter_block', 'admin_dttm', 'med_category', 'med_dose']].copy()
         _nee_df['weighted_dose'] = _nee_df['med_category'].map(_NEE_WEIGHTS).fillna(0) * _nee_df['med_dose']
 
-        # Round to nearest hour to align concurrent medications
-        _nee_df['hour'] = _nee_df['admin_dttm'].dt.floor('h')
+        # Round to nearest hour to align concurrent medications.
+        # Strip timezone first — floor('h') fails on DST fall-back hours
+        # (AmbiguousTimeError). Timezone is irrelevant for hourly bucketing.
+        _nee_df['hour'] = _nee_df['admin_dttm'].dt.tz_localize(None).dt.floor('h')
 
         # Sum weighted doses per encounter per hour → instantaneous NEE
         _hourly_nee = (
@@ -5342,21 +5442,23 @@ def main(memory_monitor=None, cohort_mode='critical_illness') -> bool:
     print(f"Duplicate encounter_blocks: {duplicates}")
 
     # Debug: encounters where death_enc=1 but a row has neither expired nor hospice outcome
-    _mort_cols = ['patient_id', 'hospitalization_id', 'encounter_block',
-                  'admission_dttm', 'discharge_dttm', 'discharge_category',
-                  'death_enc', 'expired_outcome', 'hospice_outcome']
-    _death_rows = final_tableone_df[final_tableone_df['death_enc'] == 1][_mort_cols]
-    _problem_blocks = _death_rows.groupby('encounter_block').filter(
-        lambda g: ((g['expired_outcome'] == 0) & (g['hospice_outcome'] == 0)).any()
-    ).sort_values(['encounter_block', 'admission_dttm'])
+    # (expired_outcome/hospice_outcome only exist in critical-illness mode, not ward)
+    if cohort_mode != 'ward':
+        _mort_cols = ['patient_id', 'hospitalization_id', 'encounter_block',
+                      'admission_dttm', 'discharge_dttm', 'discharge_category',
+                      'death_enc', 'expired_outcome', 'hospice_outcome']
+        _death_rows = final_tableone_df[final_tableone_df['death_enc'] == 1][_mort_cols]
+        _problem_blocks = _death_rows.groupby('encounter_block').filter(
+            lambda g: ((g['expired_outcome'] == 0) & (g['hospice_outcome'] == 0)).any()
+        ).sort_values(['encounter_block', 'admission_dttm'])
 
-    os.makedirs(project_root / 'output/intermediate', exist_ok=True)
-    _problem_blocks.to_csv(
-        project_root / 'output/intermediate/mortality_dedup_debug.csv', index=False
-    )
-    print(f"\n🔍 Mortality dedup debug: {_problem_blocks['encounter_block'].nunique()} encounter_blocks "
-          f"with death_enc=1 but missing outcome breakdown")
-    print(f"   Saved: output/intermediate/mortality_dedup_debug.csv ({len(_problem_blocks)} rows)")
+        os.makedirs(project_root / 'output/intermediate', exist_ok=True)
+        _problem_blocks.to_csv(
+            project_root / 'output/intermediate/mortality_dedup_debug.csv', index=False
+        )
+        print(f"\n🔍 Mortality dedup debug: {_problem_blocks['encounter_block'].nunique()} encounter_blocks "
+              f"with death_enc=1 but missing outcome breakdown")
+        print(f"   Saved: output/intermediate/mortality_dedup_debug.csv ({len(_problem_blocks)} rows)")
 
     if duplicates > 0:
         print("\n⚠️  Multiple rows per encounter_block found. Keeping last value...")
@@ -5364,7 +5466,7 @@ def main(memory_monitor=None, cohort_mode='critical_illness') -> bool:
     else:
         tableone_df = final_tableone_df
 
-    if duplicates > 0 and len(_problem_blocks) > 0:
+    if cohort_mode != 'ward' and duplicates > 0 and len(_problem_blocks) > 0:
         _post = tableone_df[tableone_df['encounter_block'].isin(
             _problem_blocks['encounter_block'].unique()
         )][_mort_cols]
@@ -5373,7 +5475,8 @@ def main(memory_monitor=None, cohort_mode='critical_illness') -> bool:
         )
         print(f"   Post-dedup: {len(_post)} rows saved to mortality_dedup_debug_post.csv")
         del _post
-    del _death_rows, _problem_blocks
+    if cohort_mode != 'ward':
+        del _death_rows, _problem_blocks
 
     print(f"\nFinal tableone_df shape: {tableone_df.shape}")
 
@@ -6036,6 +6139,7 @@ def main(memory_monitor=None, cohort_mode='critical_illness') -> bool:
             # ── NEE rows (vaso strata) ─────────────────────────────────
             _NEE_STRATA = {
                 'vaso', 'vaso/icu', 'vaso/no_icu',
+                'vaso/ed_icu', 'vaso/ed_ward',
             }
             if stratum_name in _NEE_STRATA and 'nee_peak' in df_strat.columns:
                 _nee_peak = df_strat['nee_peak'].dropna()
@@ -6083,6 +6187,75 @@ def main(memory_monitor=None, cohort_mode='critical_illness') -> bool:
                     ], ignore_index=True)
                     print(f"  ✅ Added NEE rows ({len(_nee_peak):,} encounters, "
                           f"peak NEE median={_nee_peak.median():.3f})")
+
+            # ── Time to ICU/Ward after first ED pressor ───────────────
+            _ED_VASO_TIMING_STRATA = {'vaso/ed_icu', 'vaso/ed_ward'}
+            if stratum_name in _ED_VASO_TIMING_STRATA and 'first_vaso_dttm' in df_strat.columns:
+                _target_loc = 'icu' if stratum_name == 'vaso/ed_icu' else 'ward'
+                _target_label = 'ICU' if _target_loc == 'icu' else 'Ward'
+
+                # First post-pressor target-location in_dttm per encounter
+                _timing_adt = adt_cohort[
+                    adt_cohort['location_category'].str.contains(_target_loc, na=False)
+                    if _target_loc == 'icu'
+                    else adt_cohort['location_category'] == _target_loc
+                ][['encounter_block', 'in_dttm']].copy()
+                _timing_adt = _timing_adt.rename(columns={'in_dttm': 'target_in_dttm'})
+
+                _timing = df_strat[['encounter_block', 'first_vaso_dttm']].dropna(
+                    subset='first_vaso_dttm'
+                ).merge(_timing_adt, on='encounter_block', how='inner')
+                _timing = _timing[_timing['target_in_dttm'] > _timing['first_vaso_dttm']]
+
+                if len(_timing) > 0:
+                    # Keep earliest post-pressor target location per encounter
+                    _timing = _timing.sort_values('target_in_dttm').drop_duplicates(
+                        subset='encounter_block', keep='first'
+                    )
+                    _timing['hours_to_target'] = (
+                        _timing['target_in_dttm'] - _timing['first_vaso_dttm']
+                    ).dt.total_seconds() / 3600
+
+                    def _timing_stat(series):
+                        d = series.dropna()
+                        if len(d) == 0:
+                            return ''
+                        return f"{d.median():.1f} [{d.quantile(0.25):.1f}, {d.quantile(0.75):.1f}]"
+
+                    _timing_new = {'Variable': [
+                        f'Time to {_target_label} after first pressor (hours), median [Q1, Q3]',
+                    ]}
+                    # Merge timing back to df_strat for year splits
+                    _timing_by_enc = _timing[['encounter_block', 'hours_to_target']]
+                    _df_with_timing = df_strat.merge(_timing_by_enc, on='encounter_block', how='left')
+
+                    for _col in strat_table.columns:
+                        if _col == 'Variable':
+                            continue
+                        if _col == 'Overall':
+                            _timing_new[_col] = [_timing_stat(_df_with_timing['hours_to_target'])]
+                        else:  # year columns
+                            _yr_timing = _df_with_timing.loc[
+                                _df_with_timing['admission_year'] == int(_col), 'hours_to_target'
+                            ]
+                            _timing_new[_col] = [_timing_stat(_yr_timing)]
+
+                    _timing_rows = pd.DataFrame(_timing_new)
+                    # Insert after NEE rows, or after LOS section
+                    _timing_idx = strat_table[
+                        strat_table['Variable'].str.contains(
+                            'NEE|VFD|Post-device LOS|length of stay', case=False, na=False
+                        )
+                    ].index
+                    _timing_insert = _timing_idx[-1] + 1 if len(_timing_idx) > 0 else len(strat_table)
+                    strat_table = pd.concat([
+                        strat_table.iloc[:_timing_insert],
+                        _timing_rows,
+                        strat_table.iloc[_timing_insert:],
+                    ], ignore_index=True)
+                    print(f"  ✅ Added time-to-{_target_label} row "
+                          f"(median={_timing['hours_to_target'].median():.1f}h, "
+                          f"n={len(_timing):,})")
 
             # Slugify stratum_name for the filename — sub-strata resolve to the
             # parent directory so no nested icu/no_icu subdirs are created.
