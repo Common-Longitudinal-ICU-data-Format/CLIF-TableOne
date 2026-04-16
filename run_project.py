@@ -575,6 +575,121 @@ class ProjectRunner:
             }
             return False
 
+    def _record_step_timing(self, step_key, start_time):
+        """Stamp start/end/duration on self.results[step_key] after a step returns.
+
+        Safe no-op if the step's result dict was never created (e.g. the runner
+        exited early). Parent calls this right after each self.run_* call.
+        """
+        if self.results.get(step_key) is None:
+            self.results[step_key] = {}
+        end_time = datetime.now()
+        self.results[step_key]['start_time'] = start_time
+        self.results[step_key]['end_time'] = end_time
+        self.results[step_key]['duration_sec'] = (end_time - start_time).total_seconds()
+
+    def _parse_peak_rss(self, report_path):
+        """Extract 'Peak Memory: NNNN.N MB' from a step execution report. Returns float MB or None."""
+        import re
+        if not report_path.exists():
+            return None
+        try:
+            with open(report_path, 'r', encoding='utf-8') as f:
+                match = re.search(r'Peak Memory:\s+([\d.]+)\s+MB', f.read())
+            return float(match.group(1)) if match else None
+        except Exception:
+            return None
+
+    def generate_workflow_report(self):
+        """Write a unified workflow-level execution report stitching all step reports together.
+
+        Each step's wall-clock window and peak RSS are captured: duration from self.results
+        (stamped by _record_step_timing), peak RSS parsed from per-step report files.
+        """
+        from modules.utils.output_paths import meta_dir
+        report_path = meta_dir() / 'workflow_execution_report.txt'
+        report_path.parent.mkdir(parents=True, exist_ok=True)
+
+        end_time = datetime.now()
+        total_sec = (end_time - self.start_time).total_seconds()
+
+        def _fmt_duration(sec):
+            if sec is None:
+                return '—'
+            m, s = divmod(int(sec), 60)
+            h, m = divmod(m, 60)
+            return f"{h:02d}:{m:02d}:{s:02d}"
+
+        def _fmt_offset(ts):
+            if ts is None:
+                return '—'
+            return _fmt_duration((ts - self.start_time).total_seconds())
+
+        def _fmt_rss(mb):
+            if mb is None:
+                return '—'
+            return f"{mb:>10,.1f} MB"
+
+        md = meta_dir()
+        step_rows = [
+            ('Step 1: Validation',       self.results.get('validation'),     None),
+            ('Step 2: CI Table One',     self.results.get('tableone'),       md / 'tableone_execution_report.txt'),
+            ('Step 2b: Ward Table One',  self.results.get('tableone_ward'),  md / 'tableone_ward_execution_report.txt'),
+            ('Step 3: ECDF',             self.results.get('get_ecdf'),       md / 'ecdf_execution_report.txt'),
+        ]
+
+        peaks = {}
+        for label, r, report_file in step_rows:
+            if r is None:
+                continue
+            peaks[label] = self._parse_peak_rss(report_file) if report_file else None
+
+        with open(report_path, 'w', encoding='utf-8') as f:
+            f.write("="*80 + "\n")
+            f.write("WORKFLOW EXECUTION REPORT\n")
+            f.write("="*80 + "\n\n")
+
+            f.write(f"Command: {' '.join(sys.argv)}\n")
+            f.write(f"Start:   {self.start_time.strftime('%Y-%m-%d %H:%M:%S')}\n")
+            f.write(f"End:     {end_time.strftime('%Y-%m-%d %H:%M:%S')}\n")
+            f.write(f"Total:   {_fmt_duration(total_sec)}\n\n")
+
+            f.write("="*80 + "\n")
+            f.write("STEP TIMELINE\n")
+            f.write("="*80 + "\n\n")
+
+            header = f"{'Step':<28} {'Start':>10} {'End':>10} {'Duration':>10} {'Peak RSS':>14}   Report\n"
+            f.write(header)
+            f.write('-' * (len(header) - 1) + '\n')
+
+            for label, r, report_file in step_rows:
+                if r is None:
+                    continue
+                start = r.get('start_time')
+                end = r.get('end_time')
+                dur = r.get('duration_sec')
+                peak = peaks.get(label)
+                report_name = report_file.name if report_file is not None else '(no report — subprocess)'
+                f.write(
+                    f"{label:<28} {_fmt_offset(start):>10} {_fmt_offset(end):>10} "
+                    f"{_fmt_duration(dur):>10} {_fmt_rss(peak):>14}   {report_name}\n"
+                )
+
+            f.write("\n")
+            f.write("="*80 + "\n")
+            f.write("PEAK ACROSS ALL STEPS\n")
+            f.write("="*80 + "\n\n")
+
+            valid_peaks = {k: v for k, v in peaks.items() if v is not None}
+            if valid_peaks:
+                winner = max(valid_peaks, key=valid_peaks.get)
+                f.write(f"Peak RSS:      {valid_peaks[winner]:,.1f} MB (during {winner})\n")
+            else:
+                f.write("Peak RSS:      — (no step reports available)\n")
+            f.write(f"Total Runtime: {_fmt_duration(total_sec)}\n")
+
+        print(f"\n📊 Workflow report saved: {report_path}")
+
     def generate_summary_report(self):
         """Generate final summary report."""
         self.print_header("WORKFLOW SUMMARY")
@@ -720,11 +835,13 @@ class ProjectRunner:
         # Step 1: Validation
         if validate:
             print("\n[DEBUG] Starting validation step...")
+            _t0 = datetime.now()
             val_success, critical_tables_ok = self.run_validation(
                 tables=kwargs.get('tables'),
                 verbose=kwargs.get('verbose', False),
                 no_summary=kwargs.get('no_summary', False)
             )
+            self._record_step_timing('validation', _t0)
             print(f"[DEBUG] Validation completed. val_success={val_success}, critical_tables_ok={critical_tables_ok}")
 
             # Decide whether to proceed based on validation results
@@ -741,28 +858,36 @@ class ProjectRunner:
                     self.logger.info("Use --continue-on-error to proceed anyway.")
 
                 self.generate_summary_report()
+                self.generate_workflow_report()
                 return False
 
         # Step 2: Critical-illness Table One Generation
         if tableone:
             print("\n[DEBUG] Starting Table One generation (critical-illness)...")
+            _t0 = datetime.now()
             tbl_success = self.run_tableone()
+            self._record_step_timing('tableone', _t0)
 
         # Step 2b: Ward Table One Generation (isolated subprocess)
         # Independent of critical-illness Table One — has its own cohort and writes
         # to output/final/overall_ward/ + final_tableone_ward_df.parquet.
         if ward_tableone:
             print("\n[DEBUG] Starting Ward Table One generation (isolated subprocess)...")
+            _t0 = datetime.now()
             self.run_tableone_ward()
+            self._record_step_timing('tableone_ward', _t0)
 
         # Step 3: Get ECDF Bins
         if get_ecdf:
+            _t0 = datetime.now()
             ecdf_success = self.run_get_ecdf(
                 visualize=kwargs.get('visualize', False)
             )
+            self._record_step_timing('get_ecdf', _t0)
 
         # Generate summary
         overall_success = self.generate_summary_report()
+        self.generate_workflow_report()
 
         # App launch logic - launch unless critical tables failed
         # Allow override with --continue-on-error

@@ -5,12 +5,13 @@ The output/final/ directory is organized by cohort first, artifact type second:
 
     output/final/
     ├── overall/             critical-illness cohort (ICU stay OR died/hospice)
-    │   ├── tableone/        CSVs from the overall cohort
-    │   ├── figures/         PNG/HTML/PDF visualizations from the overall cohort
-    │   ├── ecdf/            ECDF parquets ({labs,vitals,respiratory_support})
-    │   ├── bins/            binned distributions
-    │   ├── summary_stats/   summary stats JSONs/CSVs
-    │   └── mcide/           MCIDE value counts
+    │   ├── tableone/                CSVs from the overall cohort
+    │   ├── figures/                 PNG/HTML/PDF visualizations from the overall cohort
+    │   ├── ecdf/                    ECDF parquets ({labs,vitals,respiratory_support})
+    │   ├── bins/                    binned distributions
+    │   ├── summary_stats/           summary stats JSONs/CSVs
+    │   ├── mcide/                   MCIDE value counts
+    │   └── ventilated_aggregates/   cross-site KM + daily P/F|S/F aggregates (no PHI)
     ├── overall_ward/        ward cohort (every adult encounter that touched a ward)
     │   ├── tableone/        ward Table One CSVs
     │   ├── figures/         ward CONSORT, sankey, code status, etc.
@@ -31,8 +32,8 @@ The output/final/ directory is organized by cohort first, artifact type second:
     │   ├── feedback/        *_validation_response.json
     │   ├── monthly_trends/  monthly trend CSVs
     │   └── pdf_reports/     validation report PDFs (per-table + combined)
-    ├── configs/             config snapshots used for the run
     ├── meta/                run metadata, logs, status files
+    │   ├── configs/         config snapshots used for the run
     │   └── workflow_logs/   timestamped pipeline execution logs
     └── stats/               collection_statistics.csv (ECDF coverage)
 
@@ -59,8 +60,8 @@ STRATA = FINAL / 'strata'
 STRATA_WARD = OVERALL_WARD / 'strata'
 VALIDATION = FINAL / 'validation'
 PDF_REPORTS = VALIDATION / 'pdf_reports'
-CONFIGS = FINAL / 'configs'
 META = FINAL / 'meta'
+CONFIGS = META / 'configs'
 STATS = FINAL / 'stats'
 
 
@@ -137,6 +138,14 @@ def mcide_dir() -> Path:
     return OVERALL / 'mcide'
 
 
+def ventilated_aggregates_dir() -> Path:
+    """Directory for cross-site shareable ventilated aggregates (KM + daily P/F|S/F CSVs).
+
+    Only the overall critical-illness cohort produces these; skipped in ward mode.
+    """
+    return OVERALL / 'ventilated_aggregates'
+
+
 def validation_json_reports_dir() -> Path:
     """Directory for per-table DQA JSONs and clifpy CSVs (validation/json_reports/)."""
     return VALIDATION / 'json_reports'
@@ -163,7 +172,7 @@ def validation_pdf_reports_dir() -> Path:
 
 
 def configs_dir() -> Path:
-    """Directory for config snapshots used during the run."""
+    """Directory for config snapshots (nested under meta/)."""
     return CONFIGS
 
 
@@ -295,6 +304,7 @@ def ensure_output_tree() -> None:
         bins_dir(table_type='respiratory_support'),
         summary_stats_dir(),
         mcide_dir(),
+        ventilated_aggregates_dir(),
         # Validation (DQA)
         validation_json_reports_dir(),
         validation_consolidated_dir(),

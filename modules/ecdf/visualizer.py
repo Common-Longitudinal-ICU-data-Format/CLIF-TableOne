@@ -35,7 +35,7 @@ ECDF_COLOR = '#000000'
 # Data loading
 # ============================================================================
 
-def load_lab_vital_config(config_path: str = 'configs/lab_vital_config.yaml') -> dict:
+def load_lab_vital_config(config_path: str = 'meta/configs/lab_vital_config.yaml') -> dict:
     """Load lab/vital configuration for normal ranges."""
     if not os.path.exists(config_path):
         return {}
@@ -376,7 +376,8 @@ def generate_interactive_html(
         panel_labels = ['Overall']
 
     # Load normal-range config
-    config_path = os.path.join(os.path.dirname(base_dir), 'configs', 'lab_vital_config.yaml')
+    from modules.utils.output_paths import configs_dir
+    config_path = str(configs_dir() / 'lab_vital_config.yaml')
     config = load_lab_vital_config(config_path)
 
     metrics_data = _collect_all_metrics(base_dir, files, sub_strata_suffixes)

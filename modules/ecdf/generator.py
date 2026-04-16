@@ -20,10 +20,6 @@ Usage:
 
 Output structure:
     output/final/
-    ├── configs/
-    │   ├── clif_config.json
-    │   ├── lab_vital_config.yaml
-    │   └── outlier_config.yaml
     ├── overall/
     │   ├── ecdf/
     │   │   ├── labs/{category}_{unit}.parquet
@@ -38,7 +34,12 @@ Output structure:
     │   ├── advanced_resp/{ecdf,bins}/...
     │   ├── vaso/{ecdf,bins}/...
     │   └── deaths/{ecdf,bins}/...
-    └── meta/unit_mismatches.log
+    └── meta/
+        ├── configs/
+        │   ├── clif_config.json
+        │   ├── lab_vital_config.yaml
+        │   └── outlier_config.yaml
+        └── unit_mismatches.log
 """
 
 import json
@@ -152,7 +153,7 @@ def copy_configs_to_output(
     outlier_config_path: str = None,
     lab_vital_config_path: str = None
 ):
-    """Copy configuration files to the top-level output/final/configs/ directory.
+    """Copy configuration files to output/final/meta/configs/.
 
     The ``output_dir`` argument is accepted for backwards compatibility but is
     ignored — configs are always written to the canonical CONFIGS directory

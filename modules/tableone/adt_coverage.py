@@ -130,7 +130,12 @@ def _create_dwell_bar(dwell_summary: pl.DataFrame) -> go.Figure:
         title="Total dwell hours per location_category (bar label = # distinct encounters)",
     )
     fig.update_traces(textposition="outside")
-    fig.update_layout(xaxis_tickangle=-30, height=450)
+    _max_hours = dwell_summary.select(pl.col("total_hours").max()).item() or 0
+    fig.update_layout(
+        xaxis_tickangle=-30,
+        height=450,
+        yaxis_range=[0, _max_hours * 1.15],
+    )
     return fig
 
 
@@ -168,7 +173,7 @@ def _create_los_box(adt_pl: pl.DataFrame) -> go.Figure:
         title="Distribution of individual stay durations by location_category",
         yaxis_title="Per-stay length of stay (hours)",
         xaxis_title="ADT location_category",
-        xaxis_tickangle=0, height=480,
+        xaxis_tickangle=-45, height=480,
     )
     return fig
 

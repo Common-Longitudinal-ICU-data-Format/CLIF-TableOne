@@ -609,7 +609,7 @@ def main(memory_monitor=None, cohort_mode='critical_illness') -> bool:
     with open(config_path, 'r', encoding='utf-8') as f:
         config = json.load(f)
 
-    checkpoint("1. Configuration Loaded")
+    checkpoint("Configuration Loaded")
 
     # Create the output directory for tableone results if it does not already exist
     # Create necessary output directories within output/final
@@ -1505,7 +1505,7 @@ def main(memory_monitor=None, cohort_mode='critical_illness') -> bool:
     # Clean up intermediate variables
     del hosp_filtered, adt_filtered
     gc.collect()
-    checkpoint("2. Core Data Loaded & Stitched")
+    checkpoint("Core Data Loaded & Stitched")
 
     # After your stitching code, add these calculations:
 
@@ -1773,7 +1773,7 @@ def main(memory_monitor=None, cohort_mode='critical_illness') -> bool:
     print("Clearing respiratory support intermediate data from memory...")
     del advanced_support_df, nippv_hfnc_df
     gc.collect()
-    checkpoint("3. Respiratory Support Processed")
+    checkpoint("Respiratory Support Processed")
 
 
     # ==============================================================================
@@ -1926,7 +1926,7 @@ def main(memory_monitor=None, cohort_mode='critical_illness') -> bool:
     print("Clearing medication initial load data from memory...")
     del vasoactives_df, clif.medication_admin_continuous
     gc.collect()
-    checkpoint("4. Medications Processed")
+    checkpoint("Medications Processed")
     # Missing icu_enc means not ICU
     final_cohort['icu_enc'] = final_cohort['icu_enc'].fillna(0).astype(int)
     # Sub-strata of vaso and advanced_resp: recipients of each support type
@@ -2197,7 +2197,7 @@ def main(memory_monitor=None, cohort_mode='critical_illness') -> bool:
     plt.close('all')
     del sets_dict, summary_df
     gc.collect()
-    checkpoint("5. CONSORT Diagram Created")
+    checkpoint("CONSORT Diagram Created")
 
 
     # ==============================================================================
@@ -2897,6 +2897,67 @@ def main(memory_monitor=None, cohort_mode='critical_illness') -> bool:
         # Cleanup temp columns
         resp_stitched.drop(columns=['next_recorded_dttm', 'duration_hours'], inplace=True)
 
+        # ==============================================================================
+        # ## Intubation / extubation event detection
+        # Two-lookback / two-lookforward pattern on device_category (clifpy #124)
+        # ==============================================================================
+        from modules.tableone.extubation_calculator import detect_intubation_extubation
+
+        extub_per_enc, extub_per_episode = detect_intubation_extubation(
+            resp_stitched, final_tableone_df, id_col='encounter_block'
+        )
+
+        # Drop any existing columns from a prior run before merging (idempotent)
+        _extub_cols = [c for c in extub_per_enc.columns if c != 'encounter_block']
+        _dup = [c for c in _extub_cols if c in final_tableone_df.columns]
+        if _dup:
+            final_tableone_df = final_tableone_df.drop(columns=_dup)
+        final_tableone_df = final_tableone_df.merge(
+            extub_per_enc, on='encounter_block', how='left'
+        )
+
+        # Save per-episode table for downstream repeated-measures analyses
+        _imv_ep_path = project_root / 'output' / 'intermediate' / 'imv_episodes.csv'
+        os.makedirs(_imv_ep_path.parent, exist_ok=True)
+        extub_per_episode.to_csv(_imv_ep_path, index=False)
+        print(f"  Per-episode IMV data written to: {_imv_ep_path}")
+
+        # ==============================================================================
+        # ## Ventilated aggregates (CLIF-TableOne issue #10)
+        # KM curve + daily min P/F and S/F post-intubation; PNGs + cross-site CSVs
+        # ==============================================================================
+        from modules.tableone.extubation_plots import (
+            plot_km_time_to_extubation,
+            plot_min_pf_sf_per_day_post_intubation,
+        )
+
+        from modules.utils.output_paths import ventilated_aggregates_dir
+        _vent_agg_dir = ventilated_aggregates_dir()
+        _vent_agg_dir.mkdir(parents=True, exist_ok=True)
+
+        try:
+            plot_km_time_to_extubation(
+                final_tableone_df,
+                figures_dir=figures_dir,
+                csv_dir=str(_vent_agg_dir),
+            )
+        except Exception as e:
+            print(f"  ⚠️ KM plot failed: {e}")
+            import traceback; traceback.print_exc()
+
+        try:
+            plot_min_pf_sf_per_day_post_intubation(
+                final_tableone_df,
+                data_directory=config['tables_path'],
+                filetype=config['file_type'],
+                timezone=config['timezone'],
+                figures_dir=figures_dir,
+                csv_dir=str(_vent_agg_dir),
+            )
+        except Exception as e:
+            print(f"  ⚠️ Daily PF/SF plot failed: {e}")
+            import traceback; traceback.print_exc()
+
 
         # ==============================================================================
         # ## Initial Mode category
@@ -2944,7 +3005,7 @@ def main(memory_monitor=None, cohort_mode='critical_illness') -> bool:
         print("Clearing ventilation mode intermediate data from memory...")
         del resp_imv, resp_post_start, initial_modes
         gc.collect()
-        checkpoint("6. Ventilation Modes Processed")
+        checkpoint("Ventilation Modes Processed")
 
         #  Calculate Ventilator Settings Statistics (Median and IQR)
         # Filter resp_stitched to only those encounters on IMV
@@ -3590,7 +3651,7 @@ def main(memory_monitor=None, cohort_mode='critical_illness') -> bool:
         del resp_stitched, resp_stitched_imv, imv_encounters
         plt.close('all')
         gc.collect()
-        checkpoint("7. Respiratory Detailed Analysis Complete")
+        checkpoint("Respiratory Detailed Analysis Complete")
 
         final_tableone_df.columns
 
@@ -4281,7 +4342,7 @@ def main(memory_monitor=None, cohort_mode='critical_illness') -> bool:
     del meds_df, meds_converted, vaso_df, vaso_stats, med_flags
     plt.close('all')
     gc.collect()
-    checkpoint("8. Medication Analysis Complete")
+    checkpoint("Medication Analysis Complete")
 
 
     # ==============================================================================
@@ -4315,13 +4376,6 @@ def main(memory_monitor=None, cohort_mode='critical_illness') -> bool:
     # Summary statistics moved to MCIDE collection (generate_mcide_and_stats.py)
     # create_summary_table(clif.labs, 'lab_value_numeric',group_by_cols=['lab_category', 'reference_unit'],
     #                     output_dir=summary_stats_dir)
-
-    # Memory cleanup: Clear labs dataframe (keep the table object)
-    # print("Clearing labs dataframe from memory...")
-    # clif.labs.df = None  # Clear the large dataframe but keep the table object
-    # gc.collect()
-    # checkpoint("9. Labs Processing Complete")
-
 
     # ==============================================================================
     # # Comorbidity Index
@@ -4433,7 +4487,7 @@ def main(memory_monitor=None, cohort_mode='critical_illness') -> bool:
     plt.savefig(os.path.join(figures_dir, 'comorbidities_per_1000_barplot.png'), dpi=300, bbox_inches='tight', facecolor='white')
     plt.close()
 
-
+    checkpoint("CCI Complete")
 
     # ==============================================================================
     # # ECMO
@@ -4470,6 +4524,7 @@ def main(memory_monitor=None, cohort_mode='critical_illness') -> bool:
     except FileNotFoundError as e:
         print(f"Warning: Failed to load the ECMO table: {e}. Proceeding without ECMO data.")
 
+    checkpoint("ECMO Complete")
 
     # ==============================================================================
     # # CRRT Therapy
@@ -4509,6 +4564,7 @@ def main(memory_monitor=None, cohort_mode='critical_illness') -> bool:
     except FileNotFoundError as e:
         print(f"Warning: Failed to load the ECMO table: {e}. Proceeding without CRRT data.")
 
+    checkpoint("CRRT Complete")
 
     # ==============================================================================
     # # Sepsis (CDC Adult Sepsis Event)
@@ -4588,6 +4644,7 @@ def main(memory_monitor=None, cohort_mode='critical_illness') -> bool:
             final_tableone_df['sepsis_events_by_sepsis_col'] = 0
             final_tableone_df['sepsis_events_by_episode_id'] = 0
 
+    checkpoint("Sepsis Complete")
 
     # ==============================================================================
     # # Patient Assessments
@@ -4775,7 +4832,7 @@ def main(memory_monitor=None, cohort_mode='critical_illness') -> bool:
         print("\nSkipping SOFA computation block (ward mode)")
 
     for _sofa_iter in (range(1) if cohort_mode != 'ward' else range(0)):
-        checkpoint("10. Starting SOFA Computation")
+        checkpoint("Starting SOFA Computation")
         print("Preparing SOFA cohort for Polars computation...")
 
         # Filter to icu_enc == 1
@@ -4982,7 +5039,7 @@ def main(memory_monitor=None, cohort_mode='critical_illness') -> bool:
         print("✅ SOFA data cleared from memory")
         print("="*80 + "\n")
 
-        checkpoint("11. SOFA Computation Complete + Cleanup")
+        checkpoint("SOFA Computation Complete")
 
     # ==============================================================================
     # # Outside of Table1- on whole dataset
@@ -5449,7 +5506,7 @@ def main(memory_monitor=None, cohort_mode='critical_illness') -> bool:
                     dpi=300, bbox_inches='tight', facecolor='white', edgecolor='none')
         plt.close()
 
-        checkpoint("12. Hospice/CCI Analysis Complete")
+        checkpoint("Mortality Trends Complete")
 
     strobe_counts
 
@@ -5796,7 +5853,46 @@ def main(memory_monitor=None, cohort_mode='critical_illness') -> bool:
                     setting_stats = imv_subset[[med_col, f'{setting}_q1', f'{setting}_q3']].median()
                     rows.append((f"  {label}, median [Q1, Q3]",
                                 f"{setting_stats[0]:.1f} [{setting_stats[1]:.1f}, {setting_stats[2]:.1f}]"))
-    
+
+            # ── Extubation metrics (two-lookback/two-lookforward detection) ──
+            if 'extubation_status' in imv_subset.columns:
+                _extub_only = imv_subset[imv_subset['extubation_status'] == 'extubated']
+                if len(_extub_only) > 0 and 'time_to_extubation_hours' in _extub_only.columns:
+                    _t = _extub_only['time_to_extubation_hours'].dropna()
+                    if len(_t) > 0:
+                        rows.append(("Time to extubation (hrs), median [Q1, Q3]",
+                                     f"{_t.median():.1f} [{_t.quantile(.25):.1f}, {_t.quantile(.75):.1f}]"))
+                cat_n_pct_fast(imv_subset, 'extubation_status', 'Extubation outcome', imv_n)
+
+            if 'pre_admission_imv' in df.columns:
+                _n = int(df['pre_admission_imv'].fillna(0).sum())
+                if _n > 0:
+                    rows.append(("Pre-admit IMV (excluded from time-to-extubation), n (%)",
+                                 f"{_n:,} ({100*_n/N_enc:.1f}%)"))
+
+            if 'intubated_within_24hr_admit' in df.columns:
+                _n = int(df['intubated_within_24hr_admit'].fillna(0).sum())
+                rows.append(("Intubated ≤24hr of admission, n (%)",
+                             f"{_n:,} ({100*_n/N_enc:.1f}%)"))
+
+            if 'imv_episodes_n' in df.columns:
+                _n_reint = int((df['imv_episodes_n'].fillna(0) > 1).sum())
+                rows.append(("Reintubation (≥2 IMV episodes), n (%)",
+                             f"{_n_reint:,} ({100*_n_reint/N_enc:.1f}%)"))
+
+                if 'time_to_reintubation_hours' in imv_subset.columns:
+                    _r = imv_subset['time_to_reintubation_hours'].dropna()
+                    if len(_r) > 0:
+                        rows.append(("  Time to reintubation (hrs), median [Q1, Q3]",
+                                     f"{_r.median():.1f} [{_r.quantile(.25):.1f}, {_r.quantile(.75):.1f}]"))
+
+                if 'extubation_failure_48hr' in imv_subset.columns and 'extubation_status' in imv_subset.columns:
+                    _extubated = imv_subset[imv_subset['extubation_status'] == 'extubated']
+                    if len(_extubated) > 0:
+                        _n_fail = int(_extubated['extubation_failure_48hr'].fillna(0).sum())
+                        rows.append(("  Extubation failure ≤48hr, n (% of extubated)",
+                                     f"{_n_fail:,} ({100*_n_fail/len(_extubated):.1f}%)"))
+
         # -------------------------------------------------------------------------
         # 10. Vasopressors
         # -------------------------------------------------------------------------
@@ -5935,6 +6031,8 @@ def main(memory_monitor=None, cohort_mode='critical_illness') -> bool:
     tbl_overall.to_csv(_t1o_path, index=False)
     print(f"\n✅ Saved: {_t1o_path}")
 
+    checkpoint("Overall Table One Computed")
+
     # ============================================================================
     # Step 4: Generate by Year (Optimized)
     # ============================================================================
@@ -6001,6 +6099,7 @@ def main(memory_monitor=None, cohort_mode='critical_illness') -> bool:
             print(f"⚠️ PF/SF calculation failed: {e}")
             import traceback
             traceback.print_exc()
+        checkpoint("PF/SF Ratios Computed")
 
     # ============================================================================
     # Step 5: Generate Table Ones by Encounter Type (with year columns)
@@ -6358,6 +6457,8 @@ def main(memory_monitor=None, cohort_mode='critical_illness') -> bool:
             except Exception as e:
                 print(f"  ⚠️ PF/SF comparison figure (no_imv) failed: {e}")
 
+        checkpoint("Stratified Table Ones Complete")
+
     # ============================================================================
     # NIH Enrollment Report — race × ethnicity × sex cross-tabulation
     # ============================================================================
@@ -6513,11 +6614,11 @@ def main(memory_monitor=None, cohort_mode='critical_illness') -> bool:
     print("\nFinal memory cleanup...")
     plt.close('all')
     gc.collect()
-    checkpoint("13. Table One Generation Complete")
+    checkpoint("Table One Generation Complete")
     print("✅ Memory cleanup complete")
 
     # Return success
-    checkpoint("14. Final Cleanup - Ready to Exit")
+    checkpoint("Final Cleanup - Ready to Exit")
     return True
 
 

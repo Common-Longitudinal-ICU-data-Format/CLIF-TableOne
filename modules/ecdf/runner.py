@@ -8,10 +8,11 @@ progress tracking and output validation.
 import os
 import sys
 import json
-import time
 import traceback
 from pathlib import Path
 from datetime import datetime
+
+from modules.utils.memory_monitor import MemoryMonitor
 
 
 class ECDFRunner:
@@ -20,7 +21,7 @@ class ECDFRunner:
     def __init__(self, config=None):
         """Initialize ECDF runner with configuration."""
         self.config = config or self.load_config()
-        self.start_time = None
+        self.memory_monitor = None
         self.project_root = Path(__file__).parent.parent.parent
 
     def load_config(self):
@@ -304,6 +305,9 @@ class ECDFRunner:
             # Discover lab category-unit combinations
             lab_category_units = discover_lab_category_units(db)
 
+            if self.memory_monitor is not None:
+                self.memory_monitor.checkpoint("Time Windows Extracted")
+
             # Compute statistics
             output_dir = self.project_root / 'output' / 'final'
             stats_path = compute_collection_statistics(
@@ -322,6 +326,9 @@ class ECDFRunner:
                 print(f"\n{'='*80}")
                 print("⚠️  COLLECTION STATISTICS GENERATED NO DATA")
                 print(f"{'='*80}")
+
+            if self.memory_monitor is not None:
+                self.memory_monitor.checkpoint("Overall Collection Stats Complete")
 
             # Stratified collection statistics
             try:
@@ -352,7 +359,13 @@ class ECDFRunner:
             except FileNotFoundError as e:
                 print(f"\n  ⚠️ Skipping stratified collection statistics: {e}")
 
+            if self.memory_monitor is not None:
+                self.memory_monitor.checkpoint("Stratified Collection Stats Complete")
+
             db.close()
+
+            if self.memory_monitor is not None:
+                self.memory_monitor.checkpoint("DuckDB Closed")
 
             return True
 
@@ -365,11 +378,13 @@ class ECDFRunner:
             traceback.print_exc()
             return False
 
-    def generate_report(self, success, validation_passed, total_time):
+    def generate_report(self, success, validation_passed):
         """Generate a summary report."""
         from modules.utils.output_paths import meta_dir
         report_path = meta_dir() / 'ecdf_execution_report.txt'
         report_path.parent.mkdir(parents=True, exist_ok=True)
+
+        summary = self.memory_monitor.get_summary() if self.memory_monitor is not None else None
 
         with open(report_path, 'w', encoding='utf-8') as f:
             f.write("="*80 + "\n")
@@ -380,14 +395,31 @@ class ECDFRunner:
             f.write(f"Status: {'✅ SUCCESS' if success else '❌ FAILED'}\n")
             f.write(f"Validation: {'✅ PASSED' if validation_passed else '⚠️  INCOMPLETE'}\n\n")
 
-            f.write(f"Total Time: {total_time:.1f} seconds ({total_time/60:.1f} minutes)\n\n")
+            if summary is not None:
+                f.write("="*80 + "\n")
+                f.write("MEMORY USAGE SUMMARY\n")
+                f.write("="*80 + "\n\n")
+
+                f.write(f"Start Memory:     {summary['start_memory_mb']:.1f} MB\n")
+                f.write(f"End Memory:       {summary['end_memory_mb']:.1f} MB\n")
+                f.write(f"Peak Memory:      {summary['peak_memory_mb']:.1f} MB\n")
+                f.write(f"Memory Increase:  {summary['memory_increase_mb']:.1f} MB\n")
+                f.write(f"Total Time:       {summary['total_time_sec']:.1f} seconds ({summary['total_time_sec']/60:.1f} minutes)\n\n")
+
+                if summary['checkpoints']:
+                    f.write("="*80 + "\n")
+                    f.write("MEMORY CHECKPOINTS\n")
+                    f.write("="*80 + "\n\n")
+
+                    for cp in summary['checkpoints']:
+                        f.write(f"{cp['label']:<40} Memory: {cp['memory_mb']:>8.1f} MB | Peak: {cp['peak_mb']:>8.1f} MB | Time: {cp['elapsed_sec']:>8.1f}s\n")
+                    f.write("\n")
 
             f.write("="*80 + "\n")
             f.write("OUTPUT STRUCTURE\n")
             f.write("="*80 + "\n\n")
 
             f.write("output/final/\n")
-            f.write("├── configs/                       # Configuration files\n")
             f.write("├── overall/\n")
             f.write("│   ├── ecdf/{labs,vitals,respiratory_support}/   # Overall ECDF parquets\n")
             f.write("│   └── bins/{labs,vitals,respiratory_support}/   # Overall bin parquets\n")
@@ -399,6 +431,7 @@ class ECDFRunner:
             f.write("├── stats/                         # Collection statistics CSV\n")
             f.write("│   └── collection_statistics.csv\n")
             f.write("└── meta/\n")
+            f.write("    ├── configs/                   # Configuration snapshots\n")
             f.write("    ├── ecdf_execution_report.txt\n")
             f.write("    └── unit_mismatches.log\n")
 
@@ -418,7 +451,8 @@ class ECDFRunner:
         print("ECDF AND BINS GENERATION")
         print("="*80 + "\n")
 
-        self.start_time = time.time()
+        self.memory_monitor = MemoryMonitor()
+        self.memory_monitor.checkpoint("Initialization")
 
         # Step 1: Validate configuration
         print(f"{'='*80}")
@@ -429,13 +463,19 @@ class ECDFRunner:
             print("\n❌ Configuration validation failed. Exiting.")
             return False
 
+        self.memory_monitor.checkpoint("Config Validated")
+
         # Step 2: Check dependencies
         if not self.check_dependencies():
             print("\n❌ Dependency check failed. Exiting.")
             return False
 
+        self.memory_monitor.checkpoint("Dependencies Checked")
+
         # Step 3: Run ECDF generation
+        self.memory_monitor.checkpoint("Script Start")
         success = self.execute_ecdf_generation()
+        self.memory_monitor.checkpoint("Overall ECDF/Bins Computed")
 
         # Step 4: Run collection statistics generation
         stats_success = False
@@ -446,7 +486,9 @@ class ECDFRunner:
 
         # Step 5: Run visualization (optional)
         if success and visualize:
+            self.memory_monitor.checkpoint("Starting Visualization")
             viz_success = self.execute_visualization()
+            self.memory_monitor.checkpoint("Visualization Complete")
             if not viz_success:
                 print("\n⚠️  ECDF generation succeeded but visualization failed")
 
@@ -455,10 +497,11 @@ class ECDFRunner:
         if success:
             validation_passed = self.validate_outputs()
 
-        total_time = time.time() - self.start_time
+        self.memory_monitor.checkpoint("ECDF Generation Complete")
+        total_time = self.memory_monitor.get_summary()['total_time_sec']
 
         # Step 6: Generate report
-        self.generate_report(success, validation_passed, total_time)
+        self.generate_report(success, validation_passed)
 
         # Print summary
         print(f"\n{'='*80}")
