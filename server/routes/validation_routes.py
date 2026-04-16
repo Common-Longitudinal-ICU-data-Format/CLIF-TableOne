@@ -1,9 +1,22 @@
 """DQA validation result routes."""
 
+import math
+
 from fastapi import APIRouter, HTTPException
 from server.services import cache_service
 from modules.cli.pdf_generator import _collect_dqa_issues, DQA_CATEGORIES
 from modules.utils.feedback import create_error_id
+
+
+def _sanitize_floats(obj):
+    """Replace NaN/Inf floats with None so JSONResponse doesn't choke."""
+    if isinstance(obj, float) and (math.isnan(obj) or math.isinf(obj)):
+        return None
+    if isinstance(obj, dict):
+        return {k: _sanitize_floats(v) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [_sanitize_floats(v) for v in obj]
+    return obj
 
 router = APIRouter(prefix="/api", tags=["validation"])
 
@@ -95,7 +108,7 @@ async def get_validation(name: str):
     warning_count = sum(1 for i in all_issues if i["severity"] == "warning")
     overall_pct = round(total_passed / total_checks * 100, 1) if total_checks else 100
 
-    return {
+    return _sanitize_floats({
         "table_name": name,
         "overall_pct": overall_pct,
         "total_passed": total_passed,
@@ -108,4 +121,4 @@ async def get_validation(name: str):
         },
         "issues": all_issues,
         "raw": validation,
-    }
+    })
