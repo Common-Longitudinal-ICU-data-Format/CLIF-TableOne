@@ -996,6 +996,13 @@ class ProjectRunner:
                 if not warnings_shown:
                     print("\nWorkflow completed successfully!")
 
+                print("")
+                print("📋 If reporting an issue, share these logs:")
+                print("   1. output/final/meta/workflow_logs/workflow_execution_latest.log")
+                print("      (pipeline: validation + tableone + ward + ecdf)")
+                print("   2. output/final/meta/workflow_logs/webapp_execution_latest.log")
+                print("      (webapp: uvicorn + FastAPI)")
+
                 print("\nStarting the interactive web application in 3 seconds...")
                 print("(Press Ctrl+C now to skip)\n")
 
