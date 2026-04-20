@@ -1631,89 +1631,124 @@ def main(memory_monitor=None, cohort_mode='critical_illness') -> bool:
     print(" Loading Respiratory Support and Identifying IMV Patients")
     print("=" * 80)
 
-    print(f"\nLoading respiratory_support table...")
-    # Try to load respiratory support with all columns, but handle gracefully if some don't exist
-    try:
-        clif.load_table('respiratory_support',
-                               columns=rst_required_columns,
-                               filters={'hospitalization_id': list(adult_hosp_ids)})
-        print(f"Respiratory support loaded ({len(clif.respiratory_support.df):,} rows)")
-    except Exception as e:
-        # If specific columns don't exist, try loading without the optional new columns
-        print(f"⚠️ Warning: Could not load all requested columns: {e}")
-        print("   Attempting to load with core columns only...")
-
-        # Core columns that should always exist
-        core_rst_columns = [col for col in rst_required_columns
-                           if col not in ['flow_rate_set']]
-
-        clif.load_table('respiratory_support',
-                               columns=core_rst_columns,
-                               filters={'hospitalization_id': list(adult_hosp_ids)})
-        print(f"Respiratory support loaded with core columns ({len(clif.respiratory_support.df):,} rows)")
-
-    # MCIDE collection moved to separate script: generate_mcide_and_stats.py
-    # get_value_counts_mcide(clif.respiratory_support, 'respiratory_support', ['device_name', 'device_category'], output_dir=mcide_dir, config=config)
-    # get_value_counts_mcide(clif.respiratory_support, 'respiratory_support', ['mode_name', 'mode_category'], output_dir=mcide_dir, config=config)
-
-    # Standardize category columns to lowercase
-    print(f"\nStandardizing category columns...")
-    category_cols = [col for col in clif.respiratory_support.df.columns if col.endswith('_category')]
-    for col in category_cols:
-        clif.respiratory_support.df[col] = clif.respiratory_support.df[col].str.lower()
-
-    clif.respiratory_support.df = pd.merge(clif.respiratory_support.df, encounter_mapping,
-                                            on='hospitalization_id', how='left')
-
-    # Filter to encounters with at least one qualifying device or mode_category
-    # that the waterfall could infer as IMV/NIPPV.  Only these can contribute
-    # to high_support_enc; waterfalling non-qualifying encounters is wasted work.
-    _device_mask = clif.respiratory_support.df['device_category'].isin(
-        ['imv', 'nippv', 'cpap', 'high flow nc']
+    # ── Waterfall cache: CI and ward runs produce identical waterfall output
+    #    (same adult_hosp_ids filter, same encounter stitching, same device/mode
+    #    pre-filter, same deterministic waterfall).  Cache the post-waterfall
+    #    df so the second run can skip the expensive recomputation.  Cache is
+    #    invalidated if the raw respiratory_support parquet is newer.
+    import types as _types
+    _waterfall_cache_path = project_root / 'output/intermediate' / 'respiratory_support_waterfall.parquet'
+    _raw_resp_path = Path(config['tables_path']) / f"clif_respiratory_support.{config['file_type']}"
+    _cache_valid = (
+        _waterfall_cache_path.exists()
+        and _raw_resp_path.exists()
+        and _waterfall_cache_path.stat().st_mtime >= _raw_resp_path.stat().st_mtime
     )
-    _mode_mask = clif.respiratory_support.df['mode_category'].str.contains(
-        r'(?:assist control-volume control|simv|pressure control)',
-        na=False, regex=True,
-    ) if 'mode_category' in clif.respiratory_support.df.columns else pd.Series(False, index=clif.respiratory_support.df.index)
-    _enc_with_qualifying = clif.respiratory_support.df.loc[
-        _device_mask | _mode_mask, 'encounter_block'
-    ].unique()
-    print(f"Encounters with qualifying resp devices/modes: {len(_enc_with_qualifying):,}")
-    clif.respiratory_support.df = clif.respiratory_support.df[
-        clif.respiratory_support.df['encounter_block'].isin(_enc_with_qualifying)
-    ].copy()
-    del _device_mask, _mode_mask, _enc_with_qualifying
-    clif.respiratory_support.df = clif.respiratory_support.df.sort_values(
-        ['hospitalization_id', 'recorded_dttm']
-    )
-    apply_outlier_handling(clif.respiratory_support)
 
-    # Run waterfall (parallel by default, sequential fallback)
-    print(f"\nApplying waterfall to respiratory support ({len(clif.respiratory_support.df):,} rows)...")
-    try:
-        from concurrent.futures import ProcessPoolExecutor
-        _enc_blocks = clif.respiratory_support.df['encounter_block'].unique()
-        _n_workers = min(os.cpu_count() or 4, max(1, len(_enc_blocks) // 10))
-        if _n_workers > 1:
-            _chunks = np.array_split(_enc_blocks, _n_workers)
-            _df_chunks = [
-                (clif.respiratory_support.df[
-                    clif.respiratory_support.df['encounter_block'].isin(c)
-                ].copy(), 'encounter_block')
-                for c in _chunks
-            ]
-            print(f"  Parallel waterfall: {_n_workers} workers, {len(_enc_blocks)} encounters...")
-            with ProcessPoolExecutor(max_workers=_n_workers) as executor:
-                _results = list(executor.map(_waterfall_chunk, _df_chunks))
-            clif.respiratory_support.df = pd.concat(_results, ignore_index=True)
-        else:
-            raise ValueError("Too few encounters for parallelization")
-    except Exception as e:
-        print(f"  Parallel waterfall unavailable ({e}), using sequential...")
-        clif.respiratory_support = clif.respiratory_support.waterfall(
-            id_col='encounter_block', verbose=True
+    if _cache_valid:
+        print(f"\nLoading cached waterfall from output/intermediate/{_waterfall_cache_path.name}...")
+        _cached_df = pd.read_parquet(_waterfall_cache_path)
+        # Scope to this run's adult_hosp_ids defensively (cache may contain
+        # a broader scope if it was written by a different configuration).
+        _cached_df = _cached_df[
+            _cached_df['hospitalization_id'].isin(adult_hosp_ids)
+        ].copy()
+        # Downstream code only touches `.df` on `clif.respiratory_support`
+        # (audited 2026-04-20), so a lightweight namespace shell is enough.
+        clif.respiratory_support = _types.SimpleNamespace(df=_cached_df)
+        print(f"Respiratory support (cached waterfall): {len(_cached_df):,} rows")
+        del _cached_df
+    else:
+        if _waterfall_cache_path.exists():
+            print(f"\nRaw respiratory_support newer than cache — recomputing waterfall.")
+        print(f"\nLoading respiratory_support table...")
+        # Try to load respiratory support with all columns, but handle gracefully if some don't exist
+        try:
+            clif.load_table('respiratory_support',
+                                   columns=rst_required_columns,
+                                   filters={'hospitalization_id': list(adult_hosp_ids)})
+            print(f"Respiratory support loaded ({len(clif.respiratory_support.df):,} rows)")
+        except Exception as e:
+            # If specific columns don't exist, try loading without the optional new columns
+            print(f"⚠️ Warning: Could not load all requested columns: {e}")
+            print("   Attempting to load with core columns only...")
+
+            # Core columns that should always exist
+            core_rst_columns = [col for col in rst_required_columns
+                               if col not in ['flow_rate_set']]
+
+            clif.load_table('respiratory_support',
+                                   columns=core_rst_columns,
+                                   filters={'hospitalization_id': list(adult_hosp_ids)})
+            print(f"Respiratory support loaded with core columns ({len(clif.respiratory_support.df):,} rows)")
+
+        # MCIDE collection moved to separate script: generate_mcide_and_stats.py
+        # get_value_counts_mcide(clif.respiratory_support, 'respiratory_support', ['device_name', 'device_category'], output_dir=mcide_dir, config=config)
+        # get_value_counts_mcide(clif.respiratory_support, 'respiratory_support', ['mode_name', 'mode_category'], output_dir=mcide_dir, config=config)
+
+        # Standardize category columns to lowercase
+        print(f"\nStandardizing category columns...")
+        category_cols = [col for col in clif.respiratory_support.df.columns if col.endswith('_category')]
+        for col in category_cols:
+            clif.respiratory_support.df[col] = clif.respiratory_support.df[col].str.lower()
+
+        clif.respiratory_support.df = pd.merge(clif.respiratory_support.df, encounter_mapping,
+                                                on='hospitalization_id', how='left')
+
+        # Filter to encounters with at least one qualifying device or mode_category
+        # that the waterfall could infer as IMV/NIPPV.  Only these can contribute
+        # to high_support_enc; waterfalling non-qualifying encounters is wasted work.
+        _device_mask = clif.respiratory_support.df['device_category'].isin(
+            ['imv', 'nippv', 'cpap', 'high flow nc']
         )
-    print(f"Waterfall complete: {len(clif.respiratory_support.df):,} rows")
+        _mode_mask = clif.respiratory_support.df['mode_category'].str.contains(
+            r'(?:assist control-volume control|simv|pressure control)',
+            na=False, regex=True,
+        ) if 'mode_category' in clif.respiratory_support.df.columns else pd.Series(False, index=clif.respiratory_support.df.index)
+        _enc_with_qualifying = clif.respiratory_support.df.loc[
+            _device_mask | _mode_mask, 'encounter_block'
+        ].unique()
+        print(f"Encounters with qualifying resp devices/modes: {len(_enc_with_qualifying):,}")
+        clif.respiratory_support.df = clif.respiratory_support.df[
+            clif.respiratory_support.df['encounter_block'].isin(_enc_with_qualifying)
+        ].copy()
+        del _device_mask, _mode_mask, _enc_with_qualifying
+        clif.respiratory_support.df = clif.respiratory_support.df.sort_values(
+            ['hospitalization_id', 'recorded_dttm']
+        )
+        apply_outlier_handling(clif.respiratory_support)
+
+        # Run waterfall (parallel by default, sequential fallback)
+        print(f"\nApplying waterfall to respiratory support ({len(clif.respiratory_support.df):,} rows)...")
+        try:
+            from concurrent.futures import ProcessPoolExecutor
+            _enc_blocks = clif.respiratory_support.df['encounter_block'].unique()
+            _n_workers = min(os.cpu_count() or 4, max(1, len(_enc_blocks) // 10))
+            if _n_workers > 1:
+                _chunks = np.array_split(_enc_blocks, _n_workers)
+                _df_chunks = [
+                    (clif.respiratory_support.df[
+                        clif.respiratory_support.df['encounter_block'].isin(c)
+                    ].copy(), 'encounter_block')
+                    for c in _chunks
+                ]
+                print(f"  Parallel waterfall: {_n_workers} workers, {len(_enc_blocks)} encounters...")
+                with ProcessPoolExecutor(max_workers=_n_workers) as executor:
+                    _results = list(executor.map(_waterfall_chunk, _df_chunks))
+                clif.respiratory_support.df = pd.concat(_results, ignore_index=True)
+            else:
+                raise ValueError("Too few encounters for parallelization")
+        except Exception as e:
+            print(f"  Parallel waterfall unavailable ({e}), using sequential...")
+            clif.respiratory_support = clif.respiratory_support.waterfall(
+                id_col='encounter_block', verbose=True
+            )
+        print(f"Waterfall complete: {len(clif.respiratory_support.df):,} rows")
+
+        # Persist for the sibling cohort run (CI → ward, or ward → CI).
+        _waterfall_cache_path.parent.mkdir(parents=True, exist_ok=True)
+        clif.respiratory_support.df.to_parquet(_waterfall_cache_path, index=False)
+        print(f"Cached waterfall → output/intermediate/{_waterfall_cache_path.name}")
 
     # Identify hospitalizations on advanced respiratory support
     # IMV, NIPPV, CPAP always qualify; HFNC qualifies only at >= 30 LPM
