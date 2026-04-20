@@ -28,6 +28,9 @@ Converted from: code/archives/generate_table_one_2_1.ipynb
 #     'dopamine', 'angiotensin'
 # ==============================================================================
 
+import warnings
+warnings.filterwarnings("ignore", category=FutureWarning, module="pandas")
+
 import pandas as pd
 pd.set_option('future.no_silent_downcasting', True)
 import numpy as np
@@ -5852,7 +5855,7 @@ def main(memory_monitor=None, cohort_mode='critical_illness') -> bool:
                     # ✅ OPTIMIZATION: Calculate all quantiles in one go
                     setting_stats = imv_subset[[med_col, f'{setting}_q1', f'{setting}_q3']].median()
                     rows.append((f"  {label}, median [Q1, Q3]",
-                                f"{setting_stats[0]:.1f} [{setting_stats[1]:.1f}, {setting_stats[2]:.1f}]"))
+                                f"{setting_stats.iloc[0]:.1f} [{setting_stats.iloc[1]:.1f}, {setting_stats.iloc[2]:.1f}]"))
 
             # ── Extubation metrics (two-lookback/two-lookforward detection) ──
             if 'extubation_status' in imv_subset.columns:
@@ -5924,7 +5927,7 @@ def main(memory_monitor=None, cohort_mode='critical_illness') -> bool:
                         vaso_subset = df[df[flag_col] == 1]
                         vaso_dose_stats = vaso_subset[[f'{vaso}_median', f'{vaso}_q1', f'{vaso}_q3']].median()
                         rows.append((f"    {name} dose (mcg/kg/min), median [Q1, Q3]",
-                                    f"{vaso_dose_stats[0]:.2f} [{vaso_dose_stats[1]:.2f}, {vaso_dose_stats[2]:.2f}]"))
+                                    f"{vaso_dose_stats.iloc[0]:.2f} [{vaso_dose_stats.iloc[1]:.2f}, {vaso_dose_stats.iloc[2]:.2f}]"))
     
         # -------------------------------------------------------------------------
         # 11. Sedatives and Analgesics (use pre-computed sums)

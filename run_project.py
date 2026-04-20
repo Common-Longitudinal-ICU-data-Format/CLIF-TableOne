@@ -18,6 +18,12 @@ Usage:
 import os
 import sys
 import io
+import warnings
+
+# Silence pandas FutureWarnings (and related deprecations) before anything else
+# imports pandas.  Propagated to subprocesses below via PYTHONWARNINGS.
+warnings.filterwarnings("ignore")
+os.environ.setdefault("PYTHONWARNINGS", "ignore")
 
 # Force UTF-8 encoding for Windows compatibility
 # This ensures emojis and Unicode characters display correctly
@@ -46,8 +52,9 @@ from datetime import datetime
 class ProjectRunner:
     """Orchestrates the complete CLIF analysis workflow."""
 
-    def __init__(self, config_path='config/config.json'):
+    def __init__(self, config_path='config/config.json', verbose=False):
         self.config_path = config_path
+        self.verbose = verbose
         self.config = self.load_config()
         self.start_time = datetime.now()
         self.log_file = self.setup_logging()
@@ -74,15 +81,21 @@ class ProjectRunner:
         # Also create a 'latest' symlink/copy
         latest_log = log_dir / 'workflow_execution_latest.log'
 
-        # Setup logging (sys.stdout is already UTF-8 wrapped on Windows at module level)
+        # Build handler list.  File handlers always on.  The stdout handler is
+        # only added in --verbose mode; otherwise the status-line writer wrapping
+        # sys.stdout (set up in __main__) is the terminal UX, and the logger
+        # stays out of its way.  File capture is unaffected either way.
+        handlers = [
+            logging.FileHandler(log_file, encoding='utf-8'),
+            logging.FileHandler(latest_log, mode='w', encoding='utf-8'),
+        ]
+        if self.verbose:
+            handlers.append(logging.StreamHandler(sys.stdout))
+
         logging.basicConfig(
             level=logging.INFO,
             format='%(asctime)s - %(levelname)s - %(message)s',
-            handlers=[
-                logging.FileHandler(log_file, encoding='utf-8'),
-                logging.FileHandler(latest_log, mode='w', encoding='utf-8'),
-                logging.StreamHandler(sys.stdout)
-            ]
+            handlers=handlers,
         )
 
         return log_file
@@ -283,7 +296,8 @@ class ProjectRunner:
                 if stderr_output:
                     for line in stderr_output.strip().split('\n'):
                         if line:
-                            print(line, file=sys.stderr)
+                            if self.verbose:
+                                print(line, file=sys.stderr)
                             self.logger.error(line)
 
                 # Wait for process to complete
@@ -416,7 +430,7 @@ class ProjectRunner:
         bool
             True if ward table one generation succeeded
         """
-        self.print_header("STEP 2b: WARD TABLE ONE GENERATION (ISOLATED SUBPROCESS)")
+        self.print_header("STEP 2b: WARD TABLE ONE GENERATION")
 
         self.logger.info("Running Ward Table One generation in isolated subprocess...")
         self.logger.info("(memory from any prior in-process Table One run is released before this starts)")
@@ -468,7 +482,8 @@ class ProjectRunner:
                 if stderr_output:
                     for line in stderr_output.strip().split('\n'):
                         if line:
-                            print(line, file=sys.stderr)
+                            if self.verbose:
+                                print(line, file=sys.stderr)
                             self.logger.error(line)
                 exit_code = process.wait()
 
@@ -763,14 +778,33 @@ class ProjectRunner:
         self.logger.info(f"Workflow execution log saved to: {self.log_file}")
         self.logger.info("="*80)
 
+        print_and_log("")
+        print_and_log("📋 If reporting an issue, share these logs:")
+        print_and_log(f"   1. output/final/meta/workflow_logs/workflow_execution_latest.log")
+        print_and_log(f"      (pipeline: validation + tableone + ward + ecdf)")
+        print_and_log(f"   2. output/final/meta/workflow_logs/webapp_execution_latest.log")
+        print_and_log(f"      (webapp: uvicorn + FastAPI)")
+
         return self.results['overall_success']
 
     def launch_app(self):
         """Launch the FastAPI web application."""
         self.print_header("LAUNCHING WEB APP")
 
+        # Capture webapp stdout+stderr to a log file so users can share it
+        # for debugging.  Written to the same workflow_logs/ directory as
+        # the main execution log; timestamped copy + a 'latest' symlink-style
+        # file that's overwritten each run.
+        from modules.utils.output_paths import workflow_logs_dir
+        log_dir = workflow_logs_dir()
+        log_dir.mkdir(parents=True, exist_ok=True)
+        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+        webapp_log_file = log_dir / f'webapp_execution_{timestamp}.log'
+        webapp_latest_log = log_dir / 'webapp_execution_latest.log'
+
         print("Starting CLIF web application...")
         print("The app will open in your default browser at http://localhost:8000")
+        print(f"Webapp logs → {webapp_latest_log}")
         print("\nPress Ctrl+C to stop the app\n")
 
         # Open browser after a short delay
@@ -786,14 +820,50 @@ class ProjectRunner:
 
         cmd = [sys.executable, '-m', 'uvicorn', 'server.main:app', '--host', '127.0.0.1', '--port', '8000', '--no-access-log']
 
+        # Send uvicorn's stdout+stderr to both log files simultaneously.
+        # `tee` keeps the workflow log pattern consistent (timestamped + latest)
+        # and leaves a clean terminal so the "All steps complete" final frame
+        # stays visible while the app runs.
         try:
-            subprocess.run(cmd, check=True)
+            with open(webapp_log_file, 'w', encoding='utf-8') as fp_ts, \
+                 open(webapp_latest_log, 'w', encoding='utf-8') as fp_latest:
+                process = subprocess.Popen(
+                    cmd,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT,
+                    text=True,
+                    bufsize=1,
+                )
+                try:
+                    for line in process.stdout:
+                        fp_ts.write(line)
+                        fp_latest.write(line)
+                        fp_ts.flush()
+                        fp_latest.flush()
+                    process.wait()
+                    if process.returncode not in (0, None):
+                        raise subprocess.CalledProcessError(process.returncode, cmd)
+                except KeyboardInterrupt:
+                    process.terminate()
+                    process.wait()
+                    raise
         except KeyboardInterrupt:
             print("\n\n[SUCCESS] Web app stopped")
         except FileNotFoundError:
             print("\n[ERROR] Error: uvicorn not found. Install with: uv add uvicorn[standard]")
         except Exception as e:
             print(f"\n[ERROR] Error launching app: {e}")
+            print(f"         Check webapp log: {webapp_latest_log}")
+
+        # Remind users what to share if anything went wrong — visible after
+        # they've exited uvicorn and the progress bar has stopped.
+        print("")
+        print("📋 If reporting an issue, share these logs:")
+        print("   1. output/final/meta/workflow_logs/workflow_execution_latest.log")
+        print("      (pipeline: validation + tableone + ward + ecdf)")
+        print("   2. output/final/meta/workflow_logs/webapp_execution_latest.log")
+        print("      (webapp: uvicorn + FastAPI)")
+        print("")
 
     def run(self, validate=True, tableone=True, ward_tableone=False, get_ecdf=False, **kwargs):
         """
@@ -1047,8 +1117,71 @@ Examples:
     if args.validate_only:
         args.no_launch_app = True
 
+    # Default terminal UX: live rich progress bar.  --verbose keeps the
+    # full scroll behavior.  File logs are captured the same way in both modes.
+    progress_display = None
+    _orig_stderr = None
+    _saved_stderr_fd = None
+    _devnull_fd = None
+    if not args.verbose:
+        from modules.utils.status_line import ProgressDisplay
+        total_steps = sum([validate, tableone, ward_tableone, get_ecdf])
+        os.environ["TQDM_DISABLE"] = "1"
+        progress_display = ProgressDisplay(
+            total_steps=max(total_steps, 1),
+            out_stream=sys.stdout,
+        )
+        sys.stdout = progress_display
+        # Silence stderr at both the Python level AND the OS fd level.
+        # Replacing sys.stderr alone doesn't help — tqdm, polars, pyarrow and
+        # other C-extension progress bars write to fd=2 directly.  We dup the
+        # devnull fd over fd=2 so those writes go to /dev/null, then restore
+        # on teardown.  Traceback.print_exc, warnings, and Python-level
+        # stderr writes are covered by the sys.stderr swap above.
+        _orig_stderr = sys.stderr
+        sys.stderr = open(os.devnull, "w")
+        try:
+            _saved_stderr_fd = os.dup(2)
+            _devnull_fd = os.open(os.devnull, os.O_WRONLY)
+            os.dup2(_devnull_fd, 2)
+        except OSError:
+            _saved_stderr_fd = None
+            _devnull_fd = None
+        progress_display.start()
+
+    def _teardown_display():
+        """Stop live display and restore stderr.  Idempotent."""
+        nonlocal progress_display, _orig_stderr, _saved_stderr_fd, _devnull_fd
+        if progress_display is not None:
+            try:
+                progress_display.stop()
+            except Exception:
+                pass
+            progress_display = None
+        # Restore fd=2 before closing our devnull fd.
+        if _saved_stderr_fd is not None:
+            try:
+                os.dup2(_saved_stderr_fd, 2)
+                os.close(_saved_stderr_fd)
+            except OSError:
+                pass
+            _saved_stderr_fd = None
+        if _devnull_fd is not None:
+            try:
+                os.close(_devnull_fd)
+            except OSError:
+                pass
+            _devnull_fd = None
+        if _orig_stderr is not None:
+            try:
+                sys.stderr.close()
+            except Exception:
+                pass
+            sys.stderr = _orig_stderr
+            _orig_stderr = None
+
     # Initialize runner
-    runner = ProjectRunner(config_path=args.config)
+    runner = ProjectRunner(config_path=args.config, verbose=args.verbose)
 
     # Run workflow
     try:
@@ -1066,16 +1199,27 @@ Examples:
         )
 
         # Exit with appropriate code
+        _teardown_display()
         sys.exit(0 if success else 1)
 
     except KeyboardInterrupt:
+        _teardown_display()
         print("\n\n[WARNING] Workflow interrupted by user")
+        print("")
+        print("📋 If reporting an issue, share these logs:")
+        print("   1. output/final/meta/workflow_logs/workflow_execution_latest.log")
+        print("   2. output/final/meta/workflow_logs/webapp_execution_latest.log")
         sys.exit(130)
     except Exception as e:
+        _teardown_display()
         print(f"\n[ERROR] Unexpected error: {e}")
         if args.verbose:
             import traceback
             traceback.print_exc()
+        print("")
+        print("📋 If reporting an issue, share these logs:")
+        print("   1. output/final/meta/workflow_logs/workflow_execution_latest.log")
+        print("   2. output/final/meta/workflow_logs/webapp_execution_latest.log")
         sys.exit(1)
 
 

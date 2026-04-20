@@ -180,10 +180,10 @@ def plot_min_pf_sf_per_day_post_intubation(
     """
     from modules.sofa.calculator import (
         _calculate_concurrent_pf_ratios,
-        _calculate_concurrent_sf_ratios,
         _load_labs, _load_vitals, _load_respiratory_support,
     )
     from modules.tableone.pf_sf_calculator import (
+        _calculate_concurrent_sf_ratios,
         PAO2_MIN, PAO2_MAX, PF_CAP,
     )
     from modules.utils.datetime_utils import standardize_datetime_columns

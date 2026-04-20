@@ -8,8 +8,11 @@ across sessions and allowing users to start fresh by deleting files.
 
 from typing import Dict, Any, Optional
 from datetime import datetime
+import logging
 import os
 import json
+
+logger = logging.getLogger(__name__)
 
 
 def _get_output_dir(config: dict) -> str:
@@ -155,7 +158,7 @@ def get_cached_analysis(table_name: str, store: dict, config: dict) -> Optional[
             if any(k in data for k in ('conformance', 'completeness', 'plausibility')):
                 validation = data
             else:
-                print(f"[cache] {table_name}_summary_validation.json has wrong structure, skipping")
+                logger.debug("%s_summary_validation.json has wrong structure, skipping", table_name)
         except Exception as e:
             print(f"Error loading validation for {table_name}: {e}")
 
@@ -165,11 +168,15 @@ def get_cached_analysis(table_name: str, store: dict, config: dict) -> Optional[
             try:
                 with open(clifpy_path, 'r', encoding='utf-8') as f:
                     validation = json.load(f)
-                print(f"[cache] Loaded {table_name} DQA from validation/json_reports: keys={list(validation.keys()) if validation else 'None'}")
+                logger.debug(
+                    "Loaded %s DQA from validation/json_reports: keys=%s",
+                    table_name,
+                    list(validation.keys()) if validation else None,
+                )
             except Exception as e:
                 print(f"Error loading validation/json_reports DQA for {table_name}: {e}")
         else:
-            print(f"[cache] No DQA file found for {table_name} at {clifpy_path}")
+            logger.debug("No DQA file found for %s at %s", table_name, clifpy_path)
 
     # Check for summary file in dqa/consolidated/
     summary = None
