@@ -6180,8 +6180,11 @@ def main(memory_monitor=None, cohort_mode='critical_illness') -> bool:
             strat_var_order = tbl_strat['Variable'].tolist()
             strat_results = {'Overall': tbl_strat.set_index('Variable')['Overall']}
 
-            # By year within stratum
-            if 'admission_year' in df_strat.columns:
+            # By year within stratum — only for top-level strata.  Sub-strata
+            # (names containing '/', e.g. advanced_resp/icu, vaso/ed_icu) are
+            # kept overall-only to cut runtime.
+            _is_sub_stratum = '/' in stratum_name
+            if not _is_sub_stratum and 'admission_year' in df_strat.columns:
                 strat_years = sorted(df_strat['admission_year'].dropna().unique())
                 for yr in strat_years:
                     df_yr = df_strat[df_strat['admission_year'] == yr]
