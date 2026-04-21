@@ -162,15 +162,20 @@ async def clear_all_feedback():
         entry.pop("feedback", None)
         entry.pop("feedback_updated", None)
 
-    # 4. Regenerate combined report (without feedback)
+    # 4. Regenerate per-table PDFs (without feedback) and the combined report
     try:
-        from server.routes.reports_routes import ALL_TABLES
+        from server.routes.reports_routes import ALL_TABLES, _regenerate_table_pdf
         from modules.reports.combined_report_generator import generate_combined_report
+        pdfs_regenerated = 0
+        for name in ALL_TABLES:
+            if _regenerate_table_pdf(name, config):
+                pdfs_regenerated += 1
+        logger.info("Regenerated %d per-table PDFs after feedback clear", pdfs_regenerated)
         generate_combined_report(
             output_dir, ALL_TABLES,
             config.get("site_name"), config.get("timezone", "UTC"),
         )
     except Exception as e:
-        logger.warning("Combined report regeneration after feedback clear failed: %s", e)
+        logger.warning("Report regeneration after feedback clear failed: %s", e)
 
     return {"status": "cleared", "tables_cleared": tables_cleared}
