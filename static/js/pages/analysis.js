@@ -125,11 +125,12 @@ async function renderValidation(table, panel) {
         </div>
         <div id="feedback-container"></div>
         <table class="data-table" id="errors-table">
-          <thead><tr><th>Feedback</th><th class="reason-col" style="display:none;">Reason</th><th>Category</th><th>Check</th><th>Column</th><th>Message</th></tr></thead>
+          <thead><tr><th>Feedback</th><th class="reason-col" style="display:none;">Reason</th><th>Category</th><th>Check</th><th>Column</th><th>Message</th><th style="text-align:right;">Checks</th></tr></thead>
           <tbody>`;
 
       for (const issue of errors) {
         const eid = issue.error_id || '';
+        const checks = issue.atomic_count ?? 1;
         html += `<tr data-eid="${eid}">
           <td>
             <select class="feedback-select" data-eid="${eid}">
@@ -145,6 +146,7 @@ async function renderValidation(table, panel) {
           <td>${issue.rule_description || issue.check_type || ''}</td>
           <td>${issue.column_field || 'N/A'}</td>
           <td>${issue.message || ''}</td>
+          <td style="text-align:right;">${checks}</td>
         </tr>`;
       }
 
@@ -167,13 +169,15 @@ async function renderValidation(table, panel) {
         <h3>Warnings (${warnings.length})</h3>`;
       let first = true;
       for (const [groupName, items] of Object.entries(groups)) {
+        const groupChecks = items.reduce((sum, w) => sum + (w.atomic_count ?? 1), 0);
         html += `<details${first ? ' open' : ''} style="margin-bottom:8px;">
-          <summary style="cursor:pointer;font-weight:600;padding:6px 0;">${groupName} <span style="background:var(--warning);color:#000;border-radius:10px;padding:1px 8px;font-size:0.85em;font-weight:500;margin-left:6px;">${items.length}</span></summary>
+          <summary style="cursor:pointer;font-weight:600;padding:6px 0;">${groupName} <span style="background:var(--warning);color:#000;border-radius:10px;padding:1px 8px;font-size:0.85em;font-weight:500;margin-left:6px;">${groupChecks}</span></summary>
           <table class="data-table" style="margin:4px 0 8px 16px;">
-            <thead><tr><th>Column</th><th>Finding</th></tr></thead>
+            <thead><tr><th>Column</th><th>Finding</th><th style="text-align:right;">Checks</th></tr></thead>
             <tbody>`;
         for (const w of items) {
           const finding = w.finding || w.message || '';
+          const checks = w.atomic_count ?? 1;
           const yearly = w.details && w.details.yearly_counts;
           let sparkHtml = '';
           if (yearly) {
@@ -188,7 +192,7 @@ async function renderValidation(table, panel) {
             }
             sparkHtml += `<span class="spark-bar-labels"><span>${years[0]}</span><span>${years[years.length - 1]}</span></span></div>`;
           }
-          html += `<tr><td>${w.column_field || 'N/A'}</td><td>${finding}${sparkHtml}</td></tr>`;
+          html += `<tr><td>${w.column_field || 'N/A'}</td><td>${finding}${sparkHtml}</td><td style="text-align:right;">${checks}</td></tr>`;
         }
         html += `</tbody></table></details>`;
         first = false;
