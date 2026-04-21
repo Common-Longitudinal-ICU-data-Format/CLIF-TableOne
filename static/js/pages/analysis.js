@@ -132,6 +132,7 @@ async function renderValidation(table, panel) {
       for (const issue of errors) {
         const eid = issue.error_id || '';
         const checks = issue.atomic_count ?? 1;
+        const checksDisplay = checks === 0 ? '—' : checks;
         html += `<tr data-eid="${eid}">
           <td>
             <select class="feedback-select" data-eid="${eid}">
@@ -147,7 +148,7 @@ async function renderValidation(table, panel) {
           <td>${issue.rule_description || issue.check_type || ''}</td>
           <td>${issue.column_field || 'N/A'}</td>
           <td>${issue.message || ''}</td>
-          <td style="text-align:right;">${checks}</td>
+          <td style="text-align:right;">${checksDisplay}</td>
         </tr>`;
       }
 
@@ -180,6 +181,7 @@ async function renderValidation(table, panel) {
         for (const w of items) {
           const finding = w.finding || w.message || '';
           const checks = w.atomic_count ?? 1;
+          const checksDisplay = checks === 0 ? '—' : checks;
           const yearly = w.details && w.details.yearly_counts;
           let sparkHtml = '';
           if (yearly) {
@@ -194,7 +196,7 @@ async function renderValidation(table, panel) {
             }
             sparkHtml += `<span class="spark-bar-labels"><span>${years[0]}</span><span>${years[years.length - 1]}</span></span></div>`;
           }
-          html += `<tr><td>${w.column_field || 'N/A'}</td><td>${finding}${sparkHtml}</td><td style="text-align:right;">${checks}</td></tr>`;
+          html += `<tr><td>${w.column_field || 'N/A'}</td><td>${finding}${sparkHtml}</td><td style="text-align:right;">${checksDisplay}</td></tr>`;
         }
         html += `</tbody></table></details>`;
         first = false;
