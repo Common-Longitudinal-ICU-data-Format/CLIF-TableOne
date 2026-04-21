@@ -115,9 +115,10 @@ async function renderValidation(table, panel) {
 
     // Issues table (errors)
     const errors = data.issues.filter(i => i.severity === 'error');
+    const errorAtoms = errors.reduce((s, i) => s + (i.atomic_count ?? 1), 0);
     if (errors.length > 0) {
       html += `<div class="card" style="margin-bottom:16px;">
-        <h3>Review & Resolve (${errors.length} error(s))</h3>
+        <h3>Review & Resolve (${errorAtoms} error(s))</h3>
         <div style="display:flex;justify-content:space-evenly;font-size:0.8rem;margin:0 0 12px;padding:8px 12px;background:var(--bg-secondary,#f5f5f7);border-radius:6px;">
           <span><strong style="color:var(--text);">Pending</strong> <span style="opacity:0.6;">— not reviewed</span></span>
           <span><strong style="color:var(--success);">Accepted</strong> <span style="opacity:0.6;">— known issue, acknowledged</span></span>
@@ -165,8 +166,9 @@ async function renderValidation(table, panel) {
         const key = w.rule_description || w.check_type || 'Other';
         (groups[key] = groups[key] || []).push(w);
       }
+      const warningAtoms = warnings.reduce((s, w) => s + (w.atomic_count ?? 1), 0);
       html += `<div class="card" style="margin-top:12px;">
-        <h3>Warnings (${warnings.length})</h3>`;
+        <h3>Warnings (${warningAtoms})</h3>`;
       let first = true;
       for (const [groupName, items] of Object.entries(groups)) {
         const groupChecks = items.reduce((sum, w) => sum + (w.atomic_count ?? 1), 0);
@@ -337,10 +339,14 @@ function updateStatsFromFeedback(panel, data, feedback) {
   // Recount errors/warnings excluding rejected
   const adjErrors = data.issues.filter(i => i.severity === 'error' && !rejectedIds.has(i.error_id));
   const adjWarnings = data.issues.filter(i => i.severity === 'warning' && !rejectedIds.has(i.error_id));
-  const rejectedCount = data.issues.filter(i => i.severity === 'error' && rejectedIds.has(i.error_id)).length;
+  const adjErrorAtoms = adjErrors.reduce((s, i) => s + (i.atomic_count ?? 1), 0);
+  const adjWarningAtoms = adjWarnings.reduce((s, i) => s + (i.atomic_count ?? 1), 0);
+  const rejectedAtoms = data.issues
+    .filter(i => i.severity === 'error' && rejectedIds.has(i.error_id))
+    .reduce((s, i) => s + (i.atomic_count ?? 1), 0);
 
   // Adjusted scores: rejected errors become "passed"
-  const adjPassed = data.total_passed + rejectedCount;
+  const adjPassed = data.total_passed + rejectedAtoms;
   const adjPct = data.total_checks ? Math.round(adjPassed / data.total_checks * 1000) / 10 : 100;
 
   // Update hero stats
@@ -361,23 +367,23 @@ function updateStatsFromFeedback(panel, data, feedback) {
   if (metricCards.length >= 2) {
     const errVal = metricCards[0].querySelector('.metric-value');
     if (errVal) {
-      errVal.textContent = adjErrors.length;
-      errVal.style.color = adjErrors.length > 0 ? 'var(--danger)' : 'var(--success)';
+      errVal.textContent = adjErrorAtoms;
+      errVal.style.color = adjErrorAtoms > 0 ? 'var(--danger)' : 'var(--success)';
     }
     const warnVal = metricCards[1].querySelector('.metric-value');
     if (warnVal) {
-      warnVal.textContent = adjWarnings.length;
-      warnVal.style.color = adjWarnings.length > 0 ? 'var(--warning)' : 'var(--success)';
+      warnVal.textContent = adjWarningAtoms;
+      warnVal.style.color = adjWarningAtoms > 0 ? 'var(--warning)' : 'var(--success)';
     }
   }
 
   // Update per-category cards
   let cardIdx = 2;
   for (const [cat, scores] of Object.entries(data.category_scores)) {
-    const catRejected = data.issues.filter(
-      i => i.category === cat && i.severity === 'error' && rejectedIds.has(i.error_id)
-    ).length;
-    const adjCatPassed = scores.passed + catRejected;
+    const catRejectedAtoms = data.issues
+      .filter(i => i.category === cat && i.severity === 'error' && rejectedIds.has(i.error_id))
+      .reduce((s, i) => s + (i.atomic_count ?? 1), 0);
+    const adjCatPassed = scores.passed + catRejectedAtoms;
     const pct = scores.total ? Math.round(adjCatPassed / scores.total * 100) : 100;
     const color = pct >= 85 ? 'var(--success)' : pct >= 60 ? 'var(--warning)' : 'var(--danger)';
     if (metricCards[cardIdx]) {

@@ -82,7 +82,6 @@ _route_modules = [
     "server.routes.tableone_routes",
     "server.routes.mcide_routes",
     "server.routes.sse_routes",
-    "server.routes.llm_routes",
 ]
 
 for module_path in _route_modules:

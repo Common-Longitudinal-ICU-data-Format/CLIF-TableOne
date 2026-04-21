@@ -1,5 +1,3 @@
-import { api } from '../api.js';
-import * as state from '../state.js';
 import { navigate } from '../router.js';
 
 const GUIDE_STEPS = [
@@ -75,20 +73,6 @@ export async function renderHome(el) {
       </div>
     </div>
 
-    <!-- AI All-Tables Interpretation -->
-    <div id="ai-all-section" style="display:none;margin-bottom:28px;">
-      <div class="card ai-card">
-        <div style="display:flex;align-items:center;gap:8px;margin-bottom:10px;">
-          <div class="loading-spinner" id="ai-all-spinner"></div>
-          <span style="font-size:0.9rem;font-weight:600;">Validation Summary</span>
-          <span id="ai-model-badge" style="font-size:0.68rem;color:var(--text-muted);display:none;"></span>
-          <button class="btn btn-sm btn-secondary" id="btn-ai-expand" style="margin-left:auto;display:none;">Expand</button>
-          <a href="#" id="btn-ai-reinterpret" style="margin-left:8px;font-size:0.8rem;display:none;">Re-interpret</a>
-        </div>
-        <div id="ai-all-text"></div>
-      </div>
-    </div>
-
     <div id="download-section" style="display:none;">
       <h3>Download Reports</h3>
       <a class="btn btn-secondary" id="dl-pdf" style="text-decoration:none;display:inline-block;">Download PDF Report</a>
@@ -139,115 +123,9 @@ export async function renderHome(el) {
   document.getElementById('hero-tableone').addEventListener('click', () => navigate('tableone'));
   document.getElementById('hero-validation').addEventListener('click', () => navigate('validation'));
 
-  // AI section — only show if LLM available
-  initAiAll();
-
   // Check downloads
   checkDownloads();
 
-}
-
-async function initAiAll() {
-  const section = document.getElementById('ai-all-section');
-  if (!section) return;
-
-  let modelName = '';
-  try {
-    const { available, model } = await api.getLlmStatus();
-    if (!available) return;
-    modelName = model || '';
-  } catch (e) { return; }
-
-  section.style.display = 'block';
-
-  // Show model badge
-  const badge = document.getElementById('ai-model-badge');
-  if (badge && modelName) {
-    badge.textContent = `via ${modelName} (Ollama)`;
-    badge.style.display = 'inline';
-  }
-
-  // Restore cached interpretation or fetch fresh
-  const cached = state.get('aiInterpretation');
-  if (cached) {
-    restoreAiResult(cached);
-  } else {
-    startAiStream();
-  }
-
-  // Re-interpret link — always fetches fresh
-  document.getElementById('btn-ai-reinterpret').addEventListener('click', (e) => {
-    e.preventDefault();
-    startAiStream();
-  });
-
-  // Expand button — fullscreen overlay
-  document.getElementById('btn-ai-expand').addEventListener('click', () => {
-    const html = document.getElementById('ai-all-text').innerHTML;
-    const overlay = document.createElement('div');
-    overlay.className = 'ai-fullpage-overlay';
-    overlay.innerHTML = `
-      <button class="btn btn-secondary close-btn" id="ai-overlay-close">Close</button>
-      <h2>Validation Summary — All Tables</h2>
-      <div class="card ai-card"><div class="ai-prose">${html}</div></div>
-    `;
-    document.body.appendChild(overlay);
-    overlay.querySelector('#ai-overlay-close').addEventListener('click', () => overlay.remove());
-  });
-}
-
-function restoreAiResult(raw) {
-  const textEl = document.getElementById('ai-all-text');
-  const spinner = document.getElementById('ai-all-spinner');
-  const expandBtn = document.getElementById('btn-ai-expand');
-  const reinterpretBtn = document.getElementById('btn-ai-reinterpret');
-
-  textEl.innerHTML = typeof marked !== 'undefined' ? marked.parse(raw) : raw;
-  spinner.style.display = 'none';
-  expandBtn.style.display = 'inline-flex';
-  reinterpretBtn.style.display = 'inline';
-}
-
-function startAiStream() {
-  const textEl = document.getElementById('ai-all-text');
-  const spinner = document.getElementById('ai-all-spinner');
-  const expandBtn = document.getElementById('btn-ai-expand');
-  const reinterpretBtn = document.getElementById('btn-ai-reinterpret');
-
-  textEl.innerHTML = '';
-  spinner.style.display = '';
-  expandBtn.style.display = 'none';
-  reinterpretBtn.style.display = 'none';
-
-  let raw = '';
-  api.streamInterpretationAll({
-    onChunk(text) {
-      raw += text;
-      textEl.innerHTML = typeof marked !== 'undefined' ? marked.parse(raw) : raw;
-      textEl.scrollTop = textEl.scrollHeight;
-    },
-    onDone() {
-      spinner.style.display = 'none';
-      expandBtn.style.display = 'inline-flex';
-      reinterpretBtn.style.display = 'inline';
-      state.set('aiInterpretation', raw);
-    },
-    onError(msg) {
-      spinner.style.display = 'none';
-      if (msg && (msg.includes('404') || msg.toLowerCase().includes('no tables'))) {
-        textEl.innerHTML = '<em>No tables analyzed yet. Run analysis first to generate a validation summary.</em>';
-      } else {
-        textEl.innerHTML = '<em>Error: ' + escapeHtml(msg) + '</em>';
-      }
-      reinterpretBtn.style.display = 'inline';
-    },
-  });
-}
-
-function escapeHtml(str) {
-  const d = document.createElement('div');
-  d.textContent = str;
-  return d.innerHTML;
 }
 
 function checkDownloads() {

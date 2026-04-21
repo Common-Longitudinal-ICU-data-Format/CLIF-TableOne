@@ -49,7 +49,7 @@ async def get_validation_summary():
         if rejected_ids:
             for cat in list(category_scores.keys()):
                 cat_rejected = sum(
-                    1 for i in all_issues
+                    i.get("atomic_count", 1) for i in all_issues
                     if i["category"] == cat and i["severity"] == "error"
                     and create_error_id(i) in rejected_ids
                 )
@@ -58,11 +58,11 @@ async def get_validation_summary():
                     category_scores[cat] = (p + cat_rejected, t)
 
         rejected_error_count = sum(
-            1 for i in all_issues
+            i.get("atomic_count", 1) for i in all_issues
             if i["severity"] == "error" and create_error_id(i) in rejected_ids
         )
-        total_errors += sum(1 for i in all_issues if i["severity"] == "error") - rejected_error_count
-        total_warnings += sum(1 for i in all_issues if i["severity"] == "warning")
+        total_errors += sum(i.get("atomic_count", 1) for i in all_issues if i["severity"] == "error") - rejected_error_count
+        total_warnings += sum(i.get("atomic_count", 1) for i in all_issues if i["severity"] == "warning")
         for cat, (p, t) in category_scores.items():
             if cat not in agg_categories:
                 agg_categories[cat] = [0, 0]
@@ -104,8 +104,8 @@ async def get_validation(name: str):
 
     total_passed = sum(p for p, _ in category_scores.values())
     total_checks = sum(t for _, t in category_scores.values())
-    error_count = sum(1 for i in all_issues if i["severity"] == "error")
-    warning_count = sum(1 for i in all_issues if i["severity"] == "warning")
+    error_count = sum(i.get("atomic_count", 1) for i in all_issues if i["severity"] == "error")
+    warning_count = sum(i.get("atomic_count", 1) for i in all_issues if i["severity"] == "warning")
     overall_pct = round(total_passed / total_checks * 100, 1) if total_checks else 100
 
     return _sanitize_floats({
