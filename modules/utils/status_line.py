@@ -114,7 +114,7 @@ class ProgressDisplay:
             self._renderable(),
             console=self._console,
             refresh_per_second=4,
-            transient=False,
+            transient=True,
             # Critical: rich.Live defaults to hijacking sys.stdout/stderr on
             # start, which replaces our ProgressDisplay wrapper and starves the
             # classifier of input.  Leave the streams alone — we've already
@@ -195,13 +195,29 @@ class ProgressDisplay:
 
     # ---- rendering ----
     def _renderable(self):
-        peak = self._fmt_mem(self._peak_mb)
-        sub = Text(f"   ↳ {self._sub_phase} · peak {peak}", style="dim")
-        return Group(self._progress, sub)
+        # Dynamic renderable: rich's Live auto-refresh calls into this object
+        # on every tick, so state updates (sub_phase, peak_mb) made silently
+        # by the classifier propagate to the bar without an explicit _redraw.
+        owner = self
+
+        class _Dynamic:
+            def __rich_console__(self_inner, console, options):
+                peak = owner._fmt_mem(owner._peak_mb)
+                sub = Text(
+                    f"   ↳ {owner._sub_phase} · peak {peak}",
+                    style="dim",
+                )
+                yield from console.render(
+                    Group(owner._progress, sub), options
+                )
+
+        return _Dynamic()
 
     def _redraw(self):
+        # Explicit redraw used only at step transitions; auto-refresh
+        # (4 Hz via Live) handles incremental updates.
         if self._live is not None:
-            self._live.update(self._renderable())
+            self._live.refresh()
 
     @staticmethod
     def _safe_isatty(stream):
@@ -339,10 +355,14 @@ class ProgressDisplay:
             self._advance_step(m.group(1), m.group(2).strip())
             return
 
+        # Memory checkpoint + timing lines fire often during a step (every
+        # stratum, every bin collection, every waterfall chunk).  We update
+        # the state silently here; rich's auto-refresh (4 Hz) picks it up
+        # via the dynamic renderable, so the bar still ticks but each event
+        # does not force an explicit redraw/write.
         m = _CHECKPOINT_RE.match(stripped)
         if m:
             self._sub_phase = m.group(1).strip()
-            self._redraw()
             return
 
         m = _TIMING_RE.match(stripped)
@@ -351,7 +371,6 @@ class ProgressDisplay:
             if peak > self._peak_mb:
                 self._peak_mb = peak
             self._sub_phase = m.group(1).strip()
-            self._redraw()
             return
 
         # Unclassified input — ignore (still in file log).

@@ -156,6 +156,24 @@ def _suffixed(basename: str, suffix: str) -> str:
     return f'{stem}{suffix}{ext}'
 
 
+def _combine_sub_stratum_halves(left_df, right_df, left_col, right_col):
+    """Side-by-side merge of two sub-stratum Table Ones.
+
+    Preserves left_df's row order, then appends any Variables present
+    only in right_df. Missing cells become empty strings.
+    """
+    left_vars = left_df['Variable'].tolist()
+    right_vars = right_df['Variable'].tolist()
+    ordered = left_vars + [v for v in right_vars if v not in set(left_vars)]
+    merged = (
+        pd.DataFrame({'Variable': ordered})
+        .merge(left_df, on='Variable', how='left')
+        .merge(right_df, on='Variable', how='left')
+        .fillna('')
+    )
+    return merged[['Variable', left_col, right_col]]
+
+
 def generate_ventilator_settings_summary(resp_valid, vent_settings, output_dir, suffix=''):
     """Generate ventilator settings summary CSVs."""
     os.makedirs(output_dir, exist_ok=True)
@@ -2219,11 +2237,16 @@ def main(memory_monitor=None, cohort_mode='critical_illness') -> bool:
         'Vasoactive Support': set(summary_df.loc[summary_df['Vasoactive Support'], 'encounter_block'])
     }
 
-    # Create 4-way Venn diagram
+    # Create 4-way Venn diagram.
+    # venny4py unconditionally writes Venn_{N}.png + Intersections_{N}.txt
+    # to its `out=` directory; redirect both to a throwaway temp dir so the
+    # project root stays clean.  Our own plt.savefig below is the real output.
     fig = plt.figure(figsize=(12, 10))
-    venny4py(sets=sets_dict, dpi=300)
-    plt.suptitle('4-way Venn Diagram', fontsize=16, y=0.98)
-    plt.savefig(os.path.join(figures_dir, 'venn_all_4_groups.png'), dpi=300, bbox_inches='tight')
+    import tempfile
+    with tempfile.TemporaryDirectory() as _venny_tmp:
+        venny4py(sets=sets_dict, dpi=300, out=_venny_tmp)
+        plt.suptitle('4-way Venn Diagram', fontsize=16, y=0.98)
+        plt.savefig(os.path.join(figures_dir, 'venn_all_4_groups.png'), dpi=300, bbox_inches='tight')
     plt.close('all')
     print(f"✅ Saved: {os.path.join(figures_dir, 'venn_all_4_groups.png')}")
 
@@ -6160,6 +6183,27 @@ def main(memory_monitor=None, cohort_mode='critical_illness') -> bool:
         _pf_sf_strata_data = {}  # Collect PF/SF data for advanced_resp comparison figure
         _no_imv_pf_sf_data = {}  # Collect PF/SF data for no_imv comparison figure
 
+        # Sub-stratum pairs fused into one side-by-side CSV per pair.
+        # Keyed by (left_stratum, right_stratum); value is
+        # (parent_dir_key, left_col_label, right_col_label, filename_suffix).
+        _SUB_STRATUM_PAIRS = {
+            ('advanced_resp/icu', 'advanced_resp/no_icu'):
+                ('advanced_resp', 'icu', 'no_icu', 'icu_vs_no_icu'),
+            ('nippv_hfnc/icu', 'nippv_hfnc/no_icu'):
+                ('nippv_hfnc', 'icu', 'no_icu', 'icu_vs_no_icu'),
+            ('vaso/icu', 'vaso/no_icu'):
+                ('vaso', 'icu', 'no_icu', 'icu_vs_no_icu'),
+            ('vaso/ed_icu', 'vaso/ed_ward'):
+                ('vaso', 'ed_icu', 'ed_ward', 'ed_icu_vs_ed_ward'),
+            ('no_imv/icu', 'no_imv/no_icu'):
+                ('no_imv', 'icu', 'no_icu', 'icu_vs_no_icu'),
+        }
+        _SUB_STRATUM_LOOKUP = {}
+        for (_left, _right), (_parent, _l_col, _r_col, _suffix) in _SUB_STRATUM_PAIRS.items():
+            _SUB_STRATUM_LOOKUP[_left] = ((_left, _right), _l_col, _parent, _suffix)
+            _SUB_STRATUM_LOOKUP[_right] = ((_left, _right), _r_col, _parent, _suffix)
+        _pending_sub_strata = {}  # pair_key -> {col_label: half_df}
+
         for stratum_name, col in encounter_type_strata.items():
             if col not in tableone_df.columns:
                 print(f"  ⚠️ Skipping {stratum_name}: column '{col}' not found")
@@ -6440,12 +6484,43 @@ def main(memory_monitor=None, cohort_mode='critical_illness') -> bool:
 
             # Slugify stratum_name for the filename — sub-strata resolve to the
             # parent directory so no nested icu/no_icu subdirs are created.
-            _strat_slug = stratum_name.replace('/', '_')
-            out_path = os.path.join(str(_tableone_dir(stratum=stratum_name)),
-                                      f'table_one_{_strat_slug}_by_year.csv')
-            os.makedirs(os.path.dirname(out_path), exist_ok=True)
-            strat_table.to_csv(out_path, index=False)
-            print(f"  ✅ Saved: {out_path}")
+            _is_sub_stratum = '/' in stratum_name
+            if _is_sub_stratum and stratum_name in _SUB_STRATUM_LOOKUP:
+                # Buffer this half; merge + write once both halves are in.
+                _pair_key, _col_label, _parent, _suffix = _SUB_STRATUM_LOOKUP[stratum_name]
+                _half = strat_table[['Variable', 'Overall']].rename(
+                    columns={'Overall': _col_label}
+                )
+                _pending_sub_strata.setdefault(_pair_key, {})[_col_label] = _half
+
+                if len(_pending_sub_strata[_pair_key]) == 2:
+                    _left_name, _right_name = _pair_key
+                    _left_col = _SUB_STRATUM_LOOKUP[_left_name][1]
+                    _right_col = _SUB_STRATUM_LOOKUP[_right_name][1]
+                    _left_df = _pending_sub_strata[_pair_key][_left_col]
+                    _right_df = _pending_sub_strata[_pair_key][_right_col]
+                    _combined = _combine_sub_stratum_halves(
+                        _left_df, _right_df, _left_col, _right_col
+                    )
+                    out_path = os.path.join(
+                        str(_tableone_dir(stratum=_parent)),
+                        f'table_one_{_parent}_{_suffix}.csv',
+                    )
+                    os.makedirs(os.path.dirname(out_path), exist_ok=True)
+                    _combined.to_csv(out_path, index=False)
+                    print(f"  ✅ Saved combined: {out_path}")
+                    del _pending_sub_strata[_pair_key]
+                else:
+                    print(f"  ⏸  Buffered {stratum_name} — awaiting pair partner")
+            else:
+                _strat_slug = stratum_name.replace('/', '_')
+                out_path = os.path.join(
+                    str(_tableone_dir(stratum=stratum_name)),
+                    f'table_one_{_strat_slug}_by_year.csv',
+                )
+                os.makedirs(os.path.dirname(out_path), exist_ok=True)
+                strat_table.to_csv(out_path, index=False)
+                print(f"  ✅ Saved: {out_path}")
 
             # PF/SF CSV output for advanced_resp strata
             _PFVSF_STRATA = {
