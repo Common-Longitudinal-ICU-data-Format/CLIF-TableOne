@@ -103,10 +103,19 @@ async function renderValidation(table, panel) {
     html += `<div class="card metric-card"><div class="metric-label">Errors</div><div class="metric-value" style="color:${data.error_count > 0 ? 'var(--danger)' : 'var(--success)'}">${data.error_count}</div></div>`;
     html += `<div class="card metric-card"><div class="metric-label">Warnings</div><div class="metric-value" style="color:${data.warning_count > 0 ? 'var(--warning)' : 'var(--success)'}">${data.warning_count}</div></div>`;
 
-    for (const [cat, scores] of Object.entries(data.category_scores)) {
+    // Always render all three category cards so absent tables show N/A
+    // for Completeness / Plausibility instead of hiding the cards.
+    const CATS = ['conformance', 'completeness', 'plausibility'];
+    for (const cat of CATS) {
+      const scores = (data.category_scores || {})[cat];
+      const label = cat.charAt(0).toUpperCase() + cat.slice(1);
+      if (!scores || scores.total == null) {
+        html += `<div class="card metric-card"><div class="metric-label">${label}</div><div class="metric-value" style="color:var(--text-muted,#888);">N/A</div></div>`;
+        continue;
+      }
       const pct = scores.total ? Math.round(scores.passed / scores.total * 100) : 100;
       const color = pct >= 85 ? 'var(--success)' : pct >= 60 ? 'var(--warning)' : 'var(--danger)';
-      html += `<div class="card metric-card"><div class="metric-label">${cat.charAt(0).toUpperCase() + cat.slice(1)}</div><div class="metric-value" style="color:${color}">${scores.passed}/${scores.total}</div></div>`;
+      html += `<div class="card metric-card"><div class="metric-label">${label}</div><div class="metric-value" style="color:${color}">${scores.passed}/${scores.total}</div></div>`;
     }
     html += `</div>`;
 
@@ -379,9 +388,16 @@ function updateStatsFromFeedback(panel, data, feedback) {
     }
   }
 
-  // Update per-category cards
+  // Update per-category cards. Iterate the same 3-category sequence as
+  // the initial render so N/A cards line up with their metricCards slot.
   let cardIdx = 2;
-  for (const [cat, scores] of Object.entries(data.category_scores)) {
+  const CATS = ['conformance', 'completeness', 'plausibility'];
+  for (const cat of CATS) {
+    const scores = (data.category_scores || {})[cat];
+    if (!scores || scores.total == null) {
+      cardIdx += 1;  // N/A card — skip, nothing to adjust
+      continue;
+    }
     const catRejectedAtoms = data.issues
       .filter(i => i.category === cat && i.severity === 'error' && rejectedIds.has(i.error_id))
       .reduce((s, i) => s + (i.atomic_count ?? 1), 0);
