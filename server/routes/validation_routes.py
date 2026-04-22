@@ -23,8 +23,17 @@ router = APIRouter(prefix="/api", tags=["validation"])
 
 @router.get("/validation/summary")
 async def get_validation_summary():
-    """Aggregate DQA scores across all analyzed tables."""
+    """Aggregate DQA scores across all tables.
+
+    Absent / unvalidated tables contribute ONLY their schema-derived
+    conformance atoms to the totals (via
+    :func:`build_absent_table_dqa_result`); their completeness and
+    plausibility counts are N/A since those checks need actual data.
+    This keeps the summary denominators aligned with the combined PDF
+    report's DQA Overview totals.
+    """
     from server.routes.analysis_routes import ALL_TABLES
+    from clifpy.utils.validator import build_absent_table_dqa_result
 
     agg_categories = {}  # cat -> [passed, total]
     total_errors = 0
@@ -33,13 +42,21 @@ async def get_validation_summary():
 
     for name in ALL_TABLES:
         cached = cache_service.get(name)
-        if not cached or not cached.get("validation"):
-            continue
-        tables_analyzed += 1
-        category_scores, all_issues = _collect_dqa_issues(cached["validation"])
+        has_validation = bool(cached and cached.get("validation"))
+        if has_validation:
+            validation = cached["validation"]
+            tables_analyzed += 1
+        else:
+            # Missing validation → synthesize an absent-table result so
+            # the table's conformance atoms still contribute to totals.
+            validation = build_absent_table_dqa_result(name)
 
-        # Adjust scores for rejected feedback (matches combined PDF logic)
-        fb = cached.get("feedback")
+        is_absent = bool(validation.get("absent"))
+        category_scores, all_issues = _collect_dqa_issues(validation)
+
+        # Adjust scores for rejected feedback (matches combined PDF logic).
+        # Absent tables have no user feedback, so this block is a no-op for them.
+        fb = cached.get("feedback") if has_validation else None
         rejected_ids: set = set()
         if fb and fb.get("user_decisions"):
             rejected_ids = {
@@ -64,6 +81,10 @@ async def get_validation_summary():
         total_errors += sum(i.get("atomic_count", 1) for i in all_issues if i["severity"] == "error") - rejected_error_count
         total_warnings += sum(i.get("atomic_count", 1) for i in all_issues if i["severity"] == "warning")
         for cat, (p, t) in category_scores.items():
+            # Absent tables only contribute conformance atoms; completeness
+            # and plausibility need data to evaluate and are reported N/A.
+            if is_absent and cat != "conformance":
+                continue
             if cat not in agg_categories:
                 agg_categories[cat] = [0, 0]
             agg_categories[cat][0] += p
