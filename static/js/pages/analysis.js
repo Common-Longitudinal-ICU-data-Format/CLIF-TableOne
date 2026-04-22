@@ -241,13 +241,9 @@ async function renderValidation(table, panel) {
           const sel = panel.querySelector(`.feedback-select[data-eid="${eid}"]`);
           if (sel) sel.value = info.decision || 'pending';
           const reasonInput = panel.querySelector(`.feedback-reason[data-eid="${eid}"]`);
-          if (reasonInput) {
-            if (info.decision === 'rejected') {
-              reasonInput.style.display = 'block';
-              reasonInput.value = info.reason || '';
-              reasonInput.style.height = 'auto';
-              reasonInput.style.height = reasonInput.scrollHeight + 'px';
-            }
+          if (reasonInput && info.decision === 'rejected') {
+            reasonInput.style.display = 'block';
+            reasonInput.value = info.reason || '';
           }
         }
         updateStatsFromFeedback(panel, data, feedback);
@@ -272,7 +268,16 @@ async function renderValidation(table, panel) {
         }
       }
 
+      // Reveal the Reason column first, then auto-size textareas. Measuring
+      // scrollHeight while the parent <td> is still display:none returns 0
+      // and collapses the textarea to a sliver.
       toggleReasonColumn();
+      panel.querySelectorAll('.feedback-reason').forEach(el => {
+        if (el.style.display !== 'none' && el.value) {
+          el.style.height = 'auto';
+          el.style.height = el.scrollHeight + 'px';
+        }
+      });
     } catch (e) { /* no feedback yet */ }
 
     // Feedback change handlers — update stats live on change

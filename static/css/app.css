@@ -620,6 +620,7 @@ input[type="checkbox"] {
 .feedback-reason {
   width: 100%;
   min-width: 120px;
+  min-height: 2em;
   padding: 4px 8px;
   font-size: 0.8rem;
   border-radius: 6px;
