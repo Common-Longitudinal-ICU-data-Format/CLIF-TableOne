@@ -245,6 +245,11 @@ class ProjectRunner:
             env = os.environ.copy()
             env['PYTHONUTF8'] = '1'
             env['PYTHONIOENCODING'] = 'utf-8'
+            # Force unbuffered child stdout so per-table progress lines reach
+            # ProgressDisplay in real time. Without this, pipe-destination
+            # stdout is block-buffered (~8 KB) and the live status line sits
+            # on "starting…" for minutes until validation flushes.
+            env['PYTHONUNBUFFERED'] = '1'
 
             # Use different approach for Windows vs Unix-like systems
             if sys.platform == 'win32':
@@ -442,6 +447,11 @@ class ProjectRunner:
             env = os.environ.copy()
             env['PYTHONUTF8'] = '1'
             env['PYTHONIOENCODING'] = 'utf-8'
+            # Force unbuffered child stdout so per-table progress lines reach
+            # ProgressDisplay in real time. Without this, pipe-destination
+            # stdout is block-buffered (~8 KB) and the live status line sits
+            # on "starting…" for minutes until validation flushes.
+            env['PYTHONUNBUFFERED'] = '1'
 
             if sys.platform == 'win32':
                 process = subprocess.Popen(
@@ -787,6 +797,76 @@ class ProjectRunner:
 
         return self.results['overall_success']
 
+    def _reclaim_port(self, port=8000):
+        """Return a usable port, self-healing from orphaned uvicorns.
+
+        If `port` is free, returns it unchanged. If a prior CLIF uvicorn
+        (identified by `server.main:app` in its command) is still bound,
+        terminates it and reuses the port. Otherwise, falls back to a
+        free ephemeral port so the launch still succeeds.
+        """
+        import socket
+        import shutil
+        import signal
+        import time
+
+        def _is_free(p):
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+                try:
+                    s.bind(('127.0.0.1', p))
+                    return True
+                except OSError:
+                    return False
+
+        if _is_free(port):
+            return port
+
+        holder_pid = None
+        if shutil.which('lsof'):
+            try:
+                out = subprocess.check_output(
+                    ['lsof', f'-iTCP:{port}', '-sTCP:LISTEN', '-n', '-P', '-Fpc'],
+                    text=True, stderr=subprocess.DEVNULL,
+                )
+                pid = cmd_name = None
+                for line in out.splitlines():
+                    if line.startswith('p'):
+                        pid = int(line[1:])
+                    elif line.startswith('c'):
+                        cmd_name = line[1:]
+                if pid and cmd_name and 'python' in cmd_name.lower():
+                    ps_out = subprocess.check_output(
+                        ['ps', '-p', str(pid), '-o', 'command='], text=True,
+                    )
+                    if 'server.main:app' in ps_out:
+                        holder_pid = pid
+            except (subprocess.CalledProcessError, ValueError):
+                pass
+
+        if holder_pid is not None:
+            print(f"⚠️  Port {port} held by orphaned CLIF uvicorn (PID {holder_pid}) — cleaning up…")
+            try:
+                os.kill(holder_pid, signal.SIGTERM)
+            except ProcessLookupError:
+                pass
+            for _ in range(20):
+                time.sleep(0.1)
+                if _is_free(port):
+                    return port
+            try:
+                os.kill(holder_pid, signal.SIGKILL)
+                time.sleep(0.3)
+            except ProcessLookupError:
+                pass
+            if _is_free(port):
+                return port
+
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            s.bind(('127.0.0.1', 0))
+            alt = s.getsockname()[1]
+        print(f"⚠️  Port {port} is in use by another process — falling back to port {alt}")
+        return alt
+
     def launch_app(self):
         """Launch the FastAPI web application."""
         self.print_header("LAUNCHING WEB APP")
@@ -802,8 +882,11 @@ class ProjectRunner:
         webapp_log_file = log_dir / f'webapp_execution_{timestamp}.log'
         webapp_latest_log = log_dir / 'webapp_execution_latest.log'
 
+        port = self._reclaim_port(8000)
+        url = f"http://localhost:{port}"
+
         print("Starting CLIF web application...")
-        print("The app will open in your default browser at http://localhost:8000")
+        print(f"The app will open in your default browser at {url}")
         print(f"Webapp logs → {webapp_latest_log}")
         print("\nPress Ctrl+C to stop the app\n")
 
@@ -814,11 +897,11 @@ class ProjectRunner:
         def open_browser():
             import time
             time.sleep(1.5)
-            webbrowser.open("http://localhost:8000")
+            webbrowser.open(url)
 
         threading.Thread(target=open_browser, daemon=True).start()
 
-        cmd = [sys.executable, '-m', 'uvicorn', 'server.main:app', '--host', '127.0.0.1', '--port', '8000', '--no-access-log']
+        cmd = [sys.executable, '-m', 'uvicorn', 'server.main:app', '--host', '127.0.0.1', '--port', str(port), '--no-access-log']
 
         # Send uvicorn's stdout+stderr to both log files simultaneously.
         # `tee` keeps the workflow log pattern consistent (timestamped + latest)
@@ -1072,9 +1155,9 @@ Examples:
     validation_group = parser.add_argument_group('Validation Options')
     validation_group.add_argument('--tables', nargs='+',
                                   choices=['patient', 'hospitalization', 'adt', 'code_status',
-                                          'crrt_therapy', 'ecmo_mcs', 'hospital_diagnosis', 'labs',
+                                          'crrt_therapy', 'hospital_diagnosis', 'labs',
                                           'medication_admin_continuous', 'medication_admin_intermittent',
-                                          'microbiology_culture', 'microbiology_nonculture',
+                                          'microbiology_culture', 
                                           'microbiology_susceptibility', 'patient_assessments',
                                           'patient_procedures', 'position', 'respiratory_support', 'vitals'],
                                   help='Specific tables to validate')
@@ -1119,10 +1202,6 @@ Examples:
         ward_tableone = args.ward
         # Get ECDF only if explicitly requested
         get_ecdf = args.get_ecdf
-
-    # Auto-skip app launch if only validation was run (no data to view in app)
-    if args.validate_only:
-        args.no_launch_app = True
 
     # Default terminal UX: live rich progress bar.  --verbose keeps the
     # full scroll behavior.  File logs are captured the same way in both modes.
