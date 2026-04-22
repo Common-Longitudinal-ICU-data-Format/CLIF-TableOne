@@ -316,7 +316,6 @@ class ECDFRunner:
                 icu_windows=icu_windows,
                 db=db,
                 lab_category_units=lab_category_units,
-                lab_vital_config=lab_vital_config,
                 output_dir=str(output_dir)
             )
 
@@ -354,7 +353,6 @@ class ECDFRunner:
                         icu_windows=filtered_windows,
                         db=db,
                         lab_category_units=lab_category_units,
-                        lab_vital_config=lab_vital_config,
                         output_dir=str(output_dir),
                         suffix=f"_{stratum_name.replace('/', '_')}"
                     )
