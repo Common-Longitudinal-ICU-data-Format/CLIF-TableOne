@@ -26,9 +26,40 @@ class LabsAnalyzer(BaseTableAnalyzer):
         """Return the table name."""
         return 'labs'
 
+    # Columns actually consulted by the labs DQA validators + TableOne
+    # downstream code. Everything omitted (lab_order_name, lab_name,
+    # lab_specimen_name, lab_loinc_code) is optional in labs_schema.yaml
+    # and free-text, which inflates pandas object-dtype memory the most.
+    # Dropping them at parquet-read time is the biggest 16-GB-fit lever.
+    _LEAN_COLUMNS = [
+        'hospitalization_id',
+        'lab_order_dttm', 'lab_collect_dttm', 'lab_result_dttm',
+        'lab_order_category', 'lab_category',
+        'lab_value', 'lab_value_numeric',
+        'reference_unit', 'lab_specimen_category',
+    ]
+
+    # Short-vocab columns worth converting to pandas Categorical after
+    # load. For MIMIC-scale labs (~120M rows) each of these saves roughly
+    # 500 MB-1 GB by replacing per-row string pointers with int8/int16
+    # codes into a small lookup.
+    _CATEGORICAL_COLUMNS = (
+        'lab_order_category',
+        'lab_category',
+        'reference_unit',
+        'lab_specimen_category',
+        'hospitalization_id',
+    )
+
     def load_table(self):
         """
-        Load Labs table using clifpy.
+        Load Labs table using clifpy, tuned for low-memory hosts.
+
+        Two knobs vs. the default clifpy load:
+          - Column pruning at the parquet read (DuckDB pushes this down,
+            so the skipped columns are never decompressed).
+          - Post-load dtype downcast: short-vocab strings → Categorical,
+            lab_value_numeric → float32. Applied in-place to self.table.df.
 
         Handles both naming conventions:
         - labs.parquet
@@ -58,14 +89,46 @@ class LabsAnalyzer(BaseTableAnalyzer):
                 data_directory=self.data_dir,
                 filetype=self.filetype,
                 timezone=self.timezone,
-                output_directory=clifpy_output_dir
+                output_directory=clifpy_output_dir,
+                columns=self._LEAN_COLUMNS,
             )
         except FileNotFoundError:
             print(f"⚠️  labs table file not found in {self.data_dir}")
             self.table = None
+            return
         except Exception as e:
             print(f"⚠️  Error loading labs table: {e}")
             self.table = None
+            return
+
+        self._downcast_dtypes()
+
+    def _downcast_dtypes(self):
+        """In-place dtype downcast on self.table.df to cut pandas memory."""
+        if self.table is None or getattr(self.table, 'df', None) is None:
+            return
+
+        import gc
+        df = self.table.df
+
+        def _mb(frame):
+            return frame.memory_usage(deep=True).sum() / 1024 / 1024
+
+        before_mb = _mb(df)
+
+        for col in self._CATEGORICAL_COLUMNS:
+            if col in df.columns and df[col].dtype == 'object':
+                df[col] = df[col].astype('category')
+
+        if 'lab_value_numeric' in df.columns and df['lab_value_numeric'].dtype == 'float64':
+            df['lab_value_numeric'] = df['lab_value_numeric'].astype('float32')
+
+        gc.collect()
+        after_mb = _mb(df)
+        print(
+            f"[labs] dtype downcast: {before_mb:.0f} MB → {after_mb:.0f} MB "
+            f"(saved {before_mb - after_mb:.0f} MB, {len(df):,} rows)"
+        )
 
     def get_data_info(self) -> Dict[str, Any]:
         """
