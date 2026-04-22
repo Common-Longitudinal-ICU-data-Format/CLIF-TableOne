@@ -11,7 +11,16 @@ from typing import Dict, List, Any
 import pandas as pd
 import numpy as np
 
-from modules.utils.clif_loader import ClifDB
+from modules.utils.clif_loader import ClifDB, _load_schema
+from .generator import _classify_lab_unit
+
+
+def _get_permissible_values(schema: Dict[str, Any], col_name: str) -> List[str]:
+    """Return the permissible_values list for a named column in a CLIF schema, or []."""
+    for col in schema.get('columns', []) or []:
+        if col.get('name') == col_name:
+            return list(col.get('permissible_values') or [])
+    return []
 
 
 def _build_category_filter(table_type, category, unit):
@@ -160,12 +169,16 @@ def compute_collection_statistics(
     icu_windows: pd.DataFrame,
     db: ClifDB,
     lab_category_units: pd.DataFrame,
-    lab_vital_config: Dict[str, Any],
     output_dir: str,
     suffix: str = ""
 ) -> str:
     """
     Compute collection statistics for all labs, vitals, and respiratory support.
+
+    Categories are filtered against the CLIF schema (clifpy labs/vitals
+    schemas) — not the ECDF binning config. This report is about data
+    coverage, not ECDF plotting, so any category that's valid per the CLIF
+    spec belongs here regardless of whether it has bin definitions.
 
     Returns:
         Path to saved CSV file
@@ -178,6 +191,10 @@ def compute_collection_statistics(
     print("="*80)
     print()
 
+    # Load CLIF schemas once — the authoritative category vocabulary.
+    labs_schema = _load_schema('labs') or {}
+    vitals_schema = _load_schema('vitals') or {}
+
     all_stats = []
 
     # ========================================================================
@@ -185,22 +202,16 @@ def compute_collection_statistics(
     # ========================================================================
 
     print("Processing Labs...")
-    labs_config = lab_vital_config.get('labs', {})
 
     for row in lab_category_units.itertuples(index=False):
         category = row.lab_category
         unit = row.reference_unit
 
-        if category not in labs_config:
-            continue
-
-        unit_normalized = unit.lower().strip() if unit else "(no units)"
-        config_unit = labs_config[category].get('reference_unit')
-        if isinstance(config_unit, list):
-            valid_units = [u.lower() for u in config_unit]
-        else:
-            valid_units = [config_unit.lower()] if config_unit else []
-        if unit_normalized not in valid_units:
+        # Only include (category, unit) pairs accepted by the CLIF labs
+        # schema. _classify_lab_unit returns 'ok' when the category is in
+        # lab_reference_units AND the unit matches an accepted variant.
+        status, _canonical = _classify_lab_unit(category, unit, labs_schema)
+        if status != 'ok':
             continue
 
         try:
@@ -229,9 +240,9 @@ def compute_collection_statistics(
     # ========================================================================
 
     print("Processing Vitals...")
-    vitals_config = lab_vital_config.get('vitals', {})
+    vital_categories = _get_permissible_values(vitals_schema, 'vital_category')
 
-    for category in sorted(vitals_config.keys()):
+    for category in sorted(vital_categories):
         try:
             stats = compute_per_stay_observation_counts(
                 table_type='vitals',
@@ -259,6 +270,9 @@ def compute_collection_statistics(
 
     print("Processing Respiratory Support (17 columns)...")
 
+    # Respiratory support measurement columns aren't enumerated as a
+    # permissible-values vocabulary in the CLIF schema (they're ordinary
+    # table columns), so this hardcoded list stays.
     resp_columns = [
         'fio2_set', 'lpm_set', 'tidal_volume_set', 'resp_rate_set',
         'pressure_control_set', 'pressure_support_set', 'flow_rate_set',

@@ -5,9 +5,9 @@ import json
 from typing import Dict, Any, List, Optional
 from modules.tables import (
     PatientAnalyzer, HospitalizationAnalyzer, ADTAnalyzer, CodeStatusAnalyzer,
-    CRRTTherapyAnalyzer, ECMOMCSAnalyzer, HospitalDiagnosisAnalyzer, LabsAnalyzer,
+    CRRTTherapyAnalyzer, HospitalDiagnosisAnalyzer, LabsAnalyzer,
     MedicationAdminContinuousAnalyzer, MedicationAdminIntermittentAnalyzer,
-    MicrobiologyCultureAnalyzer, MicrobiologyNoncultureAnalyzer,
+    MicrobiologyCultureAnalyzer, 
     MicrobiologySusceptibilityAnalyzer, PatientAssessmentsAnalyzer,
     PatientProceduresAnalyzer, PositionAnalyzer, RespiratorySupportAnalyzer,
     VitalsAnalyzer

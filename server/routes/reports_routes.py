@@ -13,9 +13,9 @@ logger = logging.getLogger("clif.reports")
 router = APIRouter(prefix="/api", tags=["reports"])
 
 ALL_TABLES = [
-    'patient', 'hospitalization', 'adt', 'code_status', 'crrt_therapy', 'ecmo_mcs',
+    'patient', 'hospitalization', 'adt', 'code_status', 'crrt_therapy', 
     'hospital_diagnosis', 'labs', 'medication_admin_continuous', 'medication_admin_intermittent',
-    'microbiology_culture', 'microbiology_nonculture', 'microbiology_susceptibility',
+    'microbiology_culture', 'microbiology_susceptibility',
     'patient_assessments', 'patient_procedures', 'position', 'respiratory_support', 'vitals',
 ]
 
