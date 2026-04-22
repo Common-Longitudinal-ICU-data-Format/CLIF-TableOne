@@ -385,7 +385,7 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [
-    { name = "clifpy", specifier = ">=0.4.8" },
+    { name = "clifpy", specifier = ">=0.4.9" },
     { name = "duckdb", specifier = ">=1.4.1" },
     { name = "fastapi", specifier = ">=0.115.0" },
     { name = "jupyter", specifier = ">=1.1.1" },
@@ -408,7 +408,7 @@ requires-dist = [
 
 [[package]]
 name = "clifpy"
-version = "0.4.8"
+version = "0.4.9"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "build" },
@@ -427,9 +427,9 @@ dependencies = [
     { name = "tqdm" },
     { name = "twine" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/99/23/5caa44b3f9e8d6ba3af5361918c2d08e8f71ae32a2bea90c9d94694dbd25/clifpy-0.4.8.tar.gz", hash = "sha256:7085140a3a6635b786b4f29bf65fd0bf198592c37b666e9ee4e84cf2bc1eadad", size = 1984266, upload-time = "2026-04-22T18:03:22.205Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/f4/3a/da891d0ae27a3ba10362c1fed4b632353561ceec769bfd68848c60d856c0/clifpy-0.4.9.tar.gz", hash = "sha256:daad3c45f61c911ca17d1b5611fcda5e1327219851fd83bc6914ced76dc13ad3", size = 1984603, upload-time = "2026-04-22T19:43:42.094Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/7c/6b/b460da38930156841f56effaf92972ebd56a2512d16212e8944737483685/clifpy-0.4.8-py3-none-any.whl", hash = "sha256:bf08284af5809cb3fd86e0e03971569dbf1079199ee5aa7c53fa079ddbb16781", size = 2024005, upload-time = "2026-04-22T18:03:19.475Z" },
+    { url = "https://files.pythonhosted.org/packages/eb/be/d106499bd6d845a344f628a3c1c3217fc4c5ecbfb7e9968135ed39375496/clifpy-0.4.9-py3-none-any.whl", hash = "sha256:144dbbb58a077aa638c9d4e83ac1ce58bc1d0eac91b84eaf13a9beaf4377a49f", size = 2024359, upload-time = "2026-04-22T19:43:39.915Z" },
 ]
 
 [[package]]
