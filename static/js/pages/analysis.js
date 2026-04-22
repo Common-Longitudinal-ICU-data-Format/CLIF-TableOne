@@ -122,18 +122,24 @@ async function renderValidation(table, panel) {
     // Review status placeholder (populated after feedback loads)
     html += `<div id="review-status"></div>`;
 
-    // Issues table (errors)
+    // Issues table (errors). For absent tables the single table_presence
+    // error is a factual state (site didn't submit the table), not an
+    // actionable finding — hide the feedback dropdown, legend, and
+    // Save Feedback button; the row just stays visible.
     const errors = data.issues.filter(i => i.severity === 'error');
     const errorAtoms = errors.reduce((s, i) => s + (i.atomic_count ?? 1), 0);
     if (errors.length > 0) {
+      const isAbsent = !!data.absent;
       html += `<div class="card" style="margin-bottom:16px;">
-        <h3>Review & Resolve (${errorAtoms} error(s))</h3>
-        <div style="display:flex;justify-content:space-evenly;font-size:0.8rem;margin:0 0 12px;padding:8px 12px;background:var(--bg-secondary,#f5f5f7);border-radius:6px;">
+        <h3>Review & Resolve (${errorAtoms} error(s))</h3>`;
+      if (!isAbsent) {
+        html += `<div style="display:flex;justify-content:space-evenly;font-size:0.8rem;margin:0 0 12px;padding:8px 12px;background:var(--bg-secondary,#f5f5f7);border-radius:6px;">
           <span><strong style="color:var(--text);">Pending</strong> <span style="opacity:0.6;">— not reviewed</span></span>
           <span><strong style="color:var(--success);">Accepted</strong> <span style="opacity:0.6;">— known issue, acknowledged</span></span>
           <span><strong style="color:var(--danger);">Rejected</strong> <span style="opacity:0.6;">— incorrect or not applicable</span></span>
-        </div>
-        <div id="feedback-container"></div>
+        </div>`;
+      }
+      html += `<div id="feedback-container"></div>
         <table class="data-table" id="errors-table">
           <thead><tr><th>Feedback</th><th class="reason-col" style="display:none;">Reason</th><th>Category</th><th>Check</th><th>Column</th><th>Message</th><th style="text-align:right;">Checks</th></tr></thead>
           <tbody>`;
@@ -142,8 +148,9 @@ async function renderValidation(table, panel) {
         const eid = issue.error_id || '';
         const checks = issue.atomic_count ?? 1;
         const checksDisplay = checks === 0 ? '—' : checks;
-        html += `<tr data-eid="${eid}">
-          <td>
+        const feedbackCell = isAbsent
+          ? `<td style="color:var(--text-muted,#888);">—</td>`
+          : `<td>
             <select class="feedback-select" data-eid="${eid}">
               <option value="pending">Pending</option>
               <option value="accepted">Accepted</option>
@@ -152,7 +159,9 @@ async function renderValidation(table, panel) {
           </td>
           <td class="reason-col" style="display:none;">
             <textarea class="feedback-reason" data-eid="${eid}" placeholder="Reason..." rows="1" style="display:none;"></textarea>
-          </td>
+          </td>`;
+        html += `<tr data-eid="${eid}">
+          ${feedbackCell}
           <td>${issue.category || ''}</td>
           <td>${issue.rule_description || issue.check_type || ''}</td>
           <td>${issue.column_field || 'N/A'}</td>
@@ -161,9 +170,11 @@ async function renderValidation(table, panel) {
         </tr>`;
       }
 
-      html += `</tbody></table>
-        <button class="btn btn-primary" id="btn-save-feedback" style="margin-top:12px;">Save Feedback</button>
-      </div>`;
+      html += `</tbody></table>`;
+      if (!isAbsent) {
+        html += `<button class="btn btn-primary" id="btn-save-feedback" style="margin-top:12px;">Save Feedback</button>`;
+      }
+      html += `</div>`;
     } else {
       html += `<div class="card" style="border-left:4px solid var(--success);"><p>No validation issues found!</p></div>`;
     }
