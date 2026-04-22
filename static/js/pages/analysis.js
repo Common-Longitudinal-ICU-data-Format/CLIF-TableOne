@@ -13,9 +13,9 @@ export async function renderAnalysis(el, params) {
 
   el.innerHTML = `
     <button class="btn btn-back" id="btn-back-validation">&larr; Back to Validation</button>
-    <h1>${displayName} Analysis</h1>
+    <h1>${displayName} Validation</h1>
     <div style="margin-bottom:16px;display:flex;gap:12px;align-items:center;">
-      <button class="btn btn-primary" id="btn-run-analysis">Run Analysis</button>
+      <button class="btn btn-primary" id="btn-run-analysis">Run Validation</button>
       <a class="btn btn-outline" id="btn-view-pdf" href="${api.tableReport(table)}" target="_blank" style="display:none;">View PDF Report</a>
       <div id="single-progress" style="display:none;flex:1;">
         <div class="progress-bar"><div class="progress-fill" id="single-progress-fill"></div></div>
@@ -341,7 +341,7 @@ async function renderValidation(table, panel) {
     }
 
   } catch (e) {
-    panel.innerHTML = `<p>No validation results available. Click "Run Analysis" to validate this table.</p>`;
+    panel.innerHTML = `<p>No validation results available. Click "Run Validation" to validate this table.</p>`;
   }
 }
 
@@ -564,6 +564,6 @@ async function renderSummary(table, panel) {
     }
 
   } catch (e) {
-    panel.innerHTML = '<p>No summary data available. Click "Run Analysis" to generate.</p>';
+    panel.innerHTML = '<p>No summary data available. Click "Run Validation" to generate.</p>';
   }
 }
