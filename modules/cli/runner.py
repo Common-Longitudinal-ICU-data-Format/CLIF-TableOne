@@ -14,6 +14,8 @@ from modules.tables import (
 )
 from .formatters import ConsoleFormatter
 from .pdf_generator import ValidationPDFGenerator
+from modules.utils.memory_monitor import MemoryMonitor
+from modules.utils.output_paths import workflow_logs_dir
 
 
 class CLIAnalysisRunner:
@@ -71,6 +73,17 @@ class CLIAnalysisRunner:
         self.timezone = config.get('timezone', 'UTC')
         self.output_dir = config.get('output_dir', 'output')
         self.site_name = config.get('site_name')
+
+        # Per-table memory profiler. Writes a CSV row after every table so
+        # that if the child is SIGKILLed (OOM), prior tables' data survives.
+        # Disable by setting CLIF_DISABLE_MEM_PROFILE=1.
+        self.memory_monitor = None
+        if os.environ.get('CLIF_DISABLE_MEM_PROFILE') != '1':
+            from datetime import datetime as _dt
+            ts = _dt.now().strftime('%Y%m%d_%H%M%S')
+            mem_csv = workflow_logs_dir() / f'validation_memory_profile_{ts}.csv'
+            self.memory_monitor = MemoryMonitor(csv_path=mem_csv)
+            self._mem_csv_path = mem_csv
 
     def log(self, message: str, force: bool = False):
         """Log message to console if not in quiet mode."""
@@ -289,6 +302,8 @@ class CLIAnalysisRunner:
         self.log(f"[LIST] Tables: {', '.join(tables)}", force=True)
         self.log(f"[SEARCH] Validation: {'[OK]' if run_validation else '[X]'}", force=True)
         self.log(f"[STATS] Summary: {'[OK]' if run_summary else '[X]'}", force=True)
+        if self.memory_monitor is not None:
+            self.log(f"[MEM] Per-table memory profile: {self._mem_csv_path}", force=True)
         self.log("", force=True)
 
         results = {
@@ -303,7 +318,13 @@ class CLIAnalysisRunner:
         for table_name in tables:
             self.log(f"\n{self.formatter.section(f'Processing {table_name.upper()} table')}")
 
-            result = self.run_table_analysis(table_name, run_validation, run_summary)
+            if self.memory_monitor is not None:
+                self.memory_monitor.start_phase(f'table:{table_name}')
+            try:
+                result = self.run_table_analysis(table_name, run_validation, run_summary)
+            finally:
+                if self.memory_monitor is not None:
+                    self.memory_monitor.end_phase()
             results['details'][table_name] = result
 
             if result['success']:
@@ -316,6 +337,8 @@ class CLIAnalysisRunner:
         # Run cross-table checks from caches (relational + plausibility) — ONCE
         if run_validation and len(self._cross_table_caches) > 1:
             self.log(f"\n{self.formatter.section('Cross-Table Checks (from cache)')}")
+            if self.memory_monitor is not None:
+                self.memory_monitor.start_phase('cross_table_checks')
             try:
                 from clifpy.utils.validator import (
                     run_relational_integrity_checks_from_cache,
@@ -444,6 +467,9 @@ class CLIAnalysisRunner:
                 if self.verbose:
                     import traceback
                     traceback.print_exc()
+            finally:
+                if self.memory_monitor is not None:
+                    self.memory_monitor.end_phase()
 
         # Run MCIDE collection if validation was performed and we have successful tables
         if run_validation and results['tables_analyzed']:
@@ -568,5 +594,9 @@ class CLIAnalysisRunner:
                 if self.verbose:
                     import traceback
                     traceback.print_exc()
+
+        if self.memory_monitor is not None:
+            self.memory_monitor.close()
+            self.log(f"\n[MEM] Memory profile written: {self._mem_csv_path}", force=True)
 
         return results
