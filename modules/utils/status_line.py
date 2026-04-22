@@ -51,6 +51,15 @@ _EQUALS_RE = re.compile(r"^=+$")
 _LOG_PREFIX_RE = re.compile(
     r"^\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2}(?:[.,]\d+)?\s+-\s+\w+\s+-\s+(.*)$"
 )
+# CLIAnalysisRunner emits progress lines like "🔍 Running validation for X..."
+# and "✅ Completed analysis for X" via ConsoleFormatter. Surfacing these as
+# sub-phase updates keeps the live display informative during --validate-only,
+# which otherwise never emits [Memory Checkpoint: …] or STEP N: banners.
+_RUNNER_PROGRESS_RE = re.compile(
+    r"^(?:🔍|✅|ℹ️|⚠️|❌)\s+(.+?)\.{0,3}\s*$"
+)
+_RUNNER_SECTION_RE = re.compile(r"^Processing\s+(.+?)\s+table\s*$", re.IGNORECASE)
+_ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
 
 # Titles emitted by `run_project.py:print_header` for the four top-level
 # workflow steps.  Sub-runners (TableOneRunner, ECDFRunner) emit their own
@@ -240,6 +249,10 @@ class ProgressDisplay:
         m = _LOG_PREFIX_RE.match(line)
         return m.group(1) if m else line
 
+    @staticmethod
+    def _strip_ansi(s):
+        return _ANSI_RE.sub("", s)
+
     # Text that signals the workflow is done and the web app is about to
     # start.  When we see any of these, snap the bar to 100% and tear the
     # live display down so uvicorn's output can scroll normally.
@@ -370,6 +383,20 @@ class ProgressDisplay:
             peak = float(m.group(3))
             if peak > self._peak_mb:
                 self._peak_mb = peak
+            self._sub_phase = m.group(1).strip()
+            return
+
+        # CLIAnalysisRunner per-table progress. Match after checkpoint/timing
+        # so Table One / ECDF steps keep their richer sub-phase text; this is
+        # what keeps --validate-only from sitting on "starting…" for minutes.
+        clean = self._strip_ansi(stripped)
+        m = _RUNNER_SECTION_RE.match(clean)
+        if m:
+            self._sub_phase = f"processing {m.group(1).lower()}"
+            return
+
+        m = _RUNNER_PROGRESS_RE.match(clean)
+        if m:
             self._sub_phase = m.group(1).strip()
             return
 
