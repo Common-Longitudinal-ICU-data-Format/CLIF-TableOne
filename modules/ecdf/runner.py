@@ -167,10 +167,12 @@ class ECDFRunner:
                 short = '/'.join(Path(dir_path).parts[-3:])
                 print(f"   {short}")
 
-        # Check for log file
-        log_file = meta_dir() / 'unit_mismatches.log'
-        if log_file.exists():
-            print(f"\n📋 Log file: {log_file}")
+        # Check for log files — two streams now: data-vs-schema mismatches
+        # (site issues) and ECDF coverage gaps (config issues).
+        for fname in ('unit_mismatches.log', 'ecdf_coverage_gaps.log'):
+            log_file = meta_dir() / fname
+            if log_file.exists():
+                print(f"\n📋 Log file: {log_file}")
 
         return len(missing_dirs) == 0
 
@@ -433,7 +435,8 @@ class ECDFRunner:
             f.write("└── meta/\n")
             f.write("    ├── configs/                   # Configuration snapshots\n")
             f.write("    ├── ecdf_execution_report.txt\n")
-            f.write("    └── unit_mismatches.log\n")
+            f.write("    ├── unit_mismatches.log        # data vs CLIF labs schema\n")
+            f.write("    └── ecdf_coverage_gaps.log     # schema-valid cats w/o bin config\n")
 
         print(f"\n📊 Execution report saved: {report_path}")
 

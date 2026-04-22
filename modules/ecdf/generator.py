@@ -39,7 +39,8 @@ Output structure:
         │   ├── clif_config.json
         │   ├── lab_vital_config.yaml
         │   └── outlier_config.yaml
-        └── unit_mismatches.log
+        ├── unit_mismatches.log      # data vs CLIF labs schema (site issues)
+        └── ecdf_coverage_gaps.log   # schema-valid cats w/o bin config + errors
 """
 
 import json
@@ -765,6 +766,36 @@ def process_respiratory_column(
 # Main Processing
 # ============================================================================
 
+def _classify_lab_unit(
+    category: str,
+    unit: str,
+    labs_schema: Dict[str, Any],
+) -> Tuple[str, str | None]:
+    """Classify a (category, unit) pair against the CLIF labs schema.
+
+    The schema (from clifpy) is the authoritative source for which lab
+    categories are legal CLIF vocabulary and which unit spellings are
+    accepted for each category. Separated from the binning-config check
+    so a category that's valid per CLIF but lacks an ECDF bin definition
+    is classified as a coverage gap, not a unit mismatch.
+
+    Returns a tuple (status, canonical):
+        ('not_in_spec', None)       — category is not in CLIF's labs vocab
+        ('unit_mismatch', canonical) — category is valid but unit spelling isn't
+        ('ok', canonical)            — category and unit both accepted
+    """
+    ref_units = labs_schema.get('lab_reference_units', {}) or {}
+    variants = labs_schema.get('allowed_unit_variants', {}) or {}
+    canonical = ref_units.get(category)
+    if canonical is None:
+        return ('not_in_spec', None)
+    allowed = variants.get(canonical) or [canonical]
+    allowed_lower = {str(v).lower().strip() for v in allowed}
+    if (unit or '').lower().strip() not in allowed_lower:
+        return ('unit_mismatch', canonical)
+    return ('ok', canonical)
+
+
 def run_ecdf_pipeline(
     icu_windows: pd.DataFrame,
     lab_category_units: pd.DataFrame,
@@ -772,10 +803,11 @@ def run_ecdf_pipeline(
     clif_config: Dict,
     outlier_config: Dict,
     lab_vital_config: Dict,
+    labs_schema: Dict[str, Any],
     output_dir: str,
     label: str = "overall",
     suffix: str = ''
-) -> Tuple[List, List, List, List]:
+) -> Tuple[List, List, List, List, List]:
     """
     Run the full ECDF/bins pipeline for a given set of ICU windows.
 
@@ -783,12 +815,21 @@ def run_ecdf_pipeline(
     called once for overall and once per encounter-type stratum.
 
     Returns:
-        (labs_stats, vitals_stats, resp_stats, log_entries)
+        (labs_stats, vitals_stats, resp_stats, mismatch_entries, coverage_entries)
+
+    Two log streams are returned separately:
+      * mismatch_entries — data that doesn't comply with the CLIF labs schema
+        (unknown category or unrecognized unit spelling). Written to
+        unit_mismatches.log by the caller.
+      * coverage_entries — valid CLIF categories that the ECDF pipeline
+        skipped because of missing binning/outlier config, plus any runtime
+        errors during bin generation. Written to ecdf_coverage_gaps.log.
     """
     # Register the (possibly stratum-filtered) time windows for SQL joins
     db.register('icu_windows', icu_windows)
 
-    log_entries = []
+    mismatch_entries: List[str] = []
+    coverage_entries: List[str] = []
 
     # ========================================================================
     # Process Labs
@@ -811,24 +852,38 @@ def run_ecdf_pipeline(
         if category in processed_categories:
             continue
 
+        # Schema-compliance check first: is this (category, unit) pair legal
+        # CLIF vocabulary? Any failure here is a data-quality issue for the
+        # site, not a coverage gap in this repo's ECDF configs.
+        status, canonical = _classify_lab_unit(category, unit, labs_schema)
+        if status == 'not_in_spec':
+            mismatch_entries.append(f"[NOT IN CLIF SPEC] {category} ({unit})")
+            continue
+        if status == 'unit_mismatch':
+            mismatch_entries.append(
+                f"[UNIT MISMATCH] {category}: found '{unit}' in data, "
+                f"CLIF canonical is '{canonical}'"
+            )
+            continue
+
+        # Data is schema-valid; now check ECDF pipeline coverage.
         if category not in labs_config:
-            log_entries.append(f"[SKIP] {category} ({unit}): Category not in lab_vital_config.yaml")
+            coverage_entries.append(
+                f"[ECDF SKIP] labs.{category} ({unit}): "
+                f"no binning config in lab_vital_config.yaml"
+            )
             continue
 
         if category not in labs_outlier:
-            log_entries.append(f"[SKIP] {category} ({unit}): Category not in outlier_config.yaml")
+            coverage_entries.append(
+                f"[ECDF SKIP] labs.{category} ({unit}): "
+                f"no outlier bounds in outlier_config.yaml"
+            )
             continue
 
         config_units = labs_config[category].get('reference_unit', [])
         if isinstance(config_units, str):
             config_units = [config_units]
-        config_units_lower = [u.lower().strip() for u in config_units]
-        if unit.lower().strip() not in config_units_lower:
-            log_entries.append(
-                f"[UNIT MISMATCH] {category}: Found unit '{unit}' in data, "
-                f"but config expects one of {config_units}"
-            )
-            continue
 
         processed_categories.add(category)
 
@@ -852,7 +907,7 @@ def run_ecdf_pipeline(
 
         except Exception as e:
             print(f"  ❌ Error processing {category} ({config_units}): {e}")
-            log_entries.append(f"[ERROR] {category} ({config_units}): {str(e)}")
+            coverage_entries.append(f"[ERROR] labs.{category} ({config_units}): {str(e)}")
 
     print()
 
@@ -872,7 +927,9 @@ def run_ecdf_pipeline(
     for category in sorted(vitals_config.keys()):
         if category not in vitals_outlier:
             print(f"  ⚠️  Skipping {category} (no outlier config)")
-            log_entries.append(f"[SKIP] {category}: Category not in outlier_config.yaml")
+            coverage_entries.append(
+                f"[ECDF SKIP] vitals.{category}: no outlier bounds in outlier_config.yaml"
+            )
             continue
 
         extreme_bins = 5 if category in ['height_cm', 'weight_kg'] else 10
@@ -897,7 +954,7 @@ def run_ecdf_pipeline(
 
         except Exception as e:
             print(f"  ❌ Error processing {category}: {e}")
-            log_entries.append(f"[ERROR] {category}: {str(e)}")
+            coverage_entries.append(f"[ERROR] vitals.{category}: {str(e)}")
 
     print()
 
@@ -925,7 +982,10 @@ def run_ecdf_pipeline(
     for column in resp_columns:
         if column not in resp_outlier:
             print(f"  ⚠️  Skipping {column} (no outlier config)")
-            log_entries.append(f"[SKIP] respiratory_support.{column}: Not in outlier_config.yaml")
+            coverage_entries.append(
+                f"[ECDF SKIP] respiratory_support.{column}: "
+                f"no outlier bounds in outlier_config.yaml"
+            )
             continue
 
         try:
@@ -945,11 +1005,11 @@ def run_ecdf_pipeline(
 
         except Exception as e:
             print(f"  ❌ Error processing {column}: {e}")
-            log_entries.append(f"[ERROR] respiratory_support.{column}: {str(e)}")
+            coverage_entries.append(f"[ERROR] respiratory_support.{column}: {str(e)}")
 
     print()
 
-    return labs_stats, vitals_stats, resp_stats, log_entries
+    return labs_stats, vitals_stats, resp_stats, mismatch_entries, coverage_entries
 
 
 def main():
@@ -981,7 +1041,13 @@ def main():
     copy_configs_to_output()
     print()
 
-    log_file = str(meta_dir() / 'unit_mismatches.log')
+    mismatches_log_file = str(meta_dir() / 'unit_mismatches.log')
+    coverage_log_file = str(meta_dir() / 'ecdf_coverage_gaps.log')
+
+    # Load the CLIF labs schema — authoritative source for legal lab_category
+    # values and the accepted unit-spelling variants for each.
+    from modules.utils.clif_loader import _load_schema
+    labs_schema = _load_schema('labs') or {}
 
     # ========================================================================
     # Initialise shared DuckDB connection
@@ -1032,13 +1098,14 @@ def main():
     # Run overall ECDF pipeline
     # ========================================================================
 
-    labs_stats, vitals_stats, resp_stats, log_entries = run_ecdf_pipeline(
+    labs_stats, vitals_stats, resp_stats, mismatch_entries, coverage_entries = run_ecdf_pipeline(
         icu_windows=icu_windows,
         lab_category_units=lab_category_units,
         db=db,
         clif_config=clif_config,
         outlier_config=outlier_config,
         lab_vital_config=lab_vital_config,
+        labs_schema=labs_schema,
         output_dir=output_dir,
         label="overall"
     )
@@ -1075,18 +1142,20 @@ def main():
             stratum_output_dir = str(cohort_dir(stratum_name))
             os.makedirs(stratum_output_dir, exist_ok=True)
 
-            s_labs, s_vitals, s_resp, s_log = run_ecdf_pipeline(
+            s_labs, s_vitals, s_resp, s_mismatch, s_coverage = run_ecdf_pipeline(
                 icu_windows=filtered_windows,
                 lab_category_units=lab_category_units,
                 db=db,
                 clif_config=clif_config,
                 outlier_config=outlier_config,
                 lab_vital_config=lab_vital_config,
+                labs_schema=labs_schema,
                 output_dir=stratum_output_dir,
                 label=stratum_name,
                 suffix=stratum_suffix
             )
-            log_entries.extend(s_log)
+            mismatch_entries.extend(s_mismatch)
+            coverage_entries.extend(s_coverage)
             print(f"  ✅ {stratum_name}: {len(s_labs)} labs, {len(s_vitals)} vitals, {len(s_resp)} resp")
 
     except FileNotFoundError as e:
@@ -1096,13 +1165,30 @@ def main():
     # Write Log File
     # ========================================================================
 
-    if log_entries:
-        with open(log_file, 'w', encoding='utf-8') as f:
-            f.write("Unit Mismatches and Processing Log\n")
-            f.write("="*80 + "\n\n")
-            for entry in log_entries:
+    if mismatch_entries:
+        with open(mismatches_log_file, 'w', encoding='utf-8') as f:
+            f.write("CLIF Schema Unit Mismatches\n")
+            f.write("="*80 + "\n")
+            f.write("Data rows whose lab_category or reference_unit isn't accepted\n")
+            f.write("by the CLIF labs schema (clifpy/schemas/labs_schema.yaml).\n")
+            f.write("These are data-quality issues for the site to investigate.\n\n")
+            for entry in mismatch_entries:
                 f.write(entry + "\n")
-        print(f"✓ Log file written: {log_file} ({len(log_entries)} entries)")
+        print(f"✓ Mismatch log: {mismatches_log_file} ({len(mismatch_entries)} entries)")
+
+    if coverage_entries:
+        with open(coverage_log_file, 'w', encoding='utf-8') as f:
+            f.write("ECDF Coverage Gaps and Processing Issues\n")
+            f.write("="*80 + "\n")
+            f.write("Categories that are valid per the CLIF schema but the ECDF\n")
+            f.write("pipeline skipped because the binning or outlier config\n")
+            f.write("doesn't define them — plus any runtime errors. These are\n")
+            f.write("coverage gaps in this repo's configs, not data issues.\n\n")
+            for entry in coverage_entries:
+                f.write(entry + "\n")
+        print(f"✓ Coverage log: {coverage_log_file} ({len(coverage_entries)} entries)")
+
+    if mismatch_entries or coverage_entries:
         print()
 
     # ========================================================================

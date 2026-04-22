@@ -286,7 +286,8 @@ Cohort-agnostic — runs on the raw CLIF tables, not the cohort-filtered views.
 | `tableone_execution_report.txt` | Per-step memory checkpoints, timing, status | `modules/tableone/runner.py` |
 | `tableone_ward_execution_report.txt` | Same, ward-mode run (only present when `--ward` was used) | `modules/tableone/runner.py` |
 | `ecdf_execution_report.txt` | ECDF generation summary + structure | `modules/ecdf/runner.py` |
-| `unit_mismatches.log` | `(category, unit)` pairs in the data that aren't in `lab_vital_config.yaml` — flags coverage gaps | `modules/ecdf/generator.py` |
+| `unit_mismatches.log` | Data rows whose `lab_category` or `reference_unit` is not accepted by the CLIF labs schema (`clifpy/schemas/labs_schema.yaml`) — site-side data-quality issues | `modules/ecdf/generator.py` |
+| `ecdf_coverage_gaps.log` | Schema-valid categories that were skipped by the ECDF pipeline because `lab_vital_config.yaml`/`outlier_config.yaml` lacked a bin or outlier entry, plus any runtime errors — repo-side coverage gaps | `modules/ecdf/generator.py` |
 | `file_metadata.json` | Snapshot of `config.json` + `tables_path` for the run | `run_project.py` |
 | `workflow_logs/workflow_execution_<timestamp>.log`, `workflow_execution_latest.log` | Full pipeline stdout/stderr per run | `run_project.py` |
 

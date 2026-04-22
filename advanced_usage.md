@@ -257,15 +257,19 @@ open output/final/reports/patient_validation_report.pdf
 cat get-ecdf_data/ecdf_config/outlier_config.yaml
 cat get-ecdf_data/ecdf_config/lab_vital_config.yaml
 
-# Review unit mismatches
-cat output/final/unit_mismatches.log
+# Review schema-vs-data unit mismatches (site-side data issues)
+cat output/final/meta/unit_mismatches.log
+
+# Review ECDF coverage gaps (schema-valid cats the bin config doesn't know)
+cat output/final/meta/ecdf_coverage_gaps.log
 ```
 
 ### Log Files
 
 - **Validation Logs**: `output/final/results/{table}_summary_validation.json`
 - **Table One Execution**: `output/final/tableone/execution_report.txt`
-- **ECDF Processing**: `output/final/unit_mismatches.log`
+- **ECDF Schema Mismatches**: `output/final/meta/unit_mismatches.log`
+- **ECDF Coverage Gaps**: `output/final/meta/ecdf_coverage_gaps.log`
 
 
 ## Additional Resources
