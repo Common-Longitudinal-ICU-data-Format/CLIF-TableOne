@@ -49,6 +49,12 @@ from pathlib import Path
 from datetime import datetime
 
 
+# Populated by main() when non-verbose mode saves the original fd=2 before
+# redirecting it to /dev/null. The validation branch reads this to restore
+# fd=2 when it needs to print a fatal message the user must actually see.
+_terminal_fds = {}
+
+
 class ProjectRunner:
     """Orchestrates the complete CLIF analysis workflow."""
 
@@ -240,6 +246,19 @@ class ProjectRunner:
         self.logger.info(f"Running: {' '.join(cmd)}")
         self.logger.info(f"Tables: {', '.join(tables) if tables else 'all'}")
 
+        # Pre-open a child-stderr log file so if the subprocess is SIGKILLed
+        # (OOM-killer) mid-run, its last words survive: the kernel flushes file
+        # writes before the process is reaped, whereas an unread PIPE buffer can
+        # vanish. Also track the last "Processing <TABLE> table" line from the
+        # child's stdout so a fatal message can name the victim table.
+        from modules.utils.output_paths import workflow_logs_dir
+        stderr_log_dir = workflow_logs_dir()
+        stderr_log_dir.mkdir(parents=True, exist_ok=True)
+        ts = datetime.now().strftime('%Y%m%d_%H%M%S')
+        stderr_log = stderr_log_dir / f'validation_stderr_{ts}.log'
+        self._validation_stderr_log = stderr_log
+        last_table = None
+
         try:
             # Ensure subprocess uses UTF-8 encoding (especially important on Windows)
             env = os.environ.copy()
@@ -272,41 +291,39 @@ class ProjectRunner:
                     if output:
                         line = output.rstrip()
                         if line:  # Skip empty lines
+                            if 'Processing ' in line and 'table' in line.lower():
+                                last_table = line.strip()
                             print(line)  # Show in terminal immediately
                             self.logger.info(line)  # Also log to file
 
                 # Get exit code
                 exit_code = process.poll()
             else:
-                # Original Unix/Linux/MacOS approach
-                process = subprocess.Popen(
-                    cmd,
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.PIPE,
-                    text=True,
-                    bufsize=1,  # Line buffered
-                    universal_newlines=True,
-                    env=env
-                )
+                # Original Unix/Linux/MacOS approach. stderr goes to a log file
+                # (not PIPE) so SIGKILL doesn't drop the buffer; the file is
+                # referenced in the fatal-signal diagnostic below.
+                with open(stderr_log, 'w', encoding='utf-8') as stderr_fp:
+                    process = subprocess.Popen(
+                        cmd,
+                        stdout=subprocess.PIPE,
+                        stderr=stderr_fp,
+                        text=True,
+                        bufsize=1,  # Line buffered
+                        universal_newlines=True,
+                        env=env
+                    )
 
-                # Stream stdout in real-time
-                for line in process.stdout:
-                    line = line.rstrip()
-                    if line:  # Skip empty lines
-                        print(line)  # Show in terminal immediately
-                        self.logger.info(line)  # Also log to file
+                    # Stream stdout in real-time
+                    for line in process.stdout:
+                        line = line.rstrip()
+                        if line:  # Skip empty lines
+                            if 'Processing ' in line and 'table' in line.lower():
+                                last_table = line.strip()
+                            print(line)  # Show in terminal immediately
+                            self.logger.info(line)  # Also log to file
 
-                # Get any remaining stderr
-                stderr_output = process.stderr.read()
-                if stderr_output:
-                    for line in stderr_output.strip().split('\n'):
-                        if line:
-                            if self.verbose:
-                                print(line, file=sys.stderr)
-                            self.logger.error(line)
-
-                # Wait for process to complete
-                exit_code = process.wait()
+                    # Wait for process to complete
+                    exit_code = process.wait()
 
             if exit_code == 0:
                 print("\n[SUCCESS] Validation completed successfully")
@@ -325,8 +342,44 @@ class ProjectRunner:
                     self.logger.info("Proceeding to Table One generation...")
                 else:
                     self.logger.error(critical_tables_msg)
+            elif exit_code is not None and exit_code < 0:
+                # POSIX signal death. SIGKILL (-9) almost always means OS
+                # OOM-killer. Print a loud, user-visible banner — the normal
+                # logger path ends up in a file only in non-verbose mode, and
+                # fd=2 was dup'd to /dev/null at startup. Temporarily restore
+                # fd=2 so sys.__stderr__ actually reaches the terminal.
+                import signal as _sig
+                try:
+                    signame = _sig.Signals(-exit_code).name
+                except ValueError:
+                    signame = f"signal {-exit_code}"
+                msg = (
+                    f"\n[FATAL] Validation subprocess was killed by {signame} "
+                    f"(exit {exit_code}).\n"
+                    f"        Most likely: out-of-memory on this machine.\n"
+                    f"        Last table processed: {last_table or '(unknown)'}\n"
+                    f"        Child stderr log: {self._validation_stderr_log}\n"
+                    f"        Workflow log:     {self.log_file}\n"
+                )
+                saved_fd = _terminal_fds.get('saved_stderr_fd')
+                if saved_fd is not None:
+                    try:
+                        os.dup2(saved_fd, 2)
+                    except OSError:
+                        pass
+                try:
+                    sys.__stderr__.write(msg)
+                    sys.__stderr__.flush()
+                except Exception:
+                    pass
+                self.logger.error(msg)
+                critical_tables_ok = False
+                critical_tables_msg = msg
             else:
-                self.logger.error(f"[ERROR] Validation failed with exit code {exit_code}")
+                self.logger.error(
+                    f"[ERROR] Validation failed with exit code {exit_code}. "
+                    f"Last table: {last_table or 'unknown'}"
+                )
                 critical_tables_ok = False
                 critical_tables_msg = "Validation failed"
 
@@ -1230,6 +1283,9 @@ Examples:
             _saved_stderr_fd = os.dup(2)
             _devnull_fd = os.open(os.devnull, os.O_WRONLY)
             os.dup2(_devnull_fd, 2)
+            # Share the saved fd so run_validation() can restore fd=2 when
+            # it needs to print a fatal signal-death message to the terminal.
+            _terminal_fds['saved_stderr_fd'] = _saved_stderr_fd
         except OSError:
             _saved_stderr_fd = None
             _devnull_fd = None
