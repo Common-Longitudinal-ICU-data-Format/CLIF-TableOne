@@ -483,16 +483,59 @@ def load_clif_table(
                 if col_def.get('data_type', '').upper() not in ('DATETIME', 'TIMESTAMP'):
                     continue
                 series = pandas_df[cname]
-                # Skip non-datetime dtype (shouldn't happen for DATETIME schema cols)
+                # A DATETIME schema column should already be datetime-typed out
+                # of DuckDB+Arrow, but on Windows hosts with broken tzdata the
+                # column can sneak through as object/string. Coerce with
+                # utc=True so we preserve the CLIF timezone convention (DuckDB
+                # stores UTC). Fall back to tz-naive only if even utc=True
+                # fails — at least the column is then datetime-typed and
+                # downstream .dt math still works.
                 if not pd.api.types.is_datetime64_any_dtype(series):
-                    continue
+                    try:
+                        series = pd.to_datetime(series, errors='coerce', utc=True)
+                        pandas_df[cname] = series
+                        logger.warning(
+                            "Coerced non-datetime column %s.%s to UTC datetime — "
+                            "likely a tzdata misconfiguration on the host.",
+                            table_name, cname,
+                        )
+                    except Exception as e_utc:
+                        try:
+                            series = pd.to_datetime(series, errors='coerce')
+                            pandas_df[cname] = series
+                            logger.warning(
+                                "Coerced %s.%s to tz-naive datetime (utc=True "
+                                "failed: %s). Downstream tz-aware ops may need "
+                                "their own guard.",
+                                table_name, cname, e_utc,
+                            )
+                        except Exception as e:
+                            logger.warning(
+                                "Could not coerce %s.%s to datetime: %s — "
+                                "downstream .dt ops may still fail.",
+                                table_name, cname, e,
+                            )
+                            continue
                 tz = getattr(series.dt, 'tz', None)
-                if tz is None:
-                    pandas_df[cname] = series.dt.tz_localize(
-                        timezone, ambiguous=True, nonexistent='shift_forward'
+                try:
+                    if tz is None:
+                        pandas_df[cname] = series.dt.tz_localize(
+                            timezone, ambiguous=True, nonexistent='shift_forward'
+                        )
+                    elif str(tz) != str(timezone):
+                        pandas_df[cname] = series.dt.tz_convert(timezone)
+                except Exception as e:
+                    # On a broken-tzdata host, tz_localize/tz_convert can fail
+                    # even when the column is datetime-typed. Leave the column
+                    # as-is (tz-naive or in whatever tz it arrived in) rather
+                    # than poisoning the whole load. Subtraction/.dt math still
+                    # works for same-tz pairs.
+                    logger.warning(
+                        "Could not apply timezone %s to %s.%s: %s — "
+                        "leaving column as-is. Install the 'tzdata' package "
+                        "on Windows to resolve.",
+                        timezone, table_name, cname, e,
                     )
-                elif str(tz) != str(timezone):
-                    pandas_df[cname] = series.dt.tz_convert(timezone)
 
         # Release the Arrow holder; the pandas frame still wraps the same
         # buffers internally via the ArrowDtype extension arrays.
