@@ -288,6 +288,7 @@ Cohort-agnostic — runs on the raw CLIF tables, not the cohort-filtered views.
 | `ecdf_execution_report.txt` | ECDF generation summary + structure | `modules/ecdf/runner.py` |
 | `unit_mismatches.log` | Data rows whose `lab_category` or `reference_unit` is not accepted by the CLIF labs schema (`clifpy/schemas/labs_schema.yaml`) — site-side data-quality issues | `modules/ecdf/generator.py` |
 | `ecdf_coverage_gaps.log` | Schema-valid categories that were skipped by the ECDF pipeline because `lab_vital_config.yaml`/`outlier_config.yaml` lacked a bin or outlier entry, plus any runtime errors — repo-side coverage gaps | `modules/ecdf/generator.py` |
+| `lab_category_units.csv` | Every `(lab_category, reference_unit)` pair in the labs data with a row count, classified against the CLIF schema (`schema_status` = `ok` / `unit_mismatch` / `not_in_spec`, plus `canonical_unit`). Single source of truth for the data's lab vocabulary; drives the two logs above. | `modules/ecdf/generator.py:write_lab_category_units_csv` |
 | `file_metadata.json` | Snapshot of `config.json` + `tables_path` for the run | `run_project.py` |
 | `workflow_logs/workflow_execution_<timestamp>.log`, `workflow_execution_latest.log` | Full pipeline stdout/stderr per run | `run_project.py` |
 

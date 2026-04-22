@@ -39,6 +39,7 @@ Output structure:
         │   ├── clif_config.json
         │   ├── lab_vital_config.yaml
         │   └── outlier_config.yaml
+        ├── lab_category_units.csv   # (cat, unit) pairs in data + schema status
         ├── unit_mismatches.log      # data vs CLIF labs schema (site issues)
         └── ecdf_coverage_gaps.log   # schema-valid cats w/o bin config + errors
 """
@@ -189,12 +190,13 @@ def discover_lab_category_units(
 ) -> pd.DataFrame:
     """
     Discover all unique (lab_category, reference_unit) combinations
-    in the labs data.
+    in the labs data, with a per-pair row count.
 
     Returns:
         pandas DataFrame with columns:
         - lab_category: str
         - reference_unit: str
+        - n_rows: int (total rows in labs for this pair)
     """
     labs_path = db.table_path('labs')
 
@@ -202,20 +204,60 @@ def discover_lab_category_units(
 
     df = db.query_df(
         """
-        SELECT DISTINCT
+        SELECT
             LOWER(TRIM(lab_category)) AS lab_category,
             COALESCE(
                 NULLIF(LOWER(TRIM(reference_unit)), ''),
                 '(no units)'
-            ) AS reference_unit
+            ) AS reference_unit,
+            COUNT(*) AS n_rows
         FROM read_parquet(?)
         WHERE lab_category IS NOT NULL
+        GROUP BY 1, 2
         """,
         [labs_path],
     )
 
     print(f"✓ Found {len(df):,} unique (category, unit) combinations")
     return df
+
+
+def write_lab_category_units_csv(
+    lab_category_units: pd.DataFrame,
+    labs_schema: Dict[str, Any],
+    output_path: str,
+) -> str:
+    """Write an audit CSV of every (lab_category, reference_unit) pair found
+    in the labs data, classified against the CLIF labs schema.
+
+    Columns:
+      lab_category, reference_unit, n_rows, schema_status, canonical_unit
+
+    schema_status is one of:
+      - 'ok'            — category and unit both accepted by CLIF
+      - 'unit_mismatch' — category accepted but unit spelling not in variants
+      - 'not_in_spec'   — category is not in the CLIF labs vocabulary
+
+    Sorted so 'ok' rows come first and most-frequent pairs float to the top
+    within each status group.
+    """
+    rows = []
+    for r in lab_category_units.itertuples(index=False):
+        status, canonical = _classify_lab_unit(r.lab_category, r.reference_unit, labs_schema)
+        rows.append({
+            'lab_category': r.lab_category,
+            'reference_unit': r.reference_unit,
+            'n_rows': int(getattr(r, 'n_rows', 0)),
+            'schema_status': status,
+            'canonical_unit': canonical or '',
+        })
+
+    status_order = {'ok': 0, 'unit_mismatch': 1, 'not_in_spec': 2}
+    df = pd.DataFrame(rows)
+    df['_ord'] = df['schema_status'].map(status_order).fillna(99)
+    df = df.sort_values(['_ord', 'n_rows'], ascending=[True, False]).drop(columns='_ord')
+    df.to_csv(output_path, index=False)
+    return output_path
 
 
 def sanitize_unit_for_filename(unit: str) -> str:
@@ -1092,6 +1134,14 @@ def main():
     print("="*80)
 
     lab_category_units = discover_lab_category_units(db)
+
+    # Audit CSV: every (lab_category, reference_unit) pair found in the data,
+    # classified against the CLIF labs schema and sorted by row count. Useful
+    # as a one-glance answer to "what lab vocabulary is in this dataset, and
+    # how much of it complies with CLIF?" — independent of ECDF bin config.
+    lab_cat_units_csv = str(meta_dir() / 'lab_category_units.csv')
+    write_lab_category_units_csv(lab_category_units, labs_schema, lab_cat_units_csv)
+    print(f"✓ Lab category/unit audit: {lab_cat_units_csv}")
     print()
 
     # ========================================================================
