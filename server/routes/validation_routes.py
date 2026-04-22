@@ -118,20 +118,18 @@ async def get_validation(name: str):
         issue["error_id"] = create_error_id(issue)
 
     if absent:
-        # Use schema-derived expected counts so Conformance shows 0/N against
-        # what WOULD have run; Completeness / Plausibility are N/A since no
-        # data means those checks never get to run.
-        expected = validation.get("expected_check_counts", {}) or {}
-        conf_passed, _ = category_scores.get("conformance", (0, 0))
-        conf_total = expected.get("conformance", 0) or 0
+        # build_absent_table_dqa_result already reports conformance as 0/N
+        # (N = expected_check_counts.conformance). Completeness / Plausibility
+        # are N/A since no data means those checks never get to run.
+        conf = category_scores.get("conformance")
         scores_out = {
-            "conformance": {"passed": conf_passed, "total": conf_total}
-                            if conf_total > 0 else None,
+            "conformance": {"passed": conf[0], "total": conf[1]}
+                            if conf and conf[1] > 0 else None,
             "completeness": None,
             "plausibility": None,
         }
-        total_passed = conf_passed
-        total_checks = conf_total
+        total_passed = conf[0] if conf else 0
+        total_checks = conf[1] if conf else 0
     else:
         scores_out = {
             cat: {"passed": p, "total": t}
