@@ -355,6 +355,24 @@ def write_html_review(
     resolved = sum(1 for rec in records if rec['status'] == 'in_rules')
     residual = total_rows - resolved
 
+    # Capture the current YAML rules as a JSON-shape object + the
+    # leading-comment block so the downloaded edited YAML preserves the
+    # maintainer-facing docs.
+    rules_json = {
+        'version': rules.version,
+        'variables': {
+            var: {g: list(srcs) for g, srcs in groups.items()}
+            for var, groups in rules.variables.items()
+        },
+        'suppression': {
+            'threshold': rules.suppression.threshold,
+            'token': rules.suppression.token,
+            'recompute_percentages': rules.suppression.recompute_percentages,
+            'apply_complementary': rules.suppression.apply_complementary,
+        },
+    }
+    header_comments = _extract_yaml_header(RULES_PATH)
+
     payload = {
         'sites': site_names,
         'cohorts': cohorts,
@@ -364,10 +382,32 @@ def write_html_review(
         'resolved': resolved,
         'residual': residual,
         'records': records,
+        'rules': rules_json,
+        'yaml_header': header_comments,
     }
 
     html = _render_html(payload)
     dest.write_text(html, encoding='utf-8')
+
+
+def _extract_yaml_header(path: Path) -> str:
+    """Return the leading comment block (consecutive ``#`` lines + a
+    blank line) at the top of the YAML file so the download can
+    reproduce it. Returns empty string if the file doesn't exist yet or
+    has no leading comments."""
+    if not path.exists():
+        return ''
+    lines = path.read_text(encoding='utf-8').splitlines()
+    out = []
+    for line in lines:
+        if line.startswith('#') or line.strip() == '':
+            out.append(line)
+            if len(out) > 1 and out[-1].strip() == '' and out[-2].startswith('#'):
+                # First blank after a block of comments — include and stop
+                break
+        else:
+            break
+    return '\n'.join(out)
 
 
 _HTML_TEMPLATE = r"""<!doctype html>
@@ -427,9 +467,32 @@ _HTML_TEMPLATE = r"""<!doctype html>
   .badge { display: inline-block; padding: 2px 8px; border-radius: 10px; font-size: 11px; font-weight: 500; white-space: nowrap; }
   .badge.in-rules { background: rgba(52, 211, 153, 0.15); color: var(--success); }
   .badge.residual { background: rgba(248, 113, 113, 0.15); color: var(--danger); }
+  .badge.pending { background: rgba(251, 191, 36, 0.15); color: var(--warning); margin-left: 4px; }
   .cohort-badge { font-size: 11px; color: var(--muted); white-space: nowrap; }
   code { background: var(--bg); padding: 1px 4px; border-radius: 3px; font-size: 12px; }
   .empty { text-align: center; padding: 40px; color: var(--muted); }
+  .action-btn { background: var(--surface); color: var(--text); border: 1px solid var(--border);
+                border-radius: 4px; padding: 2px 8px; font-size: 11px; cursor: pointer; }
+  .action-btn:hover { border-color: var(--accent); color: var(--accent); }
+  .action-btn.add { color: var(--success); border-color: rgba(52, 211, 153, 0.3); }
+  .action-btn.remove { color: var(--danger); border-color: rgba(248, 113, 113, 0.3); }
+  .popover { background: var(--bg); border: 1px solid var(--border); border-radius: 6px;
+             padding: 10px; margin-top: 6px; display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
+  .popover select, .popover input { background: var(--surface); color: var(--text);
+                                     border: 1px solid var(--border); border-radius: 4px; padding: 4px 8px;
+                                     font-size: 12px; }
+  .footer { position: fixed; bottom: 0; left: 0; right: 0; background: var(--surface);
+            border-top: 1px solid var(--border); padding: 12px 24px; display: none;
+            justify-content: space-between; align-items: center; gap: 16px; z-index: 5;
+            box-shadow: 0 -4px 16px rgba(0,0,0,0.25); }
+  .footer.active { display: flex; }
+  .footer .count { font-weight: 600; color: var(--warning); }
+  .btn-primary { background: var(--accent); color: #0f172a; border: 0; border-radius: 6px;
+                 padding: 8px 16px; font-weight: 600; font-size: 13px; cursor: pointer; }
+  .btn-primary:hover { opacity: 0.9; }
+  .btn-outline { background: transparent; color: var(--text); border: 1px solid var(--border);
+                 border-radius: 6px; padding: 8px 16px; font-size: 13px; cursor: pointer; }
+  .btn-outline:hover { border-color: var(--danger); color: var(--danger); }
 </style>
 </head>
 <body>
@@ -488,11 +551,20 @@ _HTML_TEMPLATE = r"""<!doctype html>
         {SITE_HEADERS}
         <th data-key="n_sites_small" class="sorted">Small sites<span class="sort-arrow">↓</span></th>
         <th data-key="status">Status<span class="sort-arrow">↕</span></th>
+        <th>Action</th>
       </tr>
     </thead>
     <tbody id="tbody"></tbody>
   </table>
   <div id="empty" class="empty" style="display:none;">No rows match your filters.</div>
+
+  <div class="footer" id="footer">
+    <div><span class="count" id="pending-count">0</span> pending change(s) — original rules diff awaiting export.</div>
+    <div style="display:flex; gap:8px;">
+      <button class="btn-outline" id="btn-reset">Reset</button>
+      <button class="btn-primary" id="btn-download">Download tableone_merge_rules.yaml</button>
+    </div>
+  </div>
 
 <script id="data" type="application/json">{DATA_JSON}</script>
 <script>
@@ -500,6 +572,36 @@ const payload = JSON.parse(document.getElementById('data').textContent);
 const SITES = payload.sites;
 const TOKEN = payload.token;
 const rows = payload.records;
+const YAML_HEADER = payload.yaml_header || '';
+const STORAGE_KEY = 'tableone-calibrate';
+
+// Deep-clone the original rules so we can diff against them to compute
+// "pending changes". `workingRules` is the mutable copy the user edits.
+const originalRules = JSON.parse(JSON.stringify(payload.rules));
+let workingRules = loadWorkingRules();
+
+function loadWorkingRules() {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY);
+    if (raw) return JSON.parse(raw);
+  } catch (e) { /* localStorage disabled or corrupt — fall back */ }
+  return JSON.parse(JSON.stringify(payload.rules));
+}
+function saveWorkingRules() {
+  try { localStorage.setItem(STORAGE_KEY, JSON.stringify(workingRules)); }
+  catch (e) { /* best-effort */ }
+}
+
+// Look up whether (variable, row) is covered by a merge rule in the
+// given rules object. Returns the merged-group label, or null.
+function lookupMerge(rules, variable, row) {
+  const groups = rules.variables && rules.variables[variable];
+  if (!groups) return null;
+  for (const [groupLabel, sources] of Object.entries(groups)) {
+    if (Array.isArray(sources) && sources.includes(row)) return groupLabel;
+  }
+  return null;
+}
 
 document.getElementById('total').textContent = payload.total_small.toLocaleString();
 document.getElementById('resolved').textContent = payload.resolved.toLocaleString();
@@ -574,16 +676,34 @@ function applyFilters() {
       const pct = v.total ? Math.round(v.small / v.total * 100) : 0;
       return `<td class="num small-cell" title="${v.small} of ${v.total} data columns below threshold (${pct}%)"><strong>${v.small}</strong> / ${v.total}</td>`;
     }).join('');
-    const statusBadge = r.status === 'in_rules'
-      ? `<span class="badge in-rules">→ ${escapeHtml(r.merged_to || '')}</span>`
+    // Re-compute status against the live workingRules so pending changes
+    // show immediately; tag rows whose working state differs from the
+    // committed one with a "pending" badge.
+    const workingGroup = r.variable ? lookupMerge(workingRules, r.variable, r.row) : null;
+    const originalGroup = r.variable ? lookupMerge(originalRules, r.variable, r.row) : null;
+    const isPending = workingGroup !== originalGroup;
+    const statusBadge = workingGroup
+      ? `<span class="badge in-rules">→ ${escapeHtml(workingGroup)}</span>`
       : `<span class="badge residual">residual</span>`;
+    const pendingTag = isPending ? '<span class="badge pending">pending</span>' : '';
+    // Action: only offer buttons if the row has a groupable variable
+    // (empty variable = "ungrouped" rows can't be merged).
+    let action = '';
+    if (r.variable) {
+      if (workingGroup) {
+        action = `<button class="action-btn remove" data-v="${escapeAttr(r.variable)}" data-r="${escapeAttr(r.row)}" data-g="${escapeAttr(workingGroup)}" onclick="removeFromMerge(this)">✕ remove</button>`;
+      } else {
+        action = `<button class="action-btn add" data-v="${escapeAttr(r.variable)}" data-r="${escapeAttr(r.row)}" onclick="openMergePopover(this)">＋ merge</button>`;
+      }
+    }
     return `<tr>
       <td><span class="cohort-badge">${escapeHtml(r.cohort)}</span></td>
       <td>${escapeHtml(r.variable) || '<em>(ungrouped)</em>'}</td>
       <td><strong>${escapeHtml(r.row)}</strong></td>
       ${siteCells}
       <td class="num"><strong>${r.n_sites_small}</strong>/${r.n_sites_reporting}</td>
-      <td>${statusBadge}</td>
+      <td>${statusBadge}${pendingTag}</td>
+      <td>${action}</td>
     </tr>`;
   }).join('');
   tbody.innerHTML = html;
@@ -593,6 +713,155 @@ function escapeHtml(s) {
   return String(s ?? '').replace(/[&<>"']/g, c =>
     ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'})[c]);
 }
+function escapeAttr(s) {
+  return String(s ?? '').replace(/"/g, '&quot;').replace(/</g, '&lt;');
+}
+
+// ─── Interactive merge editing ─────────────────────────────────────
+function pendingCount() {
+  // Count (variable, row, group) triples that differ between original
+  // and working rules. Treat absence as a distinct state.
+  let count = 0;
+  const visited = new Set();
+  const walk = (rules, tag) => {
+    for (const [v, groups] of Object.entries(rules.variables || {})) {
+      for (const [g, sources] of Object.entries(groups)) {
+        for (const row of sources) {
+          const key = `${v}  ${row}`;
+          const other = (tag === 'work') ? originalRules : workingRules;
+          const otherGroup = lookupMerge(other, v, row);
+          if (otherGroup !== g && !visited.has(key)) {
+            visited.add(key);
+            count++;
+          }
+        }
+      }
+    }
+  };
+  walk(workingRules, 'work');
+  walk(originalRules, 'orig');
+  return count;
+}
+
+function updateFooter() {
+  const n = pendingCount();
+  document.getElementById('pending-count').textContent = n;
+  document.getElementById('footer').classList.toggle('active', n > 0);
+}
+
+window.openMergePopover = function(btn) {
+  const variable = btn.dataset.v;
+  const row = btn.dataset.r;
+  const existing = (workingRules.variables && workingRules.variables[variable]) || {};
+  const groups = Object.keys(existing);
+  const cell = btn.parentElement;
+  const pop = document.createElement('div');
+  pop.className = 'popover';
+  pop.innerHTML = `
+    <select class="group-select">
+      ${groups.map(g => `<option value="${escapeAttr(g)}">${escapeHtml(g)}</option>`).join('')}
+      <option value="__new__">＋ new group…</option>
+    </select>
+    <input type="text" class="new-group" placeholder="New group label" style="display:none;min-width:160px;">
+    <button class="btn-primary confirm-btn" style="padding:4px 10px;font-size:12px;">Add</button>
+    <button class="btn-outline cancel-btn" style="padding:4px 10px;font-size:12px;">Cancel</button>
+  `;
+  btn.style.display = 'none';
+  cell.appendChild(pop);
+  const sel = pop.querySelector('.group-select');
+  const newInput = pop.querySelector('.new-group');
+  sel.addEventListener('change', () => {
+    newInput.style.display = sel.value === '__new__' ? '' : 'none';
+    if (sel.value === '__new__') newInput.focus();
+  });
+  if (groups.length === 0) { sel.value = '__new__'; newInput.style.display = ''; }
+  pop.querySelector('.confirm-btn').addEventListener('click', () => {
+    let group = sel.value;
+    if (group === '__new__') {
+      group = newInput.value.trim();
+      if (!group) { newInput.focus(); return; }
+    }
+    addToMerge(variable, row, group);
+    applyFilters();   // re-render the row with new state
+    updateFooter();
+  });
+  pop.querySelector('.cancel-btn').addEventListener('click', () => {
+    cell.removeChild(pop);
+    btn.style.display = '';
+  });
+};
+
+window.removeFromMerge = function(btn) {
+  const variable = btn.dataset.v;
+  const row = btn.dataset.r;
+  const group = btn.dataset.g;
+  const groups = workingRules.variables[variable];
+  if (!groups || !groups[group]) return;
+  groups[group] = groups[group].filter(s => s !== row);
+  if (groups[group].length === 0) delete groups[group];
+  if (Object.keys(groups).length === 0) delete workingRules.variables[variable];
+  saveWorkingRules();
+  applyFilters();
+  updateFooter();
+};
+
+function addToMerge(variable, row, group) {
+  workingRules.variables = workingRules.variables || {};
+  workingRules.variables[variable] = workingRules.variables[variable] || {};
+  workingRules.variables[variable][group] = workingRules.variables[variable][group] || [];
+  if (!workingRules.variables[variable][group].includes(row)) {
+    workingRules.variables[variable][group].push(row);
+  }
+  saveWorkingRules();
+}
+
+// ─── YAML download ──────────────────────────────────────────────────
+function toYAML(rules) {
+  const lines = [];
+  if (YAML_HEADER) {
+    lines.push(YAML_HEADER.trimEnd(), '');
+  }
+  lines.push(`version: ${rules.version || 1}`, '');
+  const needsQuote = s => /[:#{}[\],&*!|>'"%@`]/.test(s) || /^\s|\s$/.test(s)
+    || /^[-?&*\d]/.test(s) || s.trim() === '' || /^(true|false|null|yes|no|on|off)$/i.test(s);
+  const q = s => needsQuote(s) ? JSON.stringify(s) : s;
+  for (const [v, groups] of Object.entries(rules.variables || {})) {
+    lines.push(`${q(v)}:`);
+    for (const [g, sources] of Object.entries(groups)) {
+      lines.push(`  ${q(g)}:`);
+      for (const src of sources) {
+        lines.push(`    - ${q(src)}`);
+      }
+    }
+    lines.push('');
+  }
+  const sup = rules.suppression || {};
+  lines.push('suppression:');
+  lines.push(`  threshold: ${sup.threshold ?? 10}`);
+  lines.push(`  token: ${JSON.stringify(sup.token ?? '<10')}`);
+  lines.push(`  recompute_percentages: ${sup.recompute_percentages !== false}`);
+  lines.push(`  apply_complementary: ${sup.apply_complementary !== false}`);
+  return lines.join('\n') + '\n';
+}
+
+document.getElementById('btn-download').addEventListener('click', () => {
+  const yaml = toYAML(workingRules);
+  const blob = new Blob([yaml], { type: 'text/yaml' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = 'tableone_merge_rules.yaml';
+  a.click();
+  URL.revokeObjectURL(url);
+});
+
+document.getElementById('btn-reset').addEventListener('click', () => {
+  if (!confirm('Discard all pending changes and reset to the committed YAML?')) return;
+  workingRules = JSON.parse(JSON.stringify(originalRules));
+  saveWorkingRules();
+  applyFilters();
+  updateFooter();
+});
 
 // Sort handlers
 document.querySelectorAll('th[data-key]').forEach(th => {
@@ -618,6 +887,7 @@ document.querySelectorAll('select, input[type="search"], input[type="checkbox"]'
   el.addEventListener(el.type === 'search' ? 'input' : 'change', applyFilters));
 
 applyFilters();
+updateFooter();
 </script>
 </body>
 </html>
