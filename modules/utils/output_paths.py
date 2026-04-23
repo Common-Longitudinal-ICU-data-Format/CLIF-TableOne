@@ -64,6 +64,13 @@ META = FINAL / 'meta'
 CONFIGS = META / 'configs'
 STATS = FINAL / 'stats'
 
+# Intermediate tree — unsuppressed Table One CSVs. The generator writes raw
+# counts here; the small-cell suppression step reads from here and writes
+# shareable (merged + cell-suppressed) CSVs under FINAL/... . The app and any
+# local analysis should read from here to see full-fidelity counts.
+INTERMEDIATE = PROJECT_ROOT / 'output' / 'intermediate'
+TABLEONE_INTERMEDIATE = INTERMEDIATE / 'tableone'
+
 
 def parse_stratum(stratum: str) -> tuple:
     """Decompose a stratum key into (parent_dir_key, filename_suffix).
@@ -101,7 +108,27 @@ def cohort_dir(stratum: Optional[str] = None) -> Path:
 
 
 def tableone_dir(stratum: Optional[str] = None) -> Path:
-    """Directory for tableone CSVs (table_one_overall, mortality_rates, etc.)."""
+    """Directory for **unsuppressed** tableone CSVs (local-only).
+
+    Generators write raw counts here. The app's Table One tab and any local
+    analysis read from here. The small-cell suppression step reads from here
+    and writes a shareable version to ``tableone_final_dir(stratum)``.
+    """
+    if stratum is None:
+        return TABLEONE_INTERMEDIATE / 'overall'
+    parent, _suffix = parse_stratum(stratum)
+    return TABLEONE_INTERMEDIATE / 'strata' / parent
+
+
+def tableone_final_dir(stratum: Optional[str] = None) -> Path:
+    """Directory for **suppressed** tableone CSVs (safe to share).
+
+    This is the shareable output under ``output/final/``. Written by the
+    suppression step after merge rules are applied and cells with N<10 are
+    replaced with the suppression token. Downstream reporting code
+    (combined PDF, consolidated CSV) reads from here so the shared
+    artifact reflects the site's review decisions.
+    """
     return cohort_dir(stratum) / 'tableone'
 
 
@@ -228,7 +255,19 @@ def ward_cohort_dir(stratum: Optional[str] = None) -> Path:
 
 
 def ward_tableone_dir(stratum: Optional[str] = None) -> Path:
-    """Directory for ward Table One CSVs (parallel to tableone_dir())."""
+    """Directory for **unsuppressed** ward Table One CSVs (local-only).
+
+    Parallel to ``tableone_dir()``. Ward generator writes raw counts here;
+    suppression step mirrors to ``ward_tableone_final_dir(stratum)``.
+    """
+    if stratum is None:
+        return TABLEONE_INTERMEDIATE / 'overall_ward'
+    parent, _suffix = parse_stratum(stratum)
+    return TABLEONE_INTERMEDIATE / 'overall_ward' / 'strata' / parent
+
+
+def ward_tableone_final_dir(stratum: Optional[str] = None) -> Path:
+    """Directory for **suppressed** ward Table One CSVs (safe to share)."""
     return ward_cohort_dir(stratum) / 'tableone'
 
 
@@ -294,7 +333,8 @@ def ensure_output_tree() -> None:
     """
     dirs = [
         # Overall cohort (critical-illness)
-        tableone_dir(),
+        tableone_dir(),          # intermediate/tableone/overall/ (unsuppressed)
+        tableone_final_dir(),    # final/overall/tableone/       (suppressed, written by suppression step)
         figures_dir(),
         ecdf_dir(table_type='labs'),
         ecdf_dir(table_type='vitals'),
@@ -320,7 +360,8 @@ def ensure_output_tree() -> None:
     # Strata
     for stratum in STRATA_NAMES:
         dirs.extend([
-            tableone_dir(stratum),
+            tableone_dir(stratum),        # intermediate (unsuppressed)
+            tableone_final_dir(stratum),  # final (suppressed)
             figures_dir(stratum),
             ecdf_dir(stratum, 'labs'),
             ecdf_dir(stratum, 'vitals'),
@@ -358,7 +399,8 @@ def ensure_ward_output_tree() -> None:
     because generator.py imports them (where they're vestigial in ward mode).
     """
     dirs = [
-        ward_tableone_dir(),
+        ward_tableone_dir(),          # intermediate (unsuppressed)
+        ward_tableone_final_dir(),    # final (suppressed)
         ward_figures_dir(),
     ]
 

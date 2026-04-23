@@ -1,0 +1,5 @@
+# Site-provided Table One outputs — stay local.
+sites/
+
+# Generated review output — regenerate from sites/, don't commit.
+out/
