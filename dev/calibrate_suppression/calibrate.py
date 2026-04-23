@@ -283,51 +283,84 @@ def write_html_review(
 ) -> None:
     """Emit a single-file, self-contained HTML review page.
 
-    Only rows where ``n_sites_small >= 1`` are included (the matrix CSV
-    still has everything). Each record is tagged with:
-      * cohort: derived from the csv_file path (overall / overall_ward /
-        strata:<name> / ward_strata:<name>)
-      * status: 'in_rules' (row already covered by a canonical merge) or
-        'residual' (would need a new rule or cell suppression)
+    Records are **aggregated by (cohort, variable, row)**. For each cell,
+    we report per-site how many data columns were small and how many
+    reported any count, so year-breakdown tables with 20+ year columns
+    collapse to one row like "mimic: 18/21 cols <10" instead of 20
+    separate rows. Only (cohort, variable, row) entries with at least
+    one small data column anywhere are included.
+
+    The full per-column grain is still available in
+    ``cross_site_review.csv`` for anyone who wants to drill in.
     """
-    small = matrix[matrix['n_sites_small'] >= 1].copy()
     rule_lookup: dict[tuple[str, str], str] = {}
     for variable, groups in rules.variables.items():
         for merged_label, sources in groups.items():
             for src in sources:
                 rule_lookup[(variable, src)] = merged_label
 
-    records = []
-    for _, r in small.iterrows():
+    # Aggregate by (cohort, variable, row). For each key, collect per-site
+    # totals of (small_cols, total_cols) across every csv_file and column
+    # the row appears in for that cohort.
+    from collections import defaultdict
+    # key -> {site: [small, total]}
+    agg: dict[tuple[str, str, str], dict[str, list[int]]] = defaultdict(
+        lambda: {s: [0, 0] for s in site_names}
+    )
+    for _, r in matrix.iterrows():
+        cohort = _cohort_from_path(str(r['csv_file']))
         var = str(r['variable'])
         row = str(r['row'])
+        key = (cohort, var, row)
+        for s in site_names:
+            v = r[s]
+            if v == '' or v is None:
+                continue  # site didn't report this cell
+            agg[key][s][1] += 1  # total_cols
+            if v == rules.suppression.token or (
+                isinstance(v, (int, float)) and 0 < v < rules.suppression.threshold
+            ):
+                agg[key][s][0] += 1  # small_cols
+
+    records = []
+    for (cohort, var, row), per_site in agg.items():
+        n_sites_small = sum(1 for st in per_site.values() if st[0] > 0)
+        n_sites_reporting = sum(1 for st in per_site.values() if st[1] > 0)
+        if n_sites_small == 0:
+            continue  # aggregation row with no small cells anywhere — skip
         merged_to = rule_lookup.get((var, row))
-        records.append({
-            'cohort': _cohort_from_path(str(r['csv_file'])),
-            'csv_file': str(r['csv_file']),
+        rec = {
+            'cohort': cohort,
             'variable': var,
             'row': row,
-            'column': str(r['data_column']),
-            'sites': {s: r[s] if r[s] != '' else None for s in site_names},
-            'n_sites_small': int(r['n_sites_small']),
-            'n_sites_reporting': int(r['n_sites_reporting']),
+            'sites': {
+                s: ({'small': st[0], 'total': st[1]} if st[1] > 0 else None)
+                for s, st in per_site.items()
+            },
+            'n_sites_small': n_sites_small,
+            'n_sites_reporting': n_sites_reporting,
             'status': 'in_rules' if merged_to else 'residual',
             'merged_to': merged_to,
-        })
+        }
+        # Flat per-site small-count keys so the site columns in the HTML
+        # table can be sorted directly (sorter reads r[sortKey]).
+        for s, st in per_site.items():
+            rec[f'site_{s}_small'] = st[0]
+        records.append(rec)
 
     cohorts = sorted({rec['cohort'] for rec in records})
     threshold = rules.suppression.threshold
     token = rules.suppression.token
-    total_small = len(records)
+    total_rows = len(records)
     resolved = sum(1 for rec in records if rec['status'] == 'in_rules')
-    residual = total_small - resolved
+    residual = total_rows - resolved
 
     payload = {
         'sites': site_names,
         'cohorts': cohorts,
         'threshold': threshold,
         'token': token,
-        'total_small': total_small,
+        'total_small': total_rows,   # now "aggregated rows with ≥1 small cell"
         'resolved': resolved,
         'residual': residual,
         'records': records,
@@ -401,10 +434,12 @@ _HTML_TEMPLATE = r"""<!doctype html>
 </head>
 <body>
   <h1>Cross-site small-cell review</h1>
-  <div class="subtitle">Threshold: <code>{THRESHOLD}</code> · Token: <code>{TOKEN}</code> · Sites: <code>{SITES_CSV}</code></div>
+  <div class="subtitle">Threshold: <code>{THRESHOLD}</code> · Token: <code>{TOKEN}</code> · Sites: <code>{SITES_CSV}</code>
+    <br>Rows are aggregated by <code>(cohort, variable, row)</code>. Each site cell shows
+    <strong>small / total</strong> — number of data columns where N&lt;{THRESHOLD} over the number of columns reporting any count (across all Table One files + year columns in this cohort).</div>
 
   <div class="summary">
-    <div class="card total"><div class="label">Small cells (≥1 site)</div><div class="value" id="total">–</div></div>
+    <div class="card total"><div class="label">Rows with ≥1 small cell</div><div class="value" id="total">–</div></div>
     <div class="card resolved"><div class="label">Covered by YAML</div><div class="value" id="resolved">–</div></div>
     <div class="card residual"><div class="label">Residual (needs rule or suppression)</div><div class="value" id="residual">–</div></div>
   </div>
@@ -450,9 +485,8 @@ _HTML_TEMPLATE = r"""<!doctype html>
         <th data-key="cohort">Cohort<span class="sort-arrow">↕</span></th>
         <th data-key="variable">Variable<span class="sort-arrow">↕</span></th>
         <th data-key="row">Row<span class="sort-arrow">↕</span></th>
-        <th data-key="column">Column<span class="sort-arrow">↕</span></th>
         {SITE_HEADERS}
-        <th data-key="n_sites_small" class="sorted">Small<span class="sort-arrow">↓</span></th>
+        <th data-key="n_sites_small" class="sorted">Small sites<span class="sort-arrow">↓</span></th>
         <th data-key="status">Status<span class="sort-arrow">↕</span></th>
       </tr>
     </thead>
@@ -513,7 +547,7 @@ function applyFilters() {
     if (overallOnly && !r.cohort.startsWith('overall')) return false;
     if (consistent && r.n_sites_small !== r.n_sites_reporting) return false;
     if (search) {
-      const hay = (r.variable + ' ' + r.row + ' ' + r.csv_file).toLowerCase();
+      const hay = (r.variable + ' ' + r.row + ' ' + r.cohort).toLowerCase();
       if (!hay.includes(search)) return false;
     }
     return true;
@@ -535,9 +569,10 @@ function applyFilters() {
   const html = filtered.map(r => {
     const siteCells = SITES.map(s => {
       const v = r.sites[s];
-      if (v === null || v === undefined) return '<td class="num not-reporting">–</td>';
-      if (v === TOKEN) return `<td class="num small-cell">${TOKEN}</td>`;
-      return `<td class="num">${Number(v).toLocaleString()}</td>`;
+      if (!v || v.total === 0) return '<td class="num not-reporting">–</td>';
+      if (v.small === 0) return `<td class="num">0 / ${v.total}</td>`;
+      const pct = v.total ? Math.round(v.small / v.total * 100) : 0;
+      return `<td class="num small-cell" title="${v.small} of ${v.total} data columns below threshold (${pct}%)"><strong>${v.small}</strong> / ${v.total}</td>`;
     }).join('');
     const statusBadge = r.status === 'in_rules'
       ? `<span class="badge in-rules">→ ${escapeHtml(r.merged_to || '')}</span>`
@@ -546,7 +581,6 @@ function applyFilters() {
       <td><span class="cohort-badge">${escapeHtml(r.cohort)}</span></td>
       <td>${escapeHtml(r.variable) || '<em>(ungrouped)</em>'}</td>
       <td><strong>${escapeHtml(r.row)}</strong></td>
-      <td>${escapeHtml(r.column)}</td>
       ${siteCells}
       <td class="num"><strong>${r.n_sites_small}</strong>/${r.n_sites_reporting}</td>
       <td>${statusBadge}</td>
@@ -592,7 +626,7 @@ applyFilters();
 
 def _render_html(payload: dict) -> str:
     site_headers = ''.join(
-        f'<th data-key="site_{s}">{s}<span class="sort-arrow">↕</span></th>'
+        f'<th data-key="site_{s}_small">{s}<span class="sort-arrow">↕</span></th>'
         for s in payload['sites']
     )
     # Pretty-print JSON so the embedded script is readable if anyone peeks
