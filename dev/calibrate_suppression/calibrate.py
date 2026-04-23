@@ -34,7 +34,7 @@ sys.path.insert(0, str(_REPO_ROOT))
 import pandas as pd  # noqa: E402
 
 from modules.tableone.suppression import (  # noqa: E402
-    MergeRules, apply_merges, parse_cell, split_variable,
+    MergeRules, TABLEONE_CSV_GLOB, apply_merges, parse_cell, split_variable,
 )
 
 _HERE = Path(__file__).resolve().parent
@@ -56,8 +56,13 @@ def discover_sites() -> list[tuple[str, Path]]:
 
 
 def walk_csvs(site_root: Path) -> list[Path]:
-    """Recursively gather every CSV under one site's Table One tree."""
-    return sorted(p for p in site_root.rglob('*.csv') if p.is_file())
+    """Recursively gather every Table One result CSV under a site's tree.
+
+    Only files matching the ``TABLEONE_CSV_GLOB`` pattern (``table_one_*.csv``)
+    are considered — the other analytical CSVs the generator writes
+    alongside Table One are not in the suppression scope.
+    """
+    return sorted(p for p in site_root.rglob(TABLEONE_CSV_GLOB) if p.is_file())
 
 
 def site_csv_index(site_root: Path) -> dict[str, pd.DataFrame]:

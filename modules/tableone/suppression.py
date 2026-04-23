@@ -333,10 +333,18 @@ def suppress_dataframe(
 # Tree walk (intermediate → final)
 # ---------------------------------------------------------------------------
 
-def _csv_files(root: Path) -> list[Path]:
+#: Glob pattern for Table One result CSVs. The suppression + calibration
+#: flow intentionally targets only files matching this pattern — other
+#: analytical CSVs the generator writes alongside Table One (mortality
+#: rates, strobe counts, comorbidities, etc.) aren't in scope and stay in
+#: ``output/final/`` unsuppressed.
+TABLEONE_CSV_GLOB = 'table_one_*.csv'
+
+
+def _csv_files(root: Path, pattern: str = TABLEONE_CSV_GLOB) -> list[Path]:
     if not root.exists():
         return []
-    return [p for p in root.rglob('*.csv') if p.is_file()]
+    return [p for p in root.rglob(pattern) if p.is_file()]
 
 
 def apply_suppression_to_tree(
