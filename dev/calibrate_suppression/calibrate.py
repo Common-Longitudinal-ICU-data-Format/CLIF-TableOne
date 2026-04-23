@@ -473,7 +473,7 @@ _HTML_TEMPLATE = r"""<!doctype html>
       <input type="search" id="f-search" placeholder="e.g. stepdown">
     </div>
     <div class="filter-group checkboxes">
-      <label><input type="checkbox" id="f-overall-only" checked> Overall tables only</label>
+      <label><input type="checkbox" id="f-overall-only"> Overall tables only (hide strata)</label>
       <label><input type="checkbox" id="f-consistent"> Small across all reporting sites</label>
     </div>
     <div class="result-count" id="result-count"></div>
