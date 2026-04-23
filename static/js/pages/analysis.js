@@ -139,33 +139,83 @@ async function renderValidation(table, panel) {
           <span><strong style="color:var(--danger);">Rejected</strong> <span style="opacity:0.6;">— incorrect or not applicable</span></span>
         </div>`;
       }
-      html += `<div id="feedback-container"></div>
-        <table class="data-table" id="errors-table">
-          <thead><tr><th>Feedback</th><th class="reason-col" style="display:none;">Reason</th><th>Category</th><th>Check</th><th>Column</th><th>Message</th><th style="text-align:right;">Checks</th></tr></thead>
+      html += `<div id="feedback-container"></div>`;
+      html += `<table class="data-table" id="errors-table">
+          <thead><tr>
+            <th>Feedback</th><th class="reason-col" style="display:none;">Reason</th><th>Category</th><th>Check</th><th>Column</th><th>Message</th><th style="text-align:right;">Checks</th>
+          </tr></thead>
           <tbody>`;
 
       for (const issue of errors) {
         const eid = issue.error_id || '';
         const checks = issue.atomic_count ?? 1;
         const checksDisplay = checks === 0 ? '—' : checks;
+        const subValues = issue.details && Array.isArray(issue.details.missing_values)
+          ? issue.details.missing_values : null;
+        const isMulti = !isAbsent
+          && issue.check_type === 'mcide_value_coverage'
+          && subValues && subValues.length > 1;
         const feedbackCell = isAbsent
           ? `<td style="color:var(--text-muted,#888);">—</td>`
-          : `<td>
-            <select class="feedback-select" data-eid="${eid}">
-              <option value="pending">Pending</option>
-              <option value="accepted">Accepted</option>
-              <option value="rejected">Rejected</option>
-            </select>
-          </td>
-          <td class="reason-col" style="display:none;">
-            <textarea class="feedback-reason" data-eid="${eid}" placeholder="Reason..." rows="1" style="display:none;"></textarea>
+          : isMulti
+            ? `<td>
+                <select class="mcide-action-select" data-eid="${eid}">
+                  <option value="">— Action —</option>
+                  <option value="accepted">Accept selected</option>
+                  <option value="rejected">Reject selected</option>
+                  <option value="pending">Set to pending</option>
+                </select>
+                <div style="margin-top:6px;"><span class="parent-summary" data-eid="${eid}" style="font-size:0.85em;"></span></div>
+               </td>
+               <td class="reason-col" style="display:none;"></td>`
+            : `<td>
+              <select class="feedback-select" data-eid="${eid}">
+                <option value="pending">Pending</option>
+                <option value="accepted">Accepted</option>
+                <option value="rejected">Rejected</option>
+              </select>
+            </td>
+            <td class="reason-col" style="display:none;">
+              <textarea class="feedback-reason" data-eid="${eid}" placeholder="Reason..." rows="1" style="display:none;"></textarea>
+            </td>`;
+        let messageCell;
+        if (isMulti) {
+          // Render the missing values as wrapping chips inside the Message
+          // cell. Each chip is a checkbox + label with the value text.
+          // Decision state is shown via chip classes (decision-rejected /
+          // decision-accepted) applied on feedback load + after bulk apply.
+          const intro = String(issue.message || '').split(':')[0] + ':';
+          let chipsHtml = '';
+          for (const v of subValues) {
+            const vAttr = String(v).replace(/"/g, '&quot;').replace(/</g, '&lt;');
+            const vText = String(v).replace(/</g, '&lt;');
+            chipsHtml += `<label class="mcide-chip" data-eid="${eid}" data-value-key="${vAttr}"
+                style="display:inline-flex;align-items:center;gap:6px;padding:2px 10px;border-radius:12px;
+                       background:rgba(127,127,127,0.1);cursor:pointer;font-size:0.88em;line-height:1.5;">
+              <input type="checkbox" class="bulk-select" data-eid="${eid}" data-value-key="${vAttr}" style="margin:0;">
+              <span class="chip-label">${vText}</span>
+            </label>`;
+          }
+          messageCell = `<td>
+            <div style="margin-bottom:8px;">
+              <strong>${intro}</strong>
+              <a href="#" class="mcide-select-all" data-eid="${eid}" style="margin-left:10px;font-size:0.85em;">select all</a>
+              <span style="opacity:0.4;font-size:0.85em;"> · </span>
+              <a href="#" class="mcide-deselect-all" data-eid="${eid}" style="font-size:0.85em;">deselect all</a>
+            </div>
+            <div class="mcide-chips" data-eid="${eid}" style="display:flex;flex-wrap:wrap;gap:6px 8px;">
+              ${chipsHtml}
+            </div>
           </td>`;
-        html += `<tr data-eid="${eid}">
+        } else {
+          messageCell = `<td>${issue.message || ''}</td>`;
+        }
+        html += `<tr data-eid="${eid}"${isMulti ? ' data-multi="1"' : ''}>
           ${feedbackCell}
           <td>${issue.category || ''}</td>
           <td>${issue.rule_description || issue.check_type || ''}</td>
           <td>${issue.column_field || 'N/A'}</td>
-          <td>${issue.message || ''}</td>
+          ${messageCell}
           <td style="text-align:right;">${checksDisplay}</td>
         </tr>`;
       }
@@ -233,19 +283,140 @@ async function renderValidation(table, panel) {
       panel.querySelectorAll('.reason-col').forEach(el => el.style.display = display);
     };
 
+    // "Unsaved changes" indicator on the Save Feedback button.
+    // Tracked per page-view: any successful putFeedback marks dirty;
+    // saveFeedback clears it. Refreshing the page resets the indicator
+    // (session pending_feedback may still hold unsaved changes though —
+    // that's a narrow gap, fine for a UX hint).
+    const markDirty = () => {
+      const btn = panel.querySelector('#btn-save-feedback');
+      if (!btn || btn.dataset.dirty === '1') return;
+      btn.dataset.dirty = '1';
+      btn.textContent = '● Save Feedback';
+      btn.style.background = 'var(--warning, #f59e0b)';
+      btn.style.color = '#000';
+      btn.title = 'Unsaved changes — click to persist and regenerate the PDF report';
+    };
+    const markClean = () => {
+      const btn = panel.querySelector('#btn-save-feedback');
+      if (!btn) return;
+      delete btn.dataset.dirty;
+      btn.style.background = '';
+      btn.style.color = '';
+      btn.title = '';
+      // Text is reset by the saveBtn click handler itself (to "Saved!" then "Save Feedback")
+    };
+
+    // Find a feedback-select or reason textarea by (eid, value_key). Using
+    // dataset lookups (instead of attribute selectors) avoids the need to
+    // escape arbitrary MCIDE value strings.
+    const findFeedbackEl = (cls, eid, valueKey) => {
+      for (const el of panel.querySelectorAll(`.${cls}`)) {
+        if (el.dataset.eid !== eid) continue;
+        const elKey = el.dataset.valueKey || null;
+        if (elKey === (valueKey || null)) return el;
+      }
+      return null;
+    };
+
+    // Update the parent aggregate summary for a multi-value MCIDE row.
+    // Reads chip classes (decision-rejected / decision-accepted) since
+    // chips are now the source of truth for per-value state.
+    const updateParentSummary = (parentEid) => {
+      const summaryEl = panel.querySelector(`.parent-summary[data-eid="${parentEid}"]`);
+      if (!summaryEl) return;
+      const chips = panel.querySelectorAll(`.mcide-chip[data-eid="${parentEid}"]`);
+      let accepted = 0, rejected = 0, pending = 0;
+      chips.forEach(c => {
+        if (c.classList.contains('decision-rejected')) rejected++;
+        else if (c.classList.contains('decision-accepted')) accepted++;
+        else pending++;
+      });
+      const total = accepted + rejected + pending;
+      summaryEl.innerHTML =
+        `<span style="color:var(--danger);">${rejected}</span> rejected · ` +
+        `<span style="color:var(--success);">${accepted}</span> accepted · ` +
+        `<span style="opacity:0.6;">${pending}</span> pending ` +
+        `<span style="opacity:0.5;">(of ${total})</span>`;
+    };
+
+    // Apply decision classes + tooltips to every chip from a feedback dict.
+    const paintChipDecisions = (feedback) => {
+      const decisions = (feedback && feedback.user_decisions) || {};
+      panel.querySelectorAll('.mcide-chip').forEach(chip => {
+        const eid = chip.dataset.eid;
+        const valueKey = chip.dataset.valueKey;
+        const entry = decisions[eid];
+        const sub = entry && entry.value_decisions && entry.value_decisions[valueKey];
+        const decision = (sub && sub.decision) || 'pending';
+        const reason = (sub && sub.reason) || '';
+        chip.classList.remove('decision-rejected', 'decision-accepted');
+        const label = chip.querySelector('.chip-label');
+        if (decision === 'rejected') {
+          chip.classList.add('decision-rejected');
+          if (label) {
+            label.style.color = 'var(--danger)';
+            label.style.textDecoration = 'line-through';
+          }
+          chip.title = reason ? `Rejected: ${reason}` : 'Rejected';
+        } else if (decision === 'accepted') {
+          chip.classList.add('decision-accepted');
+          if (label) {
+            label.style.color = 'var(--success)';
+            label.style.textDecoration = '';
+          }
+          chip.title = reason ? `Accepted: ${reason}` : 'Accepted';
+        } else {
+          if (label) {
+            label.style.color = '';
+            label.style.textDecoration = '';
+          }
+          chip.title = '';
+        }
+      });
+      // Refresh parent summaries for all multi-value rows
+      panel.querySelectorAll('.parent-summary').forEach(el => {
+        updateParentSummary(el.dataset.eid);
+      });
+    };
+
+    // Select-all / deselect-all links for each multi-value MCIDE row
+    panel.querySelectorAll('.mcide-select-all').forEach(a => {
+      a.addEventListener('click', (ev) => {
+        ev.preventDefault();
+        const eid = a.dataset.eid;
+        panel.querySelectorAll(`.mcide-chip[data-eid="${eid}"] input.bulk-select`)
+          .forEach(cb => { cb.checked = true; });
+      });
+    });
+    panel.querySelectorAll('.mcide-deselect-all').forEach(a => {
+      a.addEventListener('click', (ev) => {
+        ev.preventDefault();
+        const eid = a.dataset.eid;
+        panel.querySelectorAll(`.mcide-chip[data-eid="${eid}"] input.bulk-select`)
+          .forEach(cb => { cb.checked = false; });
+      });
+    });
+
     // Load existing feedback decisions and reasons
     try {
       const feedback = await api.getFeedback(table);
       if (feedback && feedback.user_decisions) {
         for (const [eid, info] of Object.entries(feedback.user_decisions)) {
-          const sel = panel.querySelector(`.feedback-select[data-eid="${eid}"]`);
+          const hasSubs = info.value_decisions && typeof info.value_decisions === 'object'
+            && Object.keys(info.value_decisions).length > 0;
+          if (hasSubs) continue;  // Multi-value chips handled by paintChipDecisions below
+          const sel = findFeedbackEl('feedback-select', eid, null);
           if (sel) sel.value = info.decision || 'pending';
-          const reasonInput = panel.querySelector(`.feedback-reason[data-eid="${eid}"]`);
+          const reasonInput = findFeedbackEl('feedback-reason', eid, null);
           if (reasonInput && info.decision === 'rejected') {
             reasonInput.style.display = 'block';
             reasonInput.value = info.reason || '';
           }
         }
+        // Apply chip classes + tooltips for all multi-value MCIDE rows,
+        // then refresh parent aggregate summaries.
+        paintChipDecisions(feedback);
         updateStatsFromFeedback(panel, data, feedback);
       }
 
@@ -280,20 +451,29 @@ async function renderValidation(table, panel) {
       });
     } catch (e) { /* no feedback yet */ }
 
-    // Feedback change handlers — update stats live on change
+    // Feedback change handlers — fire for single-value / non-MCIDE errors
+    // (multi-value MCIDE decisions come via chip bulk actions).
     panel.querySelectorAll('.feedback-select').forEach(sel => {
       sel.addEventListener('change', async () => {
         const eid = sel.dataset.eid;
-        const reasonInput = panel.querySelector(`.feedback-reason[data-eid="${eid}"]`);
-        if (sel.value === 'rejected') {
-          reasonInput.style.display = 'block';
-        } else {
-          reasonInput.style.display = 'none';
-          reasonInput.value = '';
+        const valueKey = sel.dataset.valueKey || null;
+        const reasonInput = findFeedbackEl('feedback-reason', eid, valueKey);
+        if (reasonInput) {
+          if (sel.value === 'rejected') {
+            reasonInput.style.display = 'block';
+          } else {
+            reasonInput.style.display = 'none';
+            reasonInput.value = '';
+          }
         }
         toggleReasonColumn();
         try {
-          await api.putFeedback(table, eid, sel.value, reasonInput.value);
+          await api.putFeedback(
+            table, eid, sel.value,
+            reasonInput ? reasonInput.value : '', valueKey,
+          );
+          markDirty();
+          if (valueKey) updateParentSummary(eid);
           const fb = await api.getFeedback(table);
           updateStatsFromFeedback(panel, data, fb);
         } catch (e) { console.error(e); }
@@ -305,9 +485,13 @@ async function renderValidation(table, panel) {
     panel.querySelectorAll('.feedback-reason').forEach(input => {
       const save = async () => {
         const eid = input.dataset.eid;
-        const sel = panel.querySelector(`.feedback-select[data-eid="${eid}"]`);
+        const valueKey = input.dataset.valueKey || null;
+        const sel = findFeedbackEl('feedback-select', eid, valueKey);
         try {
-          await api.putFeedback(table, eid, sel.value, input.value);
+          await api.putFeedback(
+            table, eid, sel ? sel.value : 'pending', input.value, valueKey,
+          );
+          markDirty();
         } catch (e) { console.error(e); }
       };
       input.addEventListener('input', () => autoResize(input));
@@ -317,12 +501,44 @@ async function renderValidation(table, panel) {
       });
     });
 
+    // Per-row MCIDE action dropdown. Changing it applies the chosen decision
+    // to every chip currently checked under this parent error_id.
+    panel.querySelectorAll('.mcide-action-select').forEach(sel => {
+      sel.addEventListener('change', async () => {
+        const decision = sel.value;
+        if (!decision) return;
+        const eid = sel.dataset.eid;
+        const checked = [...panel.querySelectorAll(
+          `.mcide-chip[data-eid="${eid}"] input.bulk-select:checked`
+        )];
+        if (checked.length === 0) {
+          sel.value = '';
+          return;
+        }
+        try {
+          await Promise.all(checked.map(cb =>
+            api.putFeedback(table, eid, decision, '', cb.dataset.valueKey)
+          ));
+          markDirty();
+          const fb = await api.getFeedback(table);
+          paintChipDecisions(fb);
+          updateStatsFromFeedback(panel, data, fb);
+          checked.forEach(cb => { cb.checked = false; });
+        } catch (e) {
+          console.error(e);
+          alert('Update failed: ' + e.message);
+        }
+        sel.value = '';
+      });
+    });
+
     // Save feedback button
     const saveBtn = panel.querySelector('#btn-save-feedback');
     if (saveBtn) {
       saveBtn.addEventListener('click', async () => {
         try {
           await api.saveFeedback(table);
+          markClean();
           saveBtn.textContent = 'Saved!';
           setTimeout(() => saveBtn.textContent = 'Save Feedback', 2000);
           // Refresh review status bar
@@ -354,23 +570,38 @@ function updateStatsFromFeedback(panel, data, feedback) {
   if (!feedback || !feedback.user_decisions) return;
 
   const decisions = feedback.user_decisions;
-  // Rejected = "not a real error" → resolved, counts as passed
-  // Accepted = "confirmed error" → still an error
-  // Pending = unresolved → still an error
-  const rejectedIds = new Set(
-    Object.entries(decisions)
-      .filter(([, d]) => d.decision === 'rejected')
-      .map(([eid]) => eid)
-  );
 
-  // Recount errors/warnings excluding rejected
-  const adjErrors = data.issues.filter(i => i.severity === 'error' && !rejectedIds.has(i.error_id));
-  const adjWarnings = data.issues.filter(i => i.severity === 'warning' && !rejectedIds.has(i.error_id));
-  const adjErrorAtoms = adjErrors.reduce((s, i) => s + (i.atomic_count ?? 1), 0);
-  const adjWarningAtoms = adjWarnings.reduce((s, i) => s + (i.atomic_count ?? 1), 0);
-  const rejectedAtoms = data.issues
-    .filter(i => i.severity === 'error' && rejectedIds.has(i.error_id))
-    .reduce((s, i) => s + (i.atomic_count ?? 1), 0);
+  // Atom-level rejection count for one issue. Multi-value MCIDE errors may
+  // be partially rejected (e.g. 15 of 21 missing languages) — in that case
+  // only the rejected sub-values count as "passed".
+  const issueRejectedAtoms = (issue) => {
+    const entry = decisions[issue.error_id];
+    if (!entry) return 0;
+    const subs = entry.value_decisions;
+    const vals = issue.details && issue.details.missing_values;
+    const isMulti = subs && typeof subs === 'object'
+      && Array.isArray(vals) && vals.length > 1
+      && issue.check_type === 'mcide_value_coverage';
+    if (isMulti) {
+      let n = 0;
+      for (const v of vals) {
+        if (subs[v] && subs[v].decision === 'rejected') n++;
+      }
+      return n;
+    }
+    return entry.decision === 'rejected' ? (issue.atomic_count ?? 1) : 0;
+  };
+
+  // Recount errors/warnings using atom-level partial credit
+  const errorIssues = data.issues.filter(i => i.severity === 'error');
+  const warningIssues = data.issues.filter(i => i.severity === 'warning');
+  const rejectedAtoms = errorIssues.reduce((s, i) => s + issueRejectedAtoms(i), 0);
+  const adjErrorAtoms = errorIssues.reduce(
+    (s, i) => s + Math.max(0, (i.atomic_count ?? 1) - issueRejectedAtoms(i)), 0,
+  );
+  const adjWarningAtoms = warningIssues.reduce(
+    (s, i) => s + Math.max(0, (i.atomic_count ?? 1) - issueRejectedAtoms(i)), 0,
+  );
 
   // Adjusted scores: rejected errors become "passed"
   const adjPassed = data.total_passed + rejectedAtoms;
@@ -415,8 +646,8 @@ function updateStatsFromFeedback(panel, data, feedback) {
       continue;
     }
     const catRejectedAtoms = data.issues
-      .filter(i => i.category === cat && i.severity === 'error' && rejectedIds.has(i.error_id))
-      .reduce((s, i) => s + (i.atomic_count ?? 1), 0);
+      .filter(i => i.category === cat && i.severity === 'error')
+      .reduce((s, i) => s + issueRejectedAtoms(i), 0);
     const adjCatPassed = scores.passed + catRejectedAtoms;
     const pct = scores.total ? Math.round(adjCatPassed / scores.total * 100) : 100;
     const color = pct >= 85 ? 'var(--success)' : pct >= 60 ? 'var(--warning)' : 'var(--danger)';

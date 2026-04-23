@@ -49,6 +49,12 @@ def _regenerate_table_pdf(table_name: str, config: dict) -> bool:
             with open(response_file, 'r', encoding='utf-8') as f:
                 feedback = json.load(f)
 
+        # Split multi-value MCIDE errors with partial per-value decisions into
+        # synthetic sub-errors so clifpy's report generator (which only reads
+        # top-level `decision` fields) produces correct atom counts.
+        from modules.utils.feedback import flatten_mcide_for_report
+        validation_results, feedback = flatten_mcide_for_report(validation_results, feedback)
+
         pdf_path = os.path.join(reports_dir, f"{table_name}_validation_report.pdf")
         pdf_generator = ValidationPDFGenerator()
         if pdf_generator.is_available():

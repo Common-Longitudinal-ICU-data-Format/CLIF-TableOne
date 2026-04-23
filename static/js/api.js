@@ -22,8 +22,13 @@ export const api = {
   getSummary: (name) => request('GET', `/summary/${name}`),
   getChart: (name, type) => request('GET', `/summary/${name}/charts/${type}`),
   getFeedback: (name) => request('GET', `/feedback/${name}`),
-  putFeedback: (name, errorId, decision, reason) =>
-    request('PUT', `/feedback/${name}`, { error_id: errorId, decision, reason }),
+  putFeedback: (name, errorId, decision, reason, valueKey = null) =>
+    request('PUT', `/feedback/${name}`, {
+      error_id: errorId,
+      decision,
+      reason,
+      ...(valueKey !== null && valueKey !== undefined ? { value_key: valueKey } : {}),
+    }),
   saveFeedback: (name) => request('POST', `/feedback/${name}/save`),
   clearAllFeedback: () => request('DELETE', '/feedback'),
   downloadReport: (type) => `${BASE}/reports/download/${type}`,  // returns URL string

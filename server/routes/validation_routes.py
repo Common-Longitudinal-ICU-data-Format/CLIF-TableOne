@@ -56,27 +56,22 @@ async def get_validation_summary():
 
         # Adjust scores for rejected feedback (matches combined PDF logic).
         # Absent tables have no user feedback, so this block is a no-op for them.
+        # count_rejected_atoms handles both whole-issue rejection and partial
+        # per-value rejection on multi-value MCIDE errors.
         fb = cached.get("feedback") if has_validation else None
-        rejected_ids: set = set()
-        if fb and fb.get("user_decisions"):
-            rejected_ids = {
-                eid for eid, d in fb["user_decisions"].items()
-                if d.get("decision") == "rejected"
-            }
-        if rejected_ids:
-            for cat in list(category_scores.keys()):
-                cat_rejected = sum(
-                    i.get("atomic_count", 1) for i in all_issues
-                    if i["category"] == cat and i["severity"] == "error"
-                    and create_error_id(i) in rejected_ids
-                )
-                if cat_rejected:
-                    p, t = category_scores[cat]
-                    category_scores[cat] = (p + cat_rejected, t)
+        from modules.utils.feedback import count_rejected_atoms
+        for cat in list(category_scores.keys()):
+            cat_rejected = sum(
+                count_rejected_atoms(i, fb) for i in all_issues
+                if i["category"] == cat and i["severity"] == "error"
+            )
+            if cat_rejected:
+                p, t = category_scores[cat]
+                category_scores[cat] = (p + cat_rejected, t)
 
         rejected_error_count = sum(
-            i.get("atomic_count", 1) for i in all_issues
-            if i["severity"] == "error" and create_error_id(i) in rejected_ids
+            count_rejected_atoms(i, fb) for i in all_issues
+            if i["severity"] == "error"
         )
         total_errors += sum(i.get("atomic_count", 1) for i in all_issues if i["severity"] == "error") - rejected_error_count
         total_warnings += sum(i.get("atomic_count", 1) for i in all_issues if i["severity"] == "warning")

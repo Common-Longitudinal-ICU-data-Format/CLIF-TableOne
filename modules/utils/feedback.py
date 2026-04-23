@@ -11,6 +11,15 @@ import json
 import os
 
 
+def _is_multi_value_mcide(issue: Dict[str, Any]) -> bool:
+    """True if this is an MCIDE coverage error with >1 missing values."""
+    if issue.get('check_type') != 'mcide_value_coverage':
+        return False
+    details = issue.get('details') or {}
+    missing = details.get('missing_values') or []
+    return isinstance(missing, list) and len(missing) > 1
+
+
 def create_error_id(error: Dict[str, Any]) -> str:
     """
     Create a unique identifier for a DQA issue (or legacy error).
@@ -79,17 +88,21 @@ def create_feedback_structure(validation_results: Dict[str, Any],
         'timestamp': datetime.now().isoformat(),
         'original_status': computed_status,
         'adjusted_status': computed_status,
-        'total_errors': len(reviewable),
+        'total_errors': 0,
         'accepted_count': 0,
         'rejected_count': 0,
-        'pending_count': len(reviewable),
+        'pending_count': 0,
         'user_decisions': {}
     }
 
-    # Initialize all reviewable issues as pending
+    # Initialize all reviewable issues as pending. For multi-value MCIDE
+    # coverage errors (e.g. "Missing 21 mCIDE values: German, Yiddish, …"),
+    # the parent decision stays 'pending' and we attach a value_decisions
+    # sub-dict so the site can reject individual missing values rather than
+    # the whole bundled row.
     for issue in reviewable:
         error_id = create_error_id(issue)
-        feedback['user_decisions'][error_id] = {
+        entry = {
             'error_type': issue.get('check_type', 'Unknown'),
             'raw_type': issue.get('check_type', ''),
             'category': issue.get('category', 'other'),
@@ -97,58 +110,174 @@ def create_feedback_structure(validation_results: Dict[str, Any],
             'description': issue.get('message', ''),
             'decision': 'pending',
             'reason': '',
-            'timestamp': None
+            'timestamp': None,
         }
+        if _is_multi_value_mcide(issue):
+            details = issue.get('details') or {}
+            entry['mcide_column'] = details.get('column')
+            entry['missing_values'] = list(details.get('missing_values') or [])
+            entry['value_decisions'] = {
+                v: {'decision': 'pending', 'reason': '', 'timestamp': None}
+                for v in entry['missing_values']
+            }
+        feedback['user_decisions'][error_id] = entry
 
+    _recompute_counts(feedback)
+    return feedback
+
+
+def _recompute_counts(feedback: Dict[str, Any]) -> None:
+    """Recompute accepted/rejected/pending/total counts from user_decisions.
+
+    For entries with a ``value_decisions`` sub-dict (multi-value MCIDE),
+    each sub-value contributes 1 atom to the totals; the parent entry itself
+    does not count. For regular entries, the parent counts as 1 atom. This
+    matches how the UI presents the review status bar.
+    """
+    accepted = rejected = pending = 0
+    for entry in feedback.get('user_decisions', {}).values():
+        subs = entry.get('value_decisions')
+        if isinstance(subs, dict) and subs:
+            for sub in subs.values():
+                d = sub.get('decision', 'pending')
+                if d == 'accepted':
+                    accepted += 1
+                elif d == 'rejected':
+                    rejected += 1
+                else:
+                    pending += 1
+        else:
+            d = entry.get('decision', 'pending')
+            if d == 'accepted':
+                accepted += 1
+            elif d == 'rejected':
+                rejected += 1
+            else:
+                pending += 1
+    feedback['accepted_count'] = accepted
+    feedback['rejected_count'] = rejected
+    feedback['pending_count'] = pending
+    feedback['total_errors'] = accepted + rejected + pending
+
+
+def ensure_mcide_subdecisions(feedback: Dict[str, Any],
+                              issues: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """Migrate an on-disk feedback dict to the per-value MCIDE schema.
+
+    Called on every feedback GET so older files auto-upgrade:
+    * For each issue that qualifies as multi-value MCIDE, ensure the
+      corresponding parent entry has a ``value_decisions`` sub-dict with
+      one slot per missing value.
+    * If the parent entry previously had ``decision ∈ {accepted, rejected}``,
+      propagate that decision to every sub-value (with the same reason),
+      then reset the parent decision to 'pending' — the parent is now a
+      pure aggregate of its children.
+    * Always recompute counts at the end.
+    """
+    if not feedback or 'user_decisions' not in feedback:
+        return feedback
+    decisions = feedback['user_decisions']
+    for issue in issues or []:
+        if not _is_multi_value_mcide(issue):
+            continue
+        eid = create_error_id(issue)
+        details = issue.get('details') or {}
+        values = list(details.get('missing_values') or [])
+        entry = decisions.get(eid)
+        if entry is None:
+            # Parent was never in the dict (e.g. new error vs. stale file)
+            decisions[eid] = {
+                'error_type': 'mcide_value_coverage',
+                'raw_type': 'mcide_value_coverage',
+                'category': issue.get('category', 'completeness'),
+                'severity': 'error',
+                'description': issue.get('message', ''),
+                'decision': 'pending',
+                'reason': '',
+                'timestamp': None,
+                'mcide_column': details.get('column'),
+                'missing_values': values,
+                'value_decisions': {
+                    v: {'decision': 'pending', 'reason': '', 'timestamp': None}
+                    for v in values
+                },
+            }
+            continue
+        entry.setdefault('mcide_column', details.get('column'))
+        entry.setdefault('missing_values', values)
+        subs = entry.get('value_decisions')
+        if not isinstance(subs, dict):
+            subs = {}
+        parent_decision = entry.get('decision', 'pending')
+        parent_reason = entry.get('reason', '') or ''
+        parent_ts = entry.get('timestamp')
+        inherit = parent_decision in ('accepted', 'rejected') and not subs
+        for v in values:
+            if v not in subs:
+                subs[v] = {
+                    'decision': parent_decision if inherit else 'pending',
+                    'reason': parent_reason if inherit else '',
+                    'timestamp': parent_ts if inherit else None,
+                }
+        entry['value_decisions'] = subs
+        # Parent is now a pure aggregate; reset its own decision so the
+        # review-status math doesn't double-count.
+        if inherit:
+            entry['decision'] = 'pending'
+            entry['reason'] = ''
+            entry['timestamp'] = None
+    _recompute_counts(feedback)
     return feedback
 
 
 def update_user_decision(feedback: Dict[str, Any], error_id: str,
-                        decision: str, reason: str = '') -> Dict[str, Any]:
+                        decision: str, reason: str = '',
+                        value_key: Optional[str] = None) -> Dict[str, Any]:
     """
     Update user decision for a specific error.
+
+    When ``value_key`` is provided, updates a single sub-value decision
+    under ``user_decisions[error_id].value_decisions[value_key]`` (used for
+    multi-value MCIDE coverage errors). Otherwise updates the top-level
+    decision.
 
     Parameters:
     -----------
     feedback : dict
         Feedback structure
     error_id : str
-        Error identifier
+        Error identifier (parent error)
     decision : str
         'accepted', 'rejected', or 'pending'
     reason : str, optional
         Reason for the decision
+    value_key : str, optional
+        A missing-value name to update inside ``value_decisions``.
 
     Returns:
     --------
     dict
         Updated feedback structure
     """
-    if error_id not in feedback['user_decisions']:
+    entry = feedback.get('user_decisions', {}).get(error_id)
+    if entry is None:
         return feedback
 
-    old_decision = feedback['user_decisions'][error_id]['decision']
-
-    # Update counts
-    if old_decision == 'accepted':
-        feedback['accepted_count'] -= 1
-    elif old_decision == 'rejected':
-        feedback['rejected_count'] -= 1
-    elif old_decision == 'pending':
-        feedback['pending_count'] -= 1
-
-    if decision == 'accepted':
-        feedback['accepted_count'] += 1
-    elif decision == 'rejected':
-        feedback['rejected_count'] += 1
-    elif decision == 'pending':
-        feedback['pending_count'] += 1
-
-    # Update decision
-    feedback['user_decisions'][error_id]['decision'] = decision
-    feedback['user_decisions'][error_id]['reason'] = reason
-    feedback['user_decisions'][error_id]['timestamp'] = datetime.now().isoformat()
-
+    now = datetime.now().isoformat()
+    if value_key is None:
+        entry['decision'] = decision
+        entry['reason'] = reason
+        entry['timestamp'] = now
+    else:
+        subs = entry.setdefault('value_decisions', {})
+        sub = subs.setdefault(
+            value_key,
+            {'decision': 'pending', 'reason': '', 'timestamp': None},
+        )
+        sub['decision'] = decision
+        sub['reason'] = reason
+        sub['timestamp'] = now
+    _recompute_counts(feedback)
     return feedback
 
 
@@ -225,24 +354,168 @@ def recalculate_status(original_status: str, feedback: Dict[str, Any]) -> str:
     """
     decisions = feedback.get('user_decisions', {})
 
-    # Only consider actual errors (not warnings) for status calculation
-    error_decisions = [d for d in decisions.values() if d.get('severity') == 'error']
+    # Walk all decision atoms: sub-value decisions (for multi-value MCIDE)
+    # count individually; for all other errors, the parent entry is the atom.
+    atoms = []
+    for entry in decisions.values():
+        if entry.get('severity') != 'error':
+            continue
+        subs = entry.get('value_decisions')
+        if isinstance(subs, dict) and subs:
+            for sub in subs.values():
+                atoms.append(sub.get('decision', 'pending'))
+        else:
+            atoms.append(entry.get('decision', 'pending'))
 
-    if not error_decisions:
+    if not atoms:
         # No errors at all — warnings alone don't make it incomplete
         return 'complete'
 
-    pending_or_accepted = [
-        d for d in error_decisions
-        if d.get('decision') in ('accepted', 'pending')
-    ]
-
-    # If any errors are accepted (confirmed) or pending (unreviewed), keep original status
-    if pending_or_accepted:
+    # If any atoms are accepted (confirmed) or pending (unreviewed), keep
+    # original status. Only when every atom is rejected is the table complete.
+    if any(a in ('accepted', 'pending') for a in atoms):
         return original_status
-
-    # All errors were explicitly rejected — table is complete
     return 'complete'
+
+
+def count_rejected_atoms(issue: Dict[str, Any],
+                         feedback: Optional[Dict[str, Any]]) -> int:
+    """How many atomic checks of this issue were rejected by the user.
+
+    For multi-value MCIDE errors with ``value_decisions``, each rejected
+    sub-value contributes 1 atom. For all other issues, the whole issue
+    counts as ``atomic_count`` atoms when its top-level decision is
+    'rejected', else 0.
+    """
+    if not feedback or not feedback.get('user_decisions'):
+        return 0
+    eid = create_error_id(issue)
+    entry = feedback['user_decisions'].get(eid)
+    if not entry:
+        return 0
+    subs = entry.get('value_decisions')
+    details = issue.get('details') or {}
+    missing = details.get('missing_values') or []
+    is_multi = (
+        issue.get('check_type') == 'mcide_value_coverage'
+        and isinstance(subs, dict) and subs
+        and isinstance(missing, list) and len(missing) > 1
+    )
+    if is_multi:
+        return sum(
+            1 for v in missing
+            if isinstance(subs.get(v), dict)
+            and subs[v].get('decision') == 'rejected'
+        )
+    return issue.get('atomic_count', 1) if entry.get('decision') == 'rejected' else 0
+
+
+def flatten_mcide_for_report(validation_data: Dict[str, Any],
+                             feedback: Optional[Dict[str, Any]]):
+    """Preprocess a (validation, feedback) tuple so downstream reporting code
+    that only understands top-level ``decision`` fields produces correct
+    partial-rejection atom counts.
+
+    For each multi-value MCIDE error whose ``value_decisions`` include at
+    least one rejected or accepted sub-value, split the original error into
+    up to three synthetic errors (one per decision bucket) with distinct
+    messages and ``details.atomic_count`` matching each bucket's size.
+    Then write matching top-level decisions into a copy of the feedback
+    dict. The parent entry is removed (its sub-decisions are now expressed
+    via the child entries).
+
+    Single-value MCIDE errors, non-MCIDE errors, and multi-value MCIDE
+    errors that are still all-pending pass through unchanged.
+
+    Returns ``(adjusted_validation, adjusted_feedback)`` — deep copies; the
+    inputs are not mutated.
+    """
+    import copy as _copy
+    adj_validation = _copy.deepcopy(validation_data)
+    adj_feedback = _copy.deepcopy(feedback) if feedback else {'user_decisions': {}}
+    decisions = adj_feedback.setdefault('user_decisions', {})
+
+    _DQA_CATEGORIES = ('conformance', 'completeness', 'plausibility')
+    for category in _DQA_CATEGORIES:
+        checks = adj_validation.get(category) or {}
+        for check_name, d in checks.items():
+            if d.get('check_type') != 'mcide_value_coverage':
+                continue
+            new_errors = []
+            for err in (d.get('errors') or []):
+                details = err.get('details') or {}
+                missing = details.get('missing_values') or []
+                if not isinstance(missing, list) or len(missing) <= 1:
+                    new_errors.append(err)
+                    continue
+                # Recompute the parent error_id exactly how clifpy does it.
+                parent_eid = create_error_id({
+                    'category': category,
+                    'check_type': 'mcide_value_coverage',
+                    'message': err.get('message', ''),
+                })
+                parent = decisions.get(parent_eid)
+                vd = parent.get('value_decisions') if parent else None
+                if not (isinstance(vd, dict) and vd):
+                    new_errors.append(err)
+                    continue
+                rejected_vals, accepted_vals, pending_vals = [], [], []
+                for v in missing:
+                    sub = vd.get(v) if isinstance(vd.get(v), dict) else None
+                    decision = (sub or {}).get('decision', 'pending')
+                    if decision == 'rejected':
+                        rejected_vals.append(v)
+                    elif decision == 'accepted':
+                        accepted_vals.append(v)
+                    else:
+                        pending_vals.append(v)
+                if not rejected_vals and not accepted_vals:
+                    new_errors.append(err)
+                    continue  # all pending — no split needed
+
+                column = details.get('column') or ''
+
+                def _mk(values, label, decision_val):
+                    if not values:
+                        return
+                    values_str = ', '.join(str(v) for v in values)
+                    msg = f"{label} {len(values)} mCIDE values: {values_str}"
+                    syn_details = dict(details)
+                    syn_details['missing_values'] = list(values)
+                    new_errors.append({
+                        'message': msg,
+                        'details': syn_details,
+                    })
+                    syn_eid = create_error_id({
+                        'category': category,
+                        'check_type': 'mcide_value_coverage',
+                        'message': msg,
+                    })
+                    # Merge per-value reasons into one combined reason string
+                    reasons = []
+                    for v in values:
+                        r = (vd.get(v) or {}).get('reason') or ''
+                        if r and r not in reasons:
+                            reasons.append(r)
+                    decisions[syn_eid] = {
+                        'error_type': 'mcide_value_coverage',
+                        'raw_type': 'mcide_value_coverage',
+                        'category': category,
+                        'severity': 'error',
+                        'description': msg,
+                        'decision': decision_val,
+                        'reason': '; '.join(reasons),
+                        'timestamp': None,
+                    }
+
+                _mk(rejected_vals, 'Rejected', 'rejected')
+                _mk(accepted_vals, 'Acknowledged', 'accepted')
+                _mk(pending_vals, 'Missing', 'pending')
+
+                # Parent entry is now represented by its child buckets.
+                decisions.pop(parent_eid, None)
+            d['errors'] = new_errors
+    return adj_validation, adj_feedback
 
 
 def save_feedback(feedback: Dict[str, Any], output_dir: str, table_name: str):

@@ -16,6 +16,7 @@ from modules.utils.feedback import (
     load_feedback,
     get_feedback_summary,
     create_error_id,
+    ensure_mcide_subdecisions,
 )
 
 router = APIRouter(prefix="/api", tags=["feedback"])
@@ -25,6 +26,32 @@ class FeedbackUpdate(BaseModel):
     error_id: str
     decision: str  # 'accepted', 'rejected', 'pending'
     reason: str = ''
+    # Set when updating a single sub-value on a multi-value MCIDE error.
+    value_key: str | None = None
+
+
+def _load_error_issues(name: str) -> list:
+    """Return the reviewable error issues for a table, used for MCIDE sub-value
+    migration of disk-loaded feedback."""
+    from modules.cli.pdf_generator import _collect_dqa_issues
+    validation = None
+    cached = cache_service.get(name)
+    if cached and cached.get("validation"):
+        validation = cached["validation"]
+    else:
+        import json
+        from modules.utils.output_paths import validation_json_reports_dir
+        dqa_path = str(validation_json_reports_dir() / f'{name}_dqa.json')
+        if os.path.exists(dqa_path):
+            try:
+                with open(dqa_path, 'r', encoding='utf-8') as f:
+                    validation = json.load(f)
+            except (OSError, ValueError):
+                validation = None
+    if validation is None:
+        return []
+    _, all_issues = _collect_dqa_issues(validation)
+    return [i for i in all_issues if i.get('severity') == 'error']
 
 
 def _get_pending_feedback() -> dict:
@@ -48,6 +75,12 @@ def _resolve_feedback(name: str, config: dict):
     # 2. Try loading from disk
     feedback = load_feedback(output_dir, name)
     if feedback is not None:
+        # Auto-upgrade old files: multi-value MCIDE errors now carry
+        # per-value sub-decisions. ensure_mcide_subdecisions is a no-op if
+        # the file is already in the new schema.
+        issues = _load_error_issues(name)
+        if issues:
+            ensure_mcide_subdecisions(feedback, issues)
         return feedback
 
     # 3. Try creating from validation cache
@@ -85,12 +118,18 @@ async def update_feedback(name: str, body: FeedbackUpdate):
     if feedback is None:
         raise HTTPException(404, f"No feedback available for {name}")
 
-    feedback = update_user_decision(feedback, body.error_id, body.decision, body.reason)
+    feedback = update_user_decision(
+        feedback, body.error_id, body.decision, body.reason, body.value_key
+    )
 
     # Store in session so save endpoint can find it
     _get_pending_feedback()[name] = feedback
     cache_service.update_feedback(name, feedback)
-    logger.info("Updated feedback for %s: error_id=%s decision=%s", name, body.error_id, body.decision)
+    logger.info(
+        "Updated feedback for %s: error_id=%s decision=%s%s",
+        name, body.error_id, body.decision,
+        f" value_key={body.value_key}" if body.value_key else "",
+    )
 
     return {"status": "updated", "summary": get_feedback_summary(feedback)}
 
