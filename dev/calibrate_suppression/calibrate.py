@@ -561,7 +561,6 @@ _HTML_TEMPLATE = r"""<!doctype html>
         {SITE_HEADERS}
         <th data-key="n_sites_small" class="sorted">Small sites<span class="sort-arrow">↓</span></th>
         <th data-key="status">Status<span class="sort-arrow">↕</span></th>
-        <th>Action</th>
       </tr>
     </thead>
     <tbody id="tbody"></tbody>
@@ -770,6 +769,8 @@ function applyFilters() {
         <td>${action}</td>
       </tr>`;
     }
+    // "By cohort" view: diagnostic only — row-editing actions live on
+    // the Unique tab so we don't duplicate the same decision 7 times.
     return `<tr>
       <td><span class="cohort-badge">${escapeHtml(r.cohort)}</span></td>
       <td>${escapeHtml(r.variable) || '<em>(ungrouped)</em>'}</td>
@@ -777,7 +778,6 @@ function applyFilters() {
       ${siteCells}
       <td class="num"><strong>${r.n_sites_small}</strong>/${r.n_sites_reporting}</td>
       <td>${statusBadge}${pendingTag}</td>
-      <td>${action}</td>
     </tr>`;
   }).join('');
   tbody.innerHTML = html;
@@ -986,8 +986,7 @@ function setView(next) {
       <th data-key="row">Row<span class="sort-arrow">↕</span></th>
       ${siteTh}
       <th data-key="n_sites_small" class="sorted">Small sites<span class="sort-arrow">↓</span></th>
-      <th data-key="status">Status<span class="sort-arrow">↕</span></th>
-      <th>Action</th>`;
+      <th data-key="status">Status<span class="sort-arrow">↕</span></th>`;
     document.getElementById('view-description').innerHTML =
       `Rows are aggregated by <code>(cohort, variable, row)</code>. Each site cell shows <strong>small / total</strong> — number of data columns where N&lt;${payload.threshold} over the number of columns reporting any count (across all Table One files + year columns in this cohort).`;
     document.getElementById('f-cohort').parentElement.style.display = '';
