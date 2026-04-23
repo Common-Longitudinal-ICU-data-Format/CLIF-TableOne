@@ -493,13 +493,23 @@ _HTML_TEMPLATE = r"""<!doctype html>
   .btn-outline { background: transparent; color: var(--text); border: 1px solid var(--border);
                  border-radius: 6px; padding: 8px 16px; font-size: 13px; cursor: pointer; }
   .btn-outline:hover { border-color: var(--danger); color: var(--danger); }
+  .tabs { display: flex; gap: 4px; margin-bottom: 16px; border-bottom: 1px solid var(--border); }
+  .tab { background: transparent; color: var(--muted); border: 0; border-bottom: 2px solid transparent;
+         padding: 10px 16px; font-size: 14px; cursor: pointer; font-weight: 500; }
+  .tab:hover { color: var(--text); }
+  .tab.active { color: var(--accent); border-bottom-color: var(--accent); }
 </style>
 </head>
 <body>
   <h1>Cross-site small-cell review</h1>
   <div class="subtitle">Threshold: <code>{THRESHOLD}</code> · Token: <code>{TOKEN}</code> · Sites: <code>{SITES_CSV}</code>
-    <br>Rows are aggregated by <code>(cohort, variable, row)</code>. Each site cell shows
-    <strong>small / total</strong> — number of data columns where N&lt;{THRESHOLD} over the number of columns reporting any count (across all Table One files + year columns in this cohort).</div>
+    <br><span id="view-description">Rows are aggregated by <code>(cohort, variable, row)</code>. Each site cell shows
+    <strong>small / total</strong> — number of data columns where N&lt;{THRESHOLD} over the number of columns reporting any count (across all Table One files + year columns in this cohort).</span></div>
+
+  <div class="tabs" role="tablist">
+    <button class="tab active" id="tab-cohort" data-view="cohort">By cohort</button>
+    <button class="tab" id="tab-unique" data-view="unique">Unique rows (for merge-rule decisions)</button>
+  </div>
 
   <div class="summary">
     <div class="card total"><div class="label">Rows with ≥1 small cell</div><div class="value" id="total">–</div></div>
@@ -621,6 +631,56 @@ for (const v of vars) {
 // Sort state
 let sortKey = 'n_sites_small';
 let sortDir = 'desc';
+let view = 'cohort';   // 'cohort' or 'unique'
+
+// Aggregate the by-cohort rows to one record per (variable, row).
+// Used by the "Unique rows" tab — canonical view for merge-rule
+// decisions since merge rules don't vary by cohort.
+function aggregateUnique(rows) {
+  const map = new Map();
+  for (const r of rows) {
+    const key = (r.variable || '') + '\x1f' + r.row;
+    if (!map.has(key)) {
+      map.set(key, {
+        variable: r.variable,
+        row: r.row,
+        sites: Object.fromEntries(SITES.map(s => [s, {small: 0, total: 0}])),
+        cohorts: new Set(),
+        cohorts_small: new Set(),
+      });
+    }
+    const agg = map.get(key);
+    agg.cohorts.add(r.cohort);
+    if (r.n_sites_small > 0) agg.cohorts_small.add(r.cohort);
+    for (const s of SITES) {
+      const v = r.sites[s];
+      if (v) {
+        agg.sites[s].small += v.small;
+        agg.sites[s].total += v.total;
+      }
+    }
+  }
+  const out = [];
+  for (const a of map.values()) {
+    const n_sites_small = SITES.filter(s => a.sites[s].small > 0).length;
+    const n_sites_reporting = SITES.filter(s => a.sites[s].total > 0).length;
+    if (n_sites_small === 0) continue;
+    const rec = {
+      variable: a.variable,
+      row: a.row,
+      sites: a.sites,
+      n_sites_small,
+      n_sites_reporting,
+      n_cohorts: a.cohorts.size,
+      n_cohorts_small: a.cohorts_small.size,
+    };
+    for (const s of SITES) rec[`site_${s}_small`] = a.sites[s].small;
+    out.push(rec);
+  }
+  return out;
+}
+
+const uniqueRows = aggregateUnique(rows);
 
 function sortRows(arr) {
   const mult = sortDir === 'asc' ? 1 : -1;
@@ -641,15 +701,23 @@ function applyFilters() {
   const overallOnly = document.getElementById('f-overall-only').checked;
   const consistent = document.getElementById('f-consistent').checked;
 
-  let filtered = rows.filter(r => {
-    if (cohort && r.cohort !== cohort) return false;
+  const sourceRows = view === 'unique' ? uniqueRows : rows;
+
+  let filtered = sourceRows.filter(r => {
+    if (view === 'cohort') {
+      if (cohort && r.cohort !== cohort) return false;
+      if (overallOnly && !(r.cohort || '').startsWith('overall')) return false;
+    }
+    // Status is recomputed against the live workingRules so pending
+    // edits filter correctly on both tabs.
+    const workingGroup = r.variable ? lookupMerge(workingRules, r.variable, r.row) : null;
+    const computedStatus = workingGroup ? 'in_rules' : 'residual';
     if (variable && r.variable !== variable) return false;
-    if (status && r.status !== status) return false;
+    if (status && computedStatus !== status) return false;
     if (r.n_sites_small < minSites) return false;
-    if (overallOnly && !r.cohort.startsWith('overall')) return false;
     if (consistent && r.n_sites_small !== r.n_sites_reporting) return false;
     if (search) {
-      const hay = (r.variable + ' ' + r.row + ' ' + r.cohort).toLowerCase();
+      const hay = (r.variable + ' ' + r.row + ' ' + (r.cohort || '')).toLowerCase();
       if (!hay.includes(search)) return false;
     }
     return true;
@@ -657,7 +725,7 @@ function applyFilters() {
   filtered = sortRows(filtered);
 
   document.getElementById('result-count').textContent =
-    `${filtered.length.toLocaleString()} of ${rows.length.toLocaleString()} rows`;
+    `${filtered.length.toLocaleString()} of ${sourceRows.length.toLocaleString()} rows`;
 
   const tbody = document.getElementById('tbody');
   const empty = document.getElementById('empty');
@@ -676,9 +744,6 @@ function applyFilters() {
       const pct = v.total ? Math.round(v.small / v.total * 100) : 0;
       return `<td class="num small-cell" title="${v.small} of ${v.total} data columns below threshold (${pct}%)"><strong>${v.small}</strong> / ${v.total}</td>`;
     }).join('');
-    // Re-compute status against the live workingRules so pending changes
-    // show immediately; tag rows whose working state differs from the
-    // committed one with a "pending" badge.
     const workingGroup = r.variable ? lookupMerge(workingRules, r.variable, r.row) : null;
     const originalGroup = r.variable ? lookupMerge(originalRules, r.variable, r.row) : null;
     const isPending = workingGroup !== originalGroup;
@@ -686,8 +751,6 @@ function applyFilters() {
       ? `<span class="badge in-rules">→ ${escapeHtml(workingGroup)}</span>`
       : `<span class="badge residual">residual</span>`;
     const pendingTag = isPending ? '<span class="badge pending">pending</span>' : '';
-    // Action: only offer buttons if the row has a groupable variable
-    // (empty variable = "ungrouped" rows can't be merged).
     let action = '';
     if (r.variable) {
       if (workingGroup) {
@@ -695,6 +758,17 @@ function applyFilters() {
       } else {
         action = `<button class="action-btn add" data-v="${escapeAttr(r.variable)}" data-r="${escapeAttr(r.row)}" onclick="openMergePopover(this)">＋ merge</button>`;
       }
+    }
+    if (view === 'unique') {
+      return `<tr>
+        <td>${escapeHtml(r.variable) || '<em>(ungrouped)</em>'}</td>
+        <td><strong>${escapeHtml(r.row)}</strong></td>
+        ${siteCells}
+        <td class="num"><strong>${r.n_cohorts_small}</strong>/${r.n_cohorts}</td>
+        <td class="num"><strong>${r.n_sites_small}</strong>/${r.n_sites_reporting}</td>
+        <td>${statusBadge}${pendingTag}</td>
+        <td>${action}</td>
+      </tr>`;
     }
     return `<tr>
       <td><span class="cohort-badge">${escapeHtml(r.cohort)}</span></td>
@@ -885,6 +959,59 @@ document.querySelectorAll('th[data-key]').forEach(th => {
 // Filter handlers
 document.querySelectorAll('select, input[type="search"], input[type="checkbox"]').forEach(el =>
   el.addEventListener(el.type === 'search' ? 'input' : 'change', applyFilters));
+
+function setView(next) {
+  view = next;
+  document.querySelectorAll('.tab').forEach(t => t.classList.toggle('active', t.dataset.view === view));
+  const thead = document.querySelector('#tbl thead tr');
+  const siteTh = SITES.map(s => `<th data-key="site_${s}_small">${s}<span class="sort-arrow">↕</span></th>`).join('');
+  if (view === 'unique') {
+    thead.innerHTML = `
+      <th data-key="variable">Variable<span class="sort-arrow">↕</span></th>
+      <th data-key="row">Row<span class="sort-arrow">↕</span></th>
+      ${siteTh}
+      <th data-key="n_cohorts_small">Cohorts small<span class="sort-arrow">↕</span></th>
+      <th data-key="n_sites_small" class="sorted">Small sites<span class="sort-arrow">↓</span></th>
+      <th data-key="status">Status<span class="sort-arrow">↕</span></th>
+      <th>Action</th>`;
+    document.getElementById('view-description').innerHTML =
+      'One row per <code>(variable, row)</code>, aggregated across all cohorts. Site cells sum small/total across every Table One file. Use this tab to pick canonical merge rules — row actions here change rules globally.';
+    // Hide cohort filter + "overall only" checkbox on this tab
+    document.getElementById('f-cohort').parentElement.style.display = 'none';
+    document.getElementById('f-overall-only').parentElement.parentElement.style.display = 'none';
+  } else {
+    thead.innerHTML = `
+      <th data-key="cohort">Cohort<span class="sort-arrow">↕</span></th>
+      <th data-key="variable">Variable<span class="sort-arrow">↕</span></th>
+      <th data-key="row">Row<span class="sort-arrow">↕</span></th>
+      ${siteTh}
+      <th data-key="n_sites_small" class="sorted">Small sites<span class="sort-arrow">↓</span></th>
+      <th data-key="status">Status<span class="sort-arrow">↕</span></th>
+      <th>Action</th>`;
+    document.getElementById('view-description').innerHTML =
+      `Rows are aggregated by <code>(cohort, variable, row)</code>. Each site cell shows <strong>small / total</strong> — number of data columns where N&lt;${payload.threshold} over the number of columns reporting any count (across all Table One files + year columns in this cohort).`;
+    document.getElementById('f-cohort').parentElement.style.display = '';
+    document.getElementById('f-overall-only').parentElement.parentElement.style.display = '';
+  }
+  // Re-bind sort handlers on the new headers
+  document.querySelectorAll('th[data-key]').forEach(th => {
+    th.addEventListener('click', () => {
+      const key = th.dataset.key;
+      if (sortKey === key) sortDir = sortDir === 'asc' ? 'desc' : 'asc';
+      else { sortKey = key; sortDir = (key === 'n_sites_small' || key === 'n_cohorts_small') ? 'desc' : 'asc'; }
+      document.querySelectorAll('th[data-key]').forEach(h => {
+        h.classList.toggle('sorted', h.dataset.key === sortKey);
+        const arrow = h.querySelector('.sort-arrow');
+        if (arrow) arrow.textContent = h.dataset.key === sortKey ? (sortDir === 'asc' ? '↑' : '↓') : '↕';
+      });
+      applyFilters();
+    });
+  });
+  applyFilters();
+}
+
+document.querySelectorAll('.tab').forEach(t =>
+  t.addEventListener('click', () => setView(t.dataset.view)));
 
 applyFilters();
 updateFooter();
