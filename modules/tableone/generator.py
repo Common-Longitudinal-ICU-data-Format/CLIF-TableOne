@@ -2866,6 +2866,30 @@ def main(memory_monitor=None, cohort_mode='critical_illness') -> bool:
         _vent_log.write("VENTILATOR HOURS COMPUTATION DEBUG LOG\n")
         _vent_log.write("=" * 80 + "\n\n")
 
+        # Defensive: on Windows boxes with broken tzdata, recorded_dttm can
+        # arrive as object dtype from the cached waterfall parquet or from
+        # clifpy's tz_convert falling through to strings. Coerce to UTC so
+        # we preserve the CLIF timezone convention (DuckDB stores UTC); fall
+        # back to tz-naive only if utc=True itself fails on a host whose
+        # tzdata is so broken pandas can't build a UTC tz object.
+        # Must run BEFORE any filtering/aggregation that derives new datetime
+        # columns (e.g. vent_start_time), otherwise those copies inherit the
+        # object dtype and crash later in .dt accessors (e.g. VFD computation).
+        if not pd.api.types.is_datetime64_any_dtype(resp_stitched['recorded_dttm']):
+            print("  ⚠️  recorded_dttm is not datetime dtype — coercing. "
+                  "This usually indicates a tzdata misconfiguration on the host.")
+            try:
+                resp_stitched['recorded_dttm'] = pd.to_datetime(
+                    resp_stitched['recorded_dttm'], errors='coerce', utc=True
+                )
+            except Exception as _e:
+                print(f"  ⚠️  utc=True coerce failed ({_e}); retrying tz-naive. "
+                      "Subtraction/.dt math will still work but downstream "
+                      "tz-aware operations may need their own guard.")
+                resp_stitched['recorded_dttm'] = pd.to_datetime(
+                    resp_stitched['recorded_dttm'], errors='coerce'
+                )
+
         #  Identify IMV rows
         imv_mask = resp_stitched['device_category'].str.contains("imv", case=False, na=False)
         resp_stitched_imv = resp_stitched[imv_mask].copy()
@@ -2904,26 +2928,8 @@ def main(memory_monitor=None, cohort_mode='critical_illness') -> bool:
         # Each row's device is "in effect" until the next observation
         # ============================================================================
         print("\nComputing IMV hours from waterfall data...")
-        # Defensive: on Windows boxes with broken tzdata, recorded_dttm can
-        # arrive as object dtype from the cached waterfall parquet or from
-        # clifpy's tz_convert falling through to strings. Coerce to UTC so
-        # we preserve the CLIF timezone convention (DuckDB stores UTC); fall
-        # back to tz-naive only if utc=True itself fails on a host whose
-        # tzdata is so broken pandas can't build a UTC tz object.
-        if not pd.api.types.is_datetime64_any_dtype(resp_stitched['recorded_dttm']):
-            print("  ⚠️  recorded_dttm is not datetime dtype — coercing. "
-                  "This usually indicates a tzdata misconfiguration on the host.")
-            try:
-                resp_stitched['recorded_dttm'] = pd.to_datetime(
-                    resp_stitched['recorded_dttm'], errors='coerce', utc=True
-                )
-            except Exception as _e:
-                print(f"  ⚠️  utc=True coerce failed ({_e}); retrying tz-naive. "
-                      "Subtraction/.dt math will still work but downstream "
-                      "tz-aware operations may need their own guard.")
-                resp_stitched['recorded_dttm'] = pd.to_datetime(
-                    resp_stitched['recorded_dttm'], errors='coerce'
-                )
+        # recorded_dttm dtype was already coerced above (before IMV filter),
+        # so any derived columns (vent_start_time, etc.) inherit datetime dtype.
         resp_stitched = resp_stitched.sort_values(['encounter_block', 'recorded_dttm'])
 
         # Step 1: Get next observation timestamp within each encounter

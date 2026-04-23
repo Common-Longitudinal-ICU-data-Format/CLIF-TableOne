@@ -44,6 +44,26 @@ def calculate_ventilator_free_days(
         print(f"  ⚠️ VFD skipped — missing columns: {missing}")
         return pd.DataFrame(columns=[id_col, 'vfd_28'])
 
+    # Defensive: tzdata-broken hosts can present datetime columns as object
+    # dtype. Coerce inputs so downstream .dt accessors work. Non-mutating —
+    # uses assign() to avoid side effects on caller's DataFrames.
+    _dt_cols = ('vent_start_dttm', 'death_dttm', 'discharge_dttm')
+    if any(
+        not pd.api.types.is_datetime64_any_dtype(encounter_df[c])
+        for c in _dt_cols
+    ):
+        encounter_df = encounter_df.assign(**{
+            c: pd.to_datetime(encounter_df[c], errors='coerce', utc=True)
+            for c in _dt_cols
+            if not pd.api.types.is_datetime64_any_dtype(encounter_df[c])
+        })
+    if not pd.api.types.is_datetime64_any_dtype(resp_support_df['recorded_dttm']):
+        resp_support_df = resp_support_df.assign(
+            recorded_dttm=pd.to_datetime(
+                resp_support_df['recorded_dttm'], errors='coerce', utc=True
+            )
+        )
+
     # ── Filter to IMV encounters with a known vent start ─────────────
     imv_enc = encounter_df[
         (encounter_df['on_vent'] == 1) &
