@@ -284,6 +284,8 @@ def apply_cell_suppression(
 
     for col in data_cols:
         for _variable, indices in groups.items():
+            if _variable in PASS_THROUGH_VARIABLES:
+                continue  # operational metadata rows (e.g. N: …) pass through
             # Parse all cells in this group+column
             cells = {i: parse_cell(out.at[i, col]) for i in indices}
             count_items = {i: c for i, c in cells.items() if c.is_count}
@@ -339,6 +341,14 @@ def suppress_dataframe(
 #: rates, strobe counts, comorbidities, etc.) aren't in scope and stay in
 #: ``output/final/`` unsuppressed.
 TABLEONE_CSV_GLOB = 'table_one_*.csv'
+
+#: Variable-prefix labels that are **operational metadata**, not patient-
+#: level counts: e.g. ``N: Hospitals``, ``N: Encounter blocks``,
+#: ``N: Unique patients``. These rows pass through suppression unchanged
+#: — they aren't categorical siblings that sum to a total (Hospitals,
+#: encounters, and patients are independent metrics) and ``<10`` isn't a
+#: meaningful suppression for a 1-site cohort.
+PASS_THROUGH_VARIABLES = frozenset({'N'})
 
 
 def _csv_files(root: Path, pattern: str = TABLEONE_CSV_GLOB) -> list[Path]:
@@ -416,6 +426,8 @@ def scan_small_cells(
         groups = _group_row_indices(merged)
         for col in data_cols:
             for variable, indices in groups.items():
+                if variable in PASS_THROUGH_VARIABLES:
+                    continue  # operational metadata rows — no suppression
                 # Gather cells in the merged view for this group+col
                 cells = {i: parse_cell(merged.at[i, col]) for i in indices}
                 count_items = {i: c for i, c in cells.items() if c.is_count}

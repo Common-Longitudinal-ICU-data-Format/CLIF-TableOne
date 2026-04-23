@@ -34,8 +34,10 @@ sys.path.insert(0, str(_REPO_ROOT))
 import pandas as pd  # noqa: E402
 
 from modules.tableone.suppression import (  # noqa: E402
-    MergeRules, TABLEONE_CSV_GLOB, apply_merges, parse_cell, split_variable,
+    MergeRules, PASS_THROUGH_VARIABLES, TABLEONE_CSV_GLOB,
+    apply_merges, parse_cell, split_variable,
 )
+import json  # noqa: E402
 
 _HERE = Path(__file__).resolve().parent
 SITES_DIR = _HERE / 'sites'
@@ -110,6 +112,11 @@ def build_matrix(
                     cells[(rel, variable, value, dc)][site] = c.n
     records = []
     for (rel, variable, value, dc), per_site in cells.items():
+        # Skip operational-metadata rows (N: Hospitals, N: Encounter blocks,
+        # N: Unique patients) — they aren't patient-level counts and don't
+        # benefit from merging/suppression analysis.
+        if variable in PASS_THROUGH_VARIABLES:
+            continue
         rec = {
             'csv_file': rel,
             'variable': variable,
@@ -246,6 +253,359 @@ def write_rules_coverage(matrix: pd.DataFrame, dest: Path,
     dest.write_text('\n'.join(lines), encoding='utf-8')
 
 
+def _cohort_from_path(rel: str) -> str:
+    """Derive a cohort label from the CSV's path within a site tree.
+
+    Expects paths like ``tableone/overall/table_one_overall.csv`` or
+    ``tableone/strata/icu/table_one_icu_by_year.csv``. The label is used
+    to let the HTML reviewer filter 'overall only' vs 'strata'.
+    """
+    parts = rel.split('/')
+    if 'strata' in parts:
+        i = parts.index('strata')
+        # overall_ward/strata/icu/... vs strata/icu/...
+        cohort = 'ward_' if 'overall_ward' in parts[:i] else ''
+        if i + 1 < len(parts):
+            return f"{cohort}strata:{parts[i + 1]}"
+        return f"{cohort}strata"
+    if 'overall_ward' in parts:
+        return 'overall_ward'
+    if 'overall' in parts:
+        return 'overall'
+    return 'other'
+
+
+def write_html_review(
+    matrix: pd.DataFrame,
+    site_names: list[str],
+    dest: Path,
+    rules: MergeRules,
+) -> None:
+    """Emit a single-file, self-contained HTML review page.
+
+    Only rows where ``n_sites_small >= 1`` are included (the matrix CSV
+    still has everything). Each record is tagged with:
+      * cohort: derived from the csv_file path (overall / overall_ward /
+        strata:<name> / ward_strata:<name>)
+      * status: 'in_rules' (row already covered by a canonical merge) or
+        'residual' (would need a new rule or cell suppression)
+    """
+    small = matrix[matrix['n_sites_small'] >= 1].copy()
+    rule_lookup: dict[tuple[str, str], str] = {}
+    for variable, groups in rules.variables.items():
+        for merged_label, sources in groups.items():
+            for src in sources:
+                rule_lookup[(variable, src)] = merged_label
+
+    records = []
+    for _, r in small.iterrows():
+        var = str(r['variable'])
+        row = str(r['row'])
+        merged_to = rule_lookup.get((var, row))
+        records.append({
+            'cohort': _cohort_from_path(str(r['csv_file'])),
+            'csv_file': str(r['csv_file']),
+            'variable': var,
+            'row': row,
+            'column': str(r['data_column']),
+            'sites': {s: r[s] if r[s] != '' else None for s in site_names},
+            'n_sites_small': int(r['n_sites_small']),
+            'n_sites_reporting': int(r['n_sites_reporting']),
+            'status': 'in_rules' if merged_to else 'residual',
+            'merged_to': merged_to,
+        })
+
+    cohorts = sorted({rec['cohort'] for rec in records})
+    threshold = rules.suppression.threshold
+    token = rules.suppression.token
+    total_small = len(records)
+    resolved = sum(1 for rec in records if rec['status'] == 'in_rules')
+    residual = total_small - resolved
+
+    payload = {
+        'sites': site_names,
+        'cohorts': cohorts,
+        'threshold': threshold,
+        'token': token,
+        'total_small': total_small,
+        'resolved': resolved,
+        'residual': residual,
+        'records': records,
+    }
+
+    html = _render_html(payload)
+    dest.write_text(html, encoding='utf-8')
+
+
+_HTML_TEMPLATE = r"""<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Cross-site small-cell review</title>
+<style>
+  :root {
+    --bg: #0f172a; --surface: #1e293b; --border: #334155;
+    --text: #e2e8f0; --muted: #94a3b8;
+    --accent: #60a5fa; --success: #34d399; --warning: #fbbf24; --danger: #f87171;
+  }
+  @media (prefers-color-scheme: light) {
+    :root {
+      --bg: #f8fafc; --surface: #ffffff; --border: #e2e8f0;
+      --text: #0f172a; --muted: #64748b;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; padding: 24px; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+         background: var(--bg); color: var(--text); font-size: 14px; line-height: 1.5; }
+  h1 { margin: 0 0 8px; font-size: 22px; }
+  .subtitle { color: var(--muted); margin-bottom: 20px; }
+  .summary { display: flex; gap: 12px; flex-wrap: wrap; margin-bottom: 20px; }
+  .card { background: var(--surface); border: 1px solid var(--border);
+          border-radius: 8px; padding: 12px 16px; min-width: 140px; }
+  .card .label { color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: 0.5px; }
+  .card .value { font-size: 22px; font-weight: 600; margin-top: 4px; }
+  .card.total .value { color: var(--accent); }
+  .card.resolved .value { color: var(--success); }
+  .card.residual .value { color: var(--danger); }
+  .filters { background: var(--surface); border: 1px solid var(--border);
+             border-radius: 8px; padding: 16px; margin-bottom: 16px;
+             display: flex; gap: 20px; flex-wrap: wrap; align-items: center; }
+  .filter-group { display: flex; flex-direction: column; gap: 4px; }
+  .filter-group label { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.5px; }
+  .filter-group select, .filter-group input[type="search"] {
+    background: var(--bg); color: var(--text); border: 1px solid var(--border);
+    border-radius: 4px; padding: 6px 8px; font-size: 13px; min-width: 140px;
+  }
+  .filter-group.checkboxes { flex-direction: row; gap: 12px; align-items: center; }
+  .filter-group.checkboxes label { text-transform: none; font-size: 13px; color: var(--text);
+                                   display: flex; gap: 6px; align-items: center; letter-spacing: 0; }
+  .result-count { margin-left: auto; color: var(--muted); font-size: 13px; }
+  table { width: 100%; border-collapse: collapse; background: var(--surface);
+          border: 1px solid var(--border); border-radius: 8px; overflow: hidden; font-size: 13px; }
+  thead { background: var(--bg); position: sticky; top: 0; z-index: 1; }
+  th, td { text-align: left; padding: 8px 12px; border-bottom: 1px solid var(--border); }
+  th { font-weight: 600; font-size: 12px; cursor: pointer; user-select: none; white-space: nowrap; }
+  th:hover { background: var(--surface); }
+  th .sort-arrow { opacity: 0.4; margin-left: 4px; }
+  th.sorted .sort-arrow { opacity: 1; color: var(--accent); }
+  td.num { text-align: right; font-variant-numeric: tabular-nums; }
+  td.small-cell { color: var(--danger); font-weight: 600; }
+  td.not-reporting { color: var(--muted); font-style: italic; }
+  .badge { display: inline-block; padding: 2px 8px; border-radius: 10px; font-size: 11px; font-weight: 500; white-space: nowrap; }
+  .badge.in-rules { background: rgba(52, 211, 153, 0.15); color: var(--success); }
+  .badge.residual { background: rgba(248, 113, 113, 0.15); color: var(--danger); }
+  .cohort-badge { font-size: 11px; color: var(--muted); white-space: nowrap; }
+  code { background: var(--bg); padding: 1px 4px; border-radius: 3px; font-size: 12px; }
+  .empty { text-align: center; padding: 40px; color: var(--muted); }
+</style>
+</head>
+<body>
+  <h1>Cross-site small-cell review</h1>
+  <div class="subtitle">Threshold: <code>{THRESHOLD}</code> · Token: <code>{TOKEN}</code> · Sites: <code>{SITES_CSV}</code></div>
+
+  <div class="summary">
+    <div class="card total"><div class="label">Small cells (≥1 site)</div><div class="value" id="total">–</div></div>
+    <div class="card resolved"><div class="label">Covered by YAML</div><div class="value" id="resolved">–</div></div>
+    <div class="card residual"><div class="label">Residual (needs rule or suppression)</div><div class="value" id="residual">–</div></div>
+  </div>
+
+  <div class="filters">
+    <div class="filter-group">
+      <label for="f-cohort">Cohort</label>
+      <select id="f-cohort"><option value="">(all)</option></select>
+    </div>
+    <div class="filter-group">
+      <label for="f-variable">Variable</label>
+      <select id="f-variable"><option value="">(all)</option></select>
+    </div>
+    <div class="filter-group">
+      <label for="f-status">Status</label>
+      <select id="f-status">
+        <option value="">(all)</option>
+        <option value="residual">Residual only</option>
+        <option value="in_rules">Covered only</option>
+      </select>
+    </div>
+    <div class="filter-group">
+      <label for="f-min-sites">Min sites small</label>
+      <select id="f-min-sites">
+        <option value="1">≥ 1</option>
+        <option value="2">≥ 2</option>
+      </select>
+    </div>
+    <div class="filter-group">
+      <label for="f-search">Search row/variable</label>
+      <input type="search" id="f-search" placeholder="e.g. stepdown">
+    </div>
+    <div class="filter-group checkboxes">
+      <label><input type="checkbox" id="f-overall-only" checked> Overall tables only</label>
+      <label><input type="checkbox" id="f-consistent"> Small across all reporting sites</label>
+    </div>
+    <div class="result-count" id="result-count"></div>
+  </div>
+
+  <table id="tbl">
+    <thead>
+      <tr>
+        <th data-key="cohort">Cohort<span class="sort-arrow">↕</span></th>
+        <th data-key="variable">Variable<span class="sort-arrow">↕</span></th>
+        <th data-key="row">Row<span class="sort-arrow">↕</span></th>
+        <th data-key="column">Column<span class="sort-arrow">↕</span></th>
+        {SITE_HEADERS}
+        <th data-key="n_sites_small" class="sorted">Small<span class="sort-arrow">↓</span></th>
+        <th data-key="status">Status<span class="sort-arrow">↕</span></th>
+      </tr>
+    </thead>
+    <tbody id="tbody"></tbody>
+  </table>
+  <div id="empty" class="empty" style="display:none;">No rows match your filters.</div>
+
+<script id="data" type="application/json">{DATA_JSON}</script>
+<script>
+const payload = JSON.parse(document.getElementById('data').textContent);
+const SITES = payload.sites;
+const TOKEN = payload.token;
+const rows = payload.records;
+
+document.getElementById('total').textContent = payload.total_small.toLocaleString();
+document.getElementById('resolved').textContent = payload.resolved.toLocaleString();
+document.getElementById('residual').textContent = payload.residual.toLocaleString();
+
+// Populate filter dropdowns
+const cohortSel = document.getElementById('f-cohort');
+for (const c of payload.cohorts) {
+  const opt = document.createElement('option'); opt.value = c; opt.textContent = c; cohortSel.appendChild(opt);
+}
+const varSel = document.getElementById('f-variable');
+const vars = [...new Set(rows.map(r => r.variable).filter(Boolean))].sort();
+for (const v of vars) {
+  const opt = document.createElement('option'); opt.value = v; opt.textContent = v; varSel.appendChild(opt);
+}
+
+// Sort state
+let sortKey = 'n_sites_small';
+let sortDir = 'desc';
+
+function sortRows(arr) {
+  const mult = sortDir === 'asc' ? 1 : -1;
+  return arr.slice().sort((a, b) => {
+    const va = a[sortKey] ?? '';
+    const vb = b[sortKey] ?? '';
+    if (typeof va === 'number' && typeof vb === 'number') return (va - vb) * mult;
+    return String(va).localeCompare(String(vb)) * mult;
+  });
+}
+
+function applyFilters() {
+  const cohort = document.getElementById('f-cohort').value;
+  const variable = document.getElementById('f-variable').value;
+  const status = document.getElementById('f-status').value;
+  const minSites = parseInt(document.getElementById('f-min-sites').value, 10);
+  const search = document.getElementById('f-search').value.toLowerCase().trim();
+  const overallOnly = document.getElementById('f-overall-only').checked;
+  const consistent = document.getElementById('f-consistent').checked;
+
+  let filtered = rows.filter(r => {
+    if (cohort && r.cohort !== cohort) return false;
+    if (variable && r.variable !== variable) return false;
+    if (status && r.status !== status) return false;
+    if (r.n_sites_small < minSites) return false;
+    if (overallOnly && !r.cohort.startsWith('overall')) return false;
+    if (consistent && r.n_sites_small !== r.n_sites_reporting) return false;
+    if (search) {
+      const hay = (r.variable + ' ' + r.row + ' ' + r.csv_file).toLowerCase();
+      if (!hay.includes(search)) return false;
+    }
+    return true;
+  });
+  filtered = sortRows(filtered);
+
+  document.getElementById('result-count').textContent =
+    `${filtered.length.toLocaleString()} of ${rows.length.toLocaleString()} rows`;
+
+  const tbody = document.getElementById('tbody');
+  const empty = document.getElementById('empty');
+  if (filtered.length === 0) {
+    tbody.innerHTML = '';
+    empty.style.display = 'block';
+    return;
+  }
+  empty.style.display = 'none';
+
+  const html = filtered.map(r => {
+    const siteCells = SITES.map(s => {
+      const v = r.sites[s];
+      if (v === null || v === undefined) return '<td class="num not-reporting">–</td>';
+      if (v === TOKEN) return `<td class="num small-cell">${TOKEN}</td>`;
+      return `<td class="num">${Number(v).toLocaleString()}</td>`;
+    }).join('');
+    const statusBadge = r.status === 'in_rules'
+      ? `<span class="badge in-rules">→ ${escapeHtml(r.merged_to || '')}</span>`
+      : `<span class="badge residual">residual</span>`;
+    return `<tr>
+      <td><span class="cohort-badge">${escapeHtml(r.cohort)}</span></td>
+      <td>${escapeHtml(r.variable) || '<em>(ungrouped)</em>'}</td>
+      <td><strong>${escapeHtml(r.row)}</strong></td>
+      <td>${escapeHtml(r.column)}</td>
+      ${siteCells}
+      <td class="num"><strong>${r.n_sites_small}</strong>/${r.n_sites_reporting}</td>
+      <td>${statusBadge}</td>
+    </tr>`;
+  }).join('');
+  tbody.innerHTML = html;
+}
+
+function escapeHtml(s) {
+  return String(s ?? '').replace(/[&<>"']/g, c =>
+    ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'})[c]);
+}
+
+// Sort handlers
+document.querySelectorAll('th[data-key]').forEach(th => {
+  th.addEventListener('click', () => {
+    const key = th.dataset.key;
+    if (sortKey === key) {
+      sortDir = sortDir === 'asc' ? 'desc' : 'asc';
+    } else {
+      sortKey = key;
+      sortDir = (key === 'n_sites_small') ? 'desc' : 'asc';
+    }
+    document.querySelectorAll('th[data-key]').forEach(h => {
+      h.classList.toggle('sorted', h.dataset.key === sortKey);
+      const arrow = h.querySelector('.sort-arrow');
+      if (arrow) arrow.textContent = h.dataset.key === sortKey ? (sortDir === 'asc' ? '↑' : '↓') : '↕';
+    });
+    applyFilters();
+  });
+});
+
+// Filter handlers
+document.querySelectorAll('select, input[type="search"], input[type="checkbox"]').forEach(el =>
+  el.addEventListener(el.type === 'search' ? 'input' : 'change', applyFilters));
+
+applyFilters();
+</script>
+</body>
+</html>
+"""
+
+
+def _render_html(payload: dict) -> str:
+    site_headers = ''.join(
+        f'<th data-key="site_{s}">{s}<span class="sort-arrow">↕</span></th>'
+        for s in payload['sites']
+    )
+    # Pretty-print JSON so the embedded script is readable if anyone peeks
+    data_json = json.dumps(payload, ensure_ascii=False, default=str)
+    html = _HTML_TEMPLATE
+    html = html.replace('{THRESHOLD}', str(payload['threshold']))
+    html = html.replace('{TOKEN}', payload['token'])
+    html = html.replace('{SITES_CSV}', ', '.join(payload['sites']))
+    html = html.replace('{SITE_HEADERS}', site_headers)
+    html = html.replace('{DATA_JSON}', data_json)
+    return html
+
+
 def main() -> int:
     sites = discover_sites()
     if len(sites) < 2:
@@ -277,6 +637,10 @@ def main() -> int:
     coverage_path = OUT_DIR / 'current_rules_coverage.md'
     write_rules_coverage(matrix, coverage_path, rules)
     print(f'  wrote {coverage_path.relative_to(_REPO_ROOT)}')
+
+    html_path = OUT_DIR / 'cross_site_review.html'
+    write_html_review(matrix, [name for name, _ in sites], html_path, rules)
+    print(f'  wrote {html_path.relative_to(_REPO_ROOT)}')
 
     n_small = int(matrix['n_sites_small'].ge(1).sum())
     print(f'\nSummary: {n_small} cells small in ≥ 1 site '
