@@ -1,5 +1,7 @@
 # Site-provided Table One outputs — stay local.
 sites/
 
-# Generated review output — regenerate from sites/, don't commit.
-out/
+# Generated review output — keep shareable HTML/CSV, drop the rest.
+/out/*
+!/out/*.html
+!/out/*.csv
