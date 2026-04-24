@@ -37,7 +37,15 @@ from modules.tableone.suppression import (  # noqa: E402
     MergeRules, PASS_THROUGH_VARIABLES, TABLEONE_CSV_GLOB,
     apply_merges, parse_cell, split_variable,
 )
+import argparse  # noqa: E402
 import json  # noqa: E402
+import re  # noqa: E402
+
+#: Column names that look like 4-digit year buckets (real or MIMIC-shifted).
+#: Excluded by default because (a) MIMIC's years are random per-patient
+#: offsets with no temporal meaning, (b) year-column small cells are
+#: cell-suppression concerns, not canonical-merge signals.
+_YEAR_COL_RE = re.compile(r'^\d{4}$')
 
 _HERE = Path(__file__).resolve().parent
 SITES_DIR = _HERE / 'sites'
@@ -81,10 +89,30 @@ def site_csv_index(site_root: Path) -> dict[str, pd.DataFrame]:
     return index
 
 
+def _year_column_populations(df: pd.DataFrame) -> dict[str, int]:
+    """Return ``{year_column: N: Encounter blocks count}`` for every
+    4-digit-year column in the DataFrame. Used to pick the top-K most
+    populous year columns when aggregating (falls through to 0 for any
+    year column that doesn't have an N row)."""
+    var_col = df.columns[0]
+    n_row = df[df[var_col].astype(str).str.strip() == 'N: Encounter blocks']
+    out: dict[str, int] = {}
+    for col in df.columns[1:]:
+        if not _YEAR_COL_RE.match(str(col)):
+            continue
+        if n_row.empty:
+            out[col] = 0
+            continue
+        c = parse_cell(n_row.iloc[0][col])
+        out[col] = c.n if c.is_count else 0
+    return out
+
+
 def build_matrix(
     site_dfs: dict[str, dict[str, pd.DataFrame]],
     threshold: int,
     token: str,
+    top_year_columns: Optional[int] = 15,
 ) -> pd.DataFrame:
     """Build a long-form matrix across all sites.
 
@@ -102,6 +130,22 @@ def build_matrix(
                 continue
             var_col = df.columns[0]
             data_cols = list(df.columns[1:])
+            # Keep all non-year columns (Overall and stratum labels).
+            # For 4-digit-year columns, pick the top-K most populous by
+            # `N: Encounter blocks` count so a site's long tail of
+            # thinly-populated years (all years for MIMIC, early/partial
+            # years for other sites) doesn't swamp the denominators.
+            non_year = [c for c in data_cols if not _YEAR_COL_RE.match(str(c))]
+            year_cols = [c for c in data_cols if _YEAR_COL_RE.match(str(c))]
+            if year_cols and top_year_columns is not None and top_year_columns > 0:
+                pops = _year_column_populations(df)
+                year_cols = sorted(year_cols, key=lambda c: pops.get(c, 0), reverse=True)
+                year_cols = year_cols[:top_year_columns]
+            elif top_year_columns == 0:
+                year_cols = []
+            data_cols = non_year + year_cols
+            if not data_cols:
+                continue  # nothing to aggregate for this file
             for _, row in df.iterrows():
                 label = str(row[var_col])
                 variable, value = split_variable(label)
@@ -1037,6 +1081,20 @@ def _render_html(payload: dict) -> str:
 
 
 def main() -> int:
+    parser = argparse.ArgumentParser(
+        description='Cross-site small-cell calibration. See README.md.'
+    )
+    parser.add_argument(
+        '--top-years', type=int, default=15, metavar='K',
+        help='For each Table One file, keep only the top-K most populous '
+             '4-digit-year data columns (by N: Encounter blocks count), '
+             'alongside the non-year columns which are always kept. '
+             'Default K=15 trims tails where a site has many thinly-populated '
+             'years. Use 0 to drop all year columns (Overall-only). Use a '
+             'large number (e.g. 999) to include every year column.',
+    )
+    args = parser.parse_args()
+
     sites = discover_sites()
     if len(sites) < 2:
         print(
@@ -1052,8 +1110,13 @@ def main() -> int:
     token = rules.suppression.token
 
     print(f'Scanning {len(sites)} sites:', ', '.join(name for name, _ in sites))
+    if args.top_years == 0:
+        print('  (dropping all year columns — Overall/stratum columns only)')
+    else:
+        print(f'  (keeping top {args.top_years} most populous year columns per file)')
     site_dfs = {name: site_csv_index(path) for name, path in sites}
-    matrix = build_matrix(site_dfs, threshold, token)
+    matrix = build_matrix(site_dfs, threshold, token,
+                         top_year_columns=args.top_years)
 
     matrix_path = OUT_DIR / 'cross_site_review.csv'
     matrix.to_csv(matrix_path, index=False)
