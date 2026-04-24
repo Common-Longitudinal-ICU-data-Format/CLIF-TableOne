@@ -77,34 +77,9 @@ The same six subdirectories appear under every cohort/stratum directory. The "Co
 - `strata/no_imv/` → encounters in the critical-illness cohort that never received invasive mechanical ventilation (`on_vent == 0`). ECDF window: ICU stay.
 - `strata/no_imv/icu/` → above **AND** `icu_enc == 1`. ECDF window: same as `no_imv/`.
 - `strata/no_imv/no_icu/` → above **AND** `icu_enc == 0` (includes deaths and ward survivors without IMV). ECDF window: same as `no_imv/`.
-- `strata/deaths/` → encounters in the critical-illness cohort with `death_enc == 1` (`discharge_category in ('expired', 'hospice')`). ECDF window: ICU stay.
+- `strata/deaths/` → encounters in the critical-illness cohort in ED/ward with `death_enc == 1` (`discharge_category in ('expired', 'hospice')`). ECDF window: ICU stay.
 
 The flag definitions live in `modules/strata.py:24-41`, the inclusion code is at `modules/tableone/generator.py:1561` (ward) and `generator.py:1837-1841` (critical-illness), and the stratum-to-window mapping is at `modules/ecdf/generator.py:STRATUM_WINDOW_TYPE`.
-
----
-
-## Worked example: `albumin_g_dL.parquet`
-
-The user's original question — what exactly is in `output/final/overall/ecdf/labs/albumin_g_dL.parquet`?
-
-It is a Polars-written parquet with two columns:
-
-| Column | Type | Meaning |
-|---|---|---|
-| `value` | float | A distinct albumin value (g/dL) observed in the cohort |
-| `probability` | float ∈ [0, 1] | The cumulative probability `P(X ≤ value)` |
-
-The rows that go into this file are every albumin measurement (lab_category = `albumin`, unit = `g/dL`) where:
-
-1. The patient is in the **critical-illness cohort** — adult, encounter block touched an ICU OR discharged as expired/hospice OR received advanced respiratory support OR received vasoactive medications, excluding procedural/L&D-only encounters (`generator.py:1837-1841`)
-2. The lab `result_dttm` falls inside an ICU stay window for that patient — `in_dttm ≤ result_dttm ≤ out_dttm` for any row in `clif_adt` with `location_category == 'icu'` for that hospitalization (`modules/utils/clif_loader.py:324`)
-3. The value passes outlier handling defined in `modules/ecdf/config/outlier_config.yaml`
-
-The same file under `output/final/strata/icu/ecdf/labs/albumin_g_dL.parquet` is the same computation but additionally restricted to encounters where `icu_enc == 1`. In the critical-illness cohort this drops encounters that entered the cohort via death, resp support, or vaso support without ever touching ICU.
-
-Under `strata/vaso/`, the temporal window is different: instead of ICU stay windows, it uses **first vasopressor `admin_dttm` → `discharge_dttm`**. So `strata/vaso/ecdf/labs/albumin_g_dL.parquet` contains albumin values drawn between the first vasopressor administration and discharge for patients who received vasopressors. Similarly, `strata/advanced_resp/` and `strata/nippv_hfnc/` use first qualifying device `recorded_dttm` → `discharge_dttm`.
-
-There is **no 168-hour cap**. A 30-day ICU stay contributes all 30 days of albumin draws. The 24h/48h/72h numbers in `stats/collection_statistics.csv` are *coverage statistics on observation counts*, not the ECDF input filter (`modules/ecdf/statistics.py:103-105`).
 
 ---
 
