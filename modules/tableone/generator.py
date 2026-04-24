@@ -143,6 +143,20 @@ def crosstab_demographics(patient_df: pd.DataFrame) -> pd.DataFrame:
     ct = ct.reindex(index=row_order, columns=desired_columns, fill_value=0)
     ct.index.name = 'Racial Categories'
 
+    # Small-cell suppression: replace body cells with values 1–9 with "<10"
+    # and deduct from the row total, column total, and grand total so visible
+    # cells still sum to the displayed totals. Zeros are left as 0.
+    ct = ct.astype(object)
+    n_rows, n_cols = ct.shape
+    for i in range(n_rows - 1):
+        for j in range(n_cols - 1):
+            v = ct.iat[i, j]
+            if 1 <= v < 10:
+                ct.iat[i, j] = '<10'
+                ct.iat[i, -1] = ct.iat[i, -1] - v
+                ct.iat[-1, j] = ct.iat[-1, j] - v
+                ct.iat[-1, -1] = ct.iat[-1, -1] - v
+
     return ct
 
 
