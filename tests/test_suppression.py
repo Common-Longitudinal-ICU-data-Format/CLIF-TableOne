@@ -153,7 +153,7 @@ def test_suppression_single_small_cell_triggers_complementary():
         {'Variable': 'Race: Asian', 'Overall': '80'},   # next-smallest
         {'Variable': 'Race: Other', 'Overall': '5'},    # the small cell
     ])
-    out, log = apply_cell_suppression(df, SuppressionConfig())
+    out, log = apply_cell_suppression(df, SuppressionConfig(apply_complementary=True))
     # Both 'Race: Other' (5) and the next-smallest 'Race: Asian' (80) should be suppressed
     other_row = out[out['Variable'] == 'Race: Other'].iloc[0]
     asian_row = out[out['Variable'] == 'Race: Asian'].iloc[0]
@@ -204,7 +204,7 @@ def test_suppression_threshold_boundary():
         {'Variable': 'Race: Asian', 'Overall': '10'},   # at threshold — not small on its own
         {'Variable': 'Race: Other', 'Overall': '9'},    # below threshold — small
     ])
-    out, _log = apply_cell_suppression(df, SuppressionConfig())
+    out, _log = apply_cell_suppression(df, SuppressionConfig(apply_complementary=True))
     # Asian gets complementary-suppressed because it's the smallest remaining
     # sibling once Other is hidden. White stays visible.
     assert out[out['Variable'] == 'Race: White'].iloc[0]['Overall'] == '100'
@@ -262,7 +262,9 @@ def test_apply_suppression_to_tree(tmp_path):
         {'Variable': 'Race: Other',       'Overall': '5'},
     ])
     df.to_csv(intermediate / 'overall' / 'table_one_overall.csv', index=False)
-    written = apply_suppression_to_tree(intermediate, final, _rules())
+    rules = _rules()
+    rules.suppression.apply_complementary = True
+    written = apply_suppression_to_tree(intermediate, final, rules)
     out_path = final / 'overall' / 'table_one_overall.csv'
     assert out_path in written
     assert out_path.exists()

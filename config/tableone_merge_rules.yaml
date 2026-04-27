@@ -20,45 +20,15 @@
 version: 1
 
 Race:
-  Other / Unknown:
+  Other:
+    - Missing
     - American Indian or Alaska Native
     - Native Hawaiian or Other Pacific Islander
     - Other
-    - Missing
-
-Admission type:
-  Non-ED transfer:
-    - osh
-    - facility
-    - direct
-    - elective
-    - other
-
-First admission location:
-  Other (non-ICU non-ward):
-    - procedural
-    - l&d
-    - rehab
-    - radiology
-    - psych
-    - other
+    - Unknown
 
 suppression:
-  # Cells where 1 <= N < threshold are treated as "small" and suppressed
-  # (after merges are applied). Industry-standard value is 10.
   threshold: 10
-
-  # String written in place of a suppressed count.
   token: "<10"
-
-  # When true, percentages in cells like "500 (62.1%)" are recomputed
-  # against the group total after merges. Recommended — without it the
-  # merged row's percentage reads as the sum of its parts (e.g., merging
-  # a 5% row with a 3% row would display "8%" correctly only when the
-  # parts are a clean subset of the total; recomputation handles edge cases).
   recompute_percentages: true
-
-  # When a sibling group has exactly one N<threshold cell after merges, the
-  # next-smallest non-suppressed cell is also suppressed. Without this, the
-  # single suppressed value can be back-calculated from the group total.
-  apply_complementary: true
+  apply_complementary: false

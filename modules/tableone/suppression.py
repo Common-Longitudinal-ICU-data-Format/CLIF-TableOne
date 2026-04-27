@@ -50,7 +50,7 @@ class SuppressionConfig:
     threshold: int = 10
     token: str = '<10'
     recompute_percentages: bool = True
-    apply_complementary: bool = True
+    apply_complementary: bool = False
 
 
 @dataclass
@@ -77,7 +77,7 @@ class MergeRules:
             threshold=int(supp.get('threshold', 10)),
             token=str(supp.get('token', '<10')),
             recompute_percentages=bool(supp.get('recompute_percentages', True)),
-            apply_complementary=bool(supp.get('apply_complementary', True)),
+            apply_complementary=bool(supp.get('apply_complementary', False)),
         )
         for key, value in raw.items():
             if key in ('version', 'suppression'):
