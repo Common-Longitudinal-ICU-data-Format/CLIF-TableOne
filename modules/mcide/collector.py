@@ -206,6 +206,7 @@ class MCIDEStatsCollector:
         # MCIDE collections
         self.collect_mcide(lf, 'patient', ['race_name', 'race_category'])
         self.collect_mcide(lf, 'patient', ['ethnicity_name', 'ethnicity_category'])
+        self.collect_mcide(lf, 'patient', ['language_name', 'language_category'])
 
     def collect_hospitalization(self):
         """Collect MCIDE for hospitalization table"""
