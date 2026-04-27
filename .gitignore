@@ -65,5 +65,8 @@ Intersections_4.txt
 Venn_4.png
 all_site_data
 # og sofa calculation, replaced with windows optimized version
-modules/sofa/calculator_og.py 
+modules/sofa/calculator_og.py
 consortium_figures.py
+
+# Local-only suppression calibration tool — sites' raw exports + review HTML/CSV
+dev/calibrate_suppression/
