@@ -1042,6 +1042,14 @@ class ProjectRunner:
         overall_success = self.generate_summary_report()
         self.generate_workflow_report()
 
+        # Total wall-clock time for the whole workflow (validation + tableone +
+        # ward + ECDF + summary), printed before app-launch logic so it always
+        # shows regardless of whether the web app launches or is skipped.
+        total_sec = (datetime.now() - self.start_time).total_seconds()
+        m, s = divmod(int(total_sec), 60)
+        h, m = divmod(m, 60)
+        print(f"\n⏱️  Total workflow time: {h:02d}:{m:02d}:{s:02d} (HH:MM:SS) — {total_sec:,.0f}s")
+
         # App launch logic - launch unless critical tables failed
         # Allow override with --continue-on-error
         should_launch = overall_success or kwargs.get('continue_on_error', False)
