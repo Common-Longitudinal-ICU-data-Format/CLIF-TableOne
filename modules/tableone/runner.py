@@ -172,6 +172,61 @@ class TableOneRunner:
             traceback.print_exc()
             return False
 
+    def execute_suppression(self):
+        """Apply small-cell suppression: read raw table_one_*.csv from
+        intermediate, write consortium-safe copies to final per
+        config/tableone_merge_rules.yaml. Returns True on success.
+        """
+        print(f"\n{'='*80}")
+        print("APPLYING SMALL-CELL SUPPRESSION (intermediate → final)")
+        print(f"{'='*80}\n")
+
+        from .suppression import apply_suppression_to_tree, MergeRules
+        from modules.utils.output_paths import (
+            TABLEONE_INTERMEDIATE,
+            tableone_raw_dir, tableone_final_dir,
+            ward_tableone_raw_dir, ward_tableone_final_dir,
+        )
+
+        rules_path = self.project_root / 'config' / 'tableone_merge_rules.yaml'
+        rules = MergeRules.from_yaml(rules_path)
+        print(f"   Rules: {rules_path.relative_to(self.project_root)} "
+              f"(threshold={rules.suppression.threshold}, token={rules.suppression.token!r}, "
+              f"complementary={rules.suppression.apply_complementary})")
+
+        try:
+            total = 0
+
+            def _run(label, src, dst):
+                nonlocal total
+                if not src.exists():
+                    return
+                written = apply_suppression_to_tree(src, dst, rules)
+                print(f"   {label}: {len(written)} CSV(s) → {dst.relative_to(self.project_root)}")
+                total += len(written)
+
+            if self.cohort_mode == 'ward':
+                _run('ward overall', ward_tableone_raw_dir(), ward_tableone_final_dir())
+            else:
+                _run('overall', tableone_raw_dir(), tableone_final_dir())
+                strata_root = TABLEONE_INTERMEDIATE / 'strata'
+                if strata_root.exists():
+                    for parent_dir in sorted(strata_root.iterdir()):
+                        if parent_dir.is_dir():
+                            parent = parent_dir.name
+                            _run(f'strata/{parent}',
+                                 tableone_raw_dir(stratum=parent),
+                                 tableone_final_dir(stratum=parent))
+
+            print(f"\n✅ Suppression complete: {total} file(s) written to final/")
+            return True
+
+        except Exception as e:
+            print(f"\n❌ Suppression failed: {e}")
+            traceback.print_exc()
+            print("   Raw intermediate files are preserved for debugging.")
+            return False
+
     def generate_report(self, success, validation_passed):
         """Generate a summary report."""
         summary = self.memory_monitor.get_summary()
@@ -263,11 +318,18 @@ class TableOneRunner:
         # Step 2: Run the table one generation script
         success = self.execute_table_one_generation()
 
-        # Step 3: Validate outputs
+        # Step 3: Apply small-cell suppression (intermediate → final)
+        if success:
+            suppression_ok = self.execute_suppression()
+            self.memory_monitor.checkpoint("Suppression Complete")
+            if not suppression_ok:
+                success = False
+
+        # Step 4: Validate outputs
         validation_passed = False
         if success:
             print(f"\n{'='*80}")
-            print("STEP 3: VALIDATING OUTPUTS")
+            print("STEP 4: VALIDATING OUTPUTS")
             print(f"{'='*80}")
 
             validation_passed = self.validate_outputs()

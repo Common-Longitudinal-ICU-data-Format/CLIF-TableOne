@@ -64,6 +64,13 @@ META = FINAL / 'meta'
 CONFIGS = META / 'configs'
 STATS = FINAL / 'stats'
 
+# Intermediate tree — unsuppressed Table One CSVs. The generator writes raw
+# counts here; the small-cell suppression step reads from here and writes
+# shareable (merged + cell-suppressed) CSVs under FINAL/... . The app and any
+# local analysis should read from here to see full-fidelity counts.
+INTERMEDIATE = PROJECT_ROOT / 'output' / 'intermediate'
+TABLEONE_INTERMEDIATE = INTERMEDIATE / 'tableone'
+
 
 def parse_stratum(stratum: str) -> tuple:
     """Decompose a stratum key into (parent_dir_key, filename_suffix).
@@ -101,8 +108,40 @@ def cohort_dir(stratum: Optional[str] = None) -> Path:
 
 
 def tableone_dir(stratum: Optional[str] = None) -> Path:
-    """Directory for tableone CSVs (table_one_overall, mortality_rates, etc.)."""
+    """Directory for tableone analytical CSVs (under ``output/final/``).
+
+    Mortality rates, comorbidities, code-status summaries, strobe counts,
+    demographic crosstabs, ventilator settings, etc. all land here. The
+    literal ``table_one_*.csv`` result files do NOT — those go through
+    ``tableone_raw_dir()`` (unsuppressed, intermediate) and the small-cell
+    suppression step writes their safe copy back under this directory.
+    """
     return cohort_dir(stratum) / 'tableone'
+
+
+def tableone_raw_dir(stratum: Optional[str] = None) -> Path:
+    """Directory for **raw** (unsuppressed) Table One result CSVs.
+
+    This is where the generator writes ``table_one_overall.csv``,
+    ``table_one_by_year.csv``, and the stratified ``table_one_*.csv``
+    variants. The suppression step reads from here and writes the
+    consortium-safe copy to ``tableone_final_dir(stratum)``. The app and
+    any local analysis read from here to see full-fidelity counts.
+    """
+    if stratum is None:
+        return TABLEONE_INTERMEDIATE / 'overall'
+    parent, _suffix = parse_stratum(stratum)
+    return TABLEONE_INTERMEDIATE / 'strata' / parent
+
+
+def tableone_final_dir(stratum: Optional[str] = None) -> Path:
+    """Alias of ``tableone_dir(stratum)`` — destination for suppressed
+    Table One result CSVs (``table_one_*.csv`` family).
+
+    Kept as a distinct name so the suppression step's write target reads
+    semantically different from ``tableone_raw_dir(stratum)`` (its source).
+    """
+    return tableone_dir(stratum)
 
 
 def figures_dir(stratum: Optional[str] = None) -> Path:
@@ -228,8 +267,28 @@ def ward_cohort_dir(stratum: Optional[str] = None) -> Path:
 
 
 def ward_tableone_dir(stratum: Optional[str] = None) -> Path:
-    """Directory for ward Table One CSVs (parallel to tableone_dir())."""
+    """Directory for ward tableone analytical CSVs (under ``output/final/``).
+
+    Parallel to ``tableone_dir()`` for the ward cohort. Holds
+    mortality, comorbidities, code-status summaries, etc. The literal
+    ``table_one_*.csv`` result files go through ``ward_tableone_raw_dir()``.
+    """
     return ward_cohort_dir(stratum) / 'tableone'
+
+
+def ward_tableone_raw_dir(stratum: Optional[str] = None) -> Path:
+    """Directory for **raw** ward Table One result CSVs (unsuppressed,
+    local-only). Parallel to ``tableone_raw_dir()`` for the ward cohort."""
+    if stratum is None:
+        return TABLEONE_INTERMEDIATE / 'overall_ward'
+    parent, _suffix = parse_stratum(stratum)
+    return TABLEONE_INTERMEDIATE / 'overall_ward' / 'strata' / parent
+
+
+def ward_tableone_final_dir(stratum: Optional[str] = None) -> Path:
+    """Alias of ``ward_tableone_dir(stratum)`` — destination for suppressed
+    ward Table One result CSVs."""
+    return ward_tableone_dir(stratum)
 
 
 def ward_figures_dir(stratum: Optional[str] = None) -> Path:
@@ -294,7 +353,8 @@ def ensure_output_tree() -> None:
     """
     dirs = [
         # Overall cohort (critical-illness)
-        tableone_dir(),
+        tableone_dir(),          # final/overall/tableone/ — analytical CSVs + suppressed table_one_*.csv
+        tableone_raw_dir(),      # intermediate/tableone/overall/ — raw table_one_*.csv
         figures_dir(),
         ecdf_dir(table_type='labs'),
         ecdf_dir(table_type='vitals'),
@@ -320,7 +380,8 @@ def ensure_output_tree() -> None:
     # Strata
     for stratum in STRATA_NAMES:
         dirs.extend([
-            tableone_dir(stratum),
+            tableone_dir(stratum),      # final (analytical + suppressed table_one_*)
+            tableone_raw_dir(stratum),  # intermediate (raw table_one_*)
             figures_dir(stratum),
             ecdf_dir(stratum, 'labs'),
             ecdf_dir(stratum, 'vitals'),
@@ -358,7 +419,8 @@ def ensure_ward_output_tree() -> None:
     because generator.py imports them (where they're vestigial in ward mode).
     """
     dirs = [
-        ward_tableone_dir(),
+        ward_tableone_dir(),      # final (analytical + suppressed table_one_*)
+        ward_tableone_raw_dir(),  # intermediate (raw table_one_*)
         ward_figures_dir(),
     ]
 

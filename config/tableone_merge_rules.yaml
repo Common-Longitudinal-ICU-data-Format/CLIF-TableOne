@@ -1,0 +1,34 @@
+# Table One small-cell suppression — merge rules.
+#
+# Sites edit this file to declare which rows in Table One should be collapsed
+# into a single merged row before the shareable output is written to
+# output/final/.../tableone/. Merging is the preferred way to resolve N<10
+# cells because (a) it preserves the table's arithmetic — the parent total
+# still equals the sum of visible rows — and (b) a reader learns more from
+# "Other / Unknown: 47" than from "<10".
+#
+# Matching is by the *row label text as it appears in the first column of
+# the Table One CSV*. Labels are case-sensitive and must match exactly.
+# Variables/rows not listed here are untouched by merging, but the
+# suppression pass still scans them for N<10 cells and applies
+# complementary suppression where needed.
+#
+# The intermediate tree at output/intermediate/tableone/ always holds the
+# unsuppressed originals; this file affects only what gets written to
+# output/final/.../tableone/.
+
+version: 1
+
+Race:
+  Other:
+    - Missing
+    - American Indian or Alaska Native
+    - Native Hawaiian or Other Pacific Islander
+    - Other
+    - Unknown
+
+suppression:
+  threshold: 10
+  token: "<10"
+  recompute_percentages: true
+  apply_complementary: false

@@ -673,6 +673,7 @@ def main(memory_monitor=None, cohort_mode='critical_illness') -> bool:
         ensure_ward_output_tree()
         from modules.utils.output_paths import (
             ward_tableone_dir as _tableone_dir,
+            ward_tableone_raw_dir as _tableone_raw_dir,
             ward_figures_dir as _figures_dir,
             ward_mcide_dir as _mcide_dir,
             ward_summary_stats_dir as _summary_stats_dir,
@@ -680,6 +681,7 @@ def main(memory_monitor=None, cohort_mode='critical_illness') -> bool:
     else:
         from modules.utils.output_paths import (
             tableone_dir as _tableone_dir,
+            tableone_raw_dir as _tableone_raw_dir,
             figures_dir as _figures_dir,
             mcide_dir as _mcide_dir,
             summary_stats_dir as _summary_stats_dir,
@@ -6127,8 +6129,12 @@ def main(memory_monitor=None, cohort_mode='critical_illness') -> bool:
     print("="*80)
     print(tbl_overall.to_string(index=False))
 
-    # Save
-    _t1o_path = os.path.join(output_dir, 'table_one_overall.csv')
+    # Save — the literal table_one_*.csv files live under intermediate/
+    # (raw, unsuppressed). Small-cell suppression later writes their
+    # safe counterpart to final/ via tableone_final_dir().
+    _raw_dir = str(_tableone_raw_dir())
+    os.makedirs(_raw_dir, exist_ok=True)
+    _t1o_path = os.path.join(_raw_dir, 'table_one_overall.csv')
     tbl_overall.to_csv(_t1o_path, index=False)
     print(f"\n✅ Saved: {_t1o_path}")
 
@@ -6174,7 +6180,9 @@ def main(memory_monitor=None, cohort_mode='critical_illness') -> bool:
         print(table_by_year.to_string(index=False))
     
         # Save
-        _t1by_path = os.path.join(output_dir, 'table_one_by_year.csv')
+        _raw_dir = str(_tableone_raw_dir())
+        os.makedirs(_raw_dir, exist_ok=True)
+        _t1by_path = os.path.join(_raw_dir, 'table_one_by_year.csv')
         table_by_year.to_csv(_t1by_path, index=False)
         print(f"\n✅ Saved: {_t1by_path}")
 
@@ -6543,7 +6551,7 @@ def main(memory_monitor=None, cohort_mode='critical_illness') -> bool:
                         _left_df, _right_df, _left_col, _right_col
                     )
                     out_path = os.path.join(
-                        str(_tableone_dir(stratum=_parent)),
+                        str(_tableone_raw_dir(stratum=_parent)),
                         f'table_one_{_parent}_{_suffix}.csv',
                     )
                     os.makedirs(os.path.dirname(out_path), exist_ok=True)
@@ -6555,7 +6563,7 @@ def main(memory_monitor=None, cohort_mode='critical_illness') -> bool:
             else:
                 _strat_slug = stratum_name.replace('/', '_')
                 out_path = os.path.join(
-                    str(_tableone_dir(stratum=stratum_name)),
+                    str(_tableone_raw_dir(stratum=stratum_name)),
                     f'table_one_{_strat_slug}_by_year.csv',
                 )
                 os.makedirs(os.path.dirname(out_path), exist_ok=True)
