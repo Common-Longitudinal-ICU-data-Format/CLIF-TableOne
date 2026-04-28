@@ -45,7 +45,7 @@ Edit `config/config.json`:
 
 ## 4. Run the validation and tableone pipeline
 
-### Linux/MacOS
+`uv` is cross-platform — the command below works on **Linux, macOS, and Windows**:
 
 ```bash
 uv run python run_project.py --no-summary --get-ecdf --ward
@@ -65,9 +65,9 @@ This validates all 16 beta-ready CLIF tables, builds the critical-illness and wa
 
 For the full flag list: `uv run python run_project.py --help`. Advanced workflows and granular per-table commands live in [`advanced_usage.md`](advanced_usage.md). 
 
-### Windows
+### Windows (optional UTF-8 wrappers)
 
-Windows users should use the provided scripts that handle UTF-8 encoding:
+The `uv run` command above works on Windows as-is. The wrappers below are an optional convenience that pre-set `PYTHONIOENCODING=utf-8` / `PYTHONUTF8=1` so emojis and Unicode log output render correctly in the Windows console:
 
 **Using Batch files:**
 
@@ -118,20 +118,20 @@ Open **http://127.0.0.1:8000** in a browser.
 | `--host 0.0.0.0` | Allow access from other machines on the network |
 | `--port 8080` | Use a different port (default: 8000) |
 
-### Windows
+### Windows (optional UTF-8 wrappers)
 
-Windows users should use the provided scripts that handle UTF-8 encoding:
+The `uv run uvicorn ...` command above works on Windows as-is. The wrappers below are an optional convenience that pre-set `PYTHONIOENCODING=utf-8` / `PYTHONUTF8=1` for correct emoji/Unicode rendering in the Windows console:
 
 **Using Batch files:**
 
 ```batch
-app_fastapi_windows.bat 
+app_fastapi_windows.bat
 ```
 
 **Using PowerShell:**
 
 ```powershell
-.\app_fastapi_windows.ps1 
+.\app_fastapi_windows.ps1
 ```
 
 If you encounter Unicode/emoji display issues, see the [Windows Unicode Troubleshooting](#windows-unicode-troubleshooting) section below.
