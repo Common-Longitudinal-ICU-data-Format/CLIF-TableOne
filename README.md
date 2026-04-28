@@ -63,6 +63,20 @@ This validates all 16 beta-ready CLIF tables, builds the critical-illness and wa
 
 For the full flag list: `uv run python run_project.py --help`. Advanced workflows and granular per-table commands live in [`advanced_usage.md`](advanced_usage.md). ### DEMA - TO REVIEW
 
+**Windows users:** use `run_project_windows.bat` (Command Prompt) or `run_project_windows.ps1` (PowerShell) instead. Both set `PYTHONIOENCODING=utf-8` / `PYTHONUTF8=1` (so emojis and Unicode log output render correctly) and forward all flags to `run_project.py`:
+
+```bat
+REM Command Prompt
+run_project_windows.bat --no-summary --get-ecdf --ward
+```
+
+```powershell
+# PowerShell
+.\run_project_windows.ps1 --no-summary --get-ecdf --ward
+```
+
+Companion `run_analysis_windows.bat` / `.ps1` wrap `run_analysis.py` the same way.
+
 ### 5. Ward Table One 
 
 In addition to the **critical-illness** cohort (see §8.4 for the exact definition), it generates a parallel **ward** Table One whose cohort is **every adult hospitalization that touched a ward at any point**. If you want to run just the ward tableone:
@@ -95,6 +109,18 @@ Open **http://127.0.0.1:8000** in a browser.
 | `--reload` | Auto-restart on code changes (development mode) |
 | `--host 0.0.0.0` | Allow access from other machines on the network |
 | `--port 8080` | Use a different port (default: 8000) |
+
+**Windows users:** use `app_fastapi_windows.bat` (Command Prompt) or `app_fastapi_windows.ps1` (PowerShell). Both set `PYTHONIOENCODING=utf-8` / `PYTHONUTF8=1` and launch `uvicorn server.main:app --reload`, forwarding any extra flags:
+
+```bat
+REM Command Prompt
+app_fastapi_windows.bat --port 8080
+```
+
+```powershell
+# PowerShell
+.\app_fastapi_windows.ps1 --port 8080
+```
 
 Tabs:
 
