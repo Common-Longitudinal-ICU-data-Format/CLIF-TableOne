@@ -645,6 +645,105 @@ labs:
       normal: 5
       above_normal: 5
 
+  basophils_percent:
+    reference_unit:
+      - "%"
+    normal_range:
+      lower: 0
+      upper: 2
+    outlier_range:
+      min: 0.0
+      max: 100.0
+    bins:
+      below_normal: 5
+      normal: 5
+      above_normal: 5
+
+  eosinophils_percent:
+    reference_unit:
+      - "%"
+    normal_range:
+      lower: 0
+      upper: 4
+    outlier_range:
+      min: 0.0
+      max: 100.0
+    bins:
+      below_normal: 5
+      normal: 5
+      above_normal: 5
+
+  lymphocytes_percent:
+    reference_unit:
+      - "%"
+    normal_range:
+      lower: 20
+      upper: 40
+    outlier_range:
+      min: 0.0
+      max: 100.0
+    bins:
+      below_normal: 5
+      normal: 5
+      above_normal: 5
+
+  lymphocytes_absolute:
+    reference_unit:
+      - "10^3/uL"
+      - "10^3/μL"
+    normal_range:
+      lower: 1
+      upper: 4
+    outlier_range:
+      min: 0.0
+      max: 50.0
+    bins:
+      below_normal: 5
+      normal: 5
+      above_normal: 5
+
+  monocytes_percent:
+    reference_unit:
+      - "%"
+    normal_range:
+      lower: 2
+      upper: 8
+    outlier_range:
+      min: 0.0
+      max: 100.0
+    bins:
+      below_normal: 5
+      normal: 5
+      above_normal: 5
+
+  neutrophils_percent:
+    reference_unit:
+      - "%"
+    normal_range:
+      lower: 50
+      upper: 70
+    outlier_range:
+      min: 0.0
+      max: 100.0
+    bins:
+      below_normal: 5
+      normal: 5
+      above_normal: 5
+
+  pt:
+    reference_unit:
+      - "sec"
+    normal_range:
+      lower: 10
+      upper: 13
+    outlier_range:
+      min: 1.0
+      max: 200.0
+    bins:
+      below_normal: 5
+      normal: 5
+      above_normal: 5
+
 vitals:
   dbp:
     reference_unit: "mmHg"
