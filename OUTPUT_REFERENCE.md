@@ -15,21 +15,20 @@ output/
 │   ├── overall_ward/           Ward cohort, only if --ward     (ward_enc)
 │   ├── strata/                 Stratified critical-illness subsets
 │   │   ├── icu/                                                (icu_enc)
-│   │   ├── advanced_resp/                                      (high_support_enc)
-│   │   │   ├── icu/                                            (high_support_icu_enc)
-│   │   │   └── no_icu/                                         (high_support_no_icu_enc)
-│   │   ├── nippv_hfnc/                                         (nippv_hfnc_enc)
-│   │   │   ├── icu/                                            (nippv_hfnc_icu_enc)
-│   │   │   └── no_icu/                                         (nippv_hfnc_no_icu_enc)
-│   │   ├── vaso/                                               (vaso_support_enc)
-│   │   │   ├── icu/                                            (vaso_icu_enc)
-│   │   │   ├── no_icu/                                         (vaso_no_icu_enc)
-│   │   │   ├── ed_icu/                                         (vaso_ed_icu_enc)
-│   │   │   └── ed_ward/                                        (vaso_ed_ward_enc)
-│   │   ├── no_imv/                                             (no_imv_enc)
-│   │   │   ├── icu/                                            (no_imv_icu_enc)
-│   │   │   └── no_icu/                                         (no_imv_no_icu_enc)
+│   │   ├── advanced_resp/      Sub-strata land here as *_icu.csv / *_no_icu.csv
+│   │   ├── nippv_hfnc/         Sub-strata land here as *_icu.csv / *_no_icu.csv
+│   │   ├── vaso/               Sub-strata land here as *_icu.csv / *_no_icu.csv / *_ed_icu.csv / *_ed_ward.csv
+│   │   ├── no_imv/             Sub-strata land here as *_icu.csv / *_no_icu.csv
 │   │   └── deaths/                                             (death_enc)
+│   │
+│   │   Sub-strata are stored as filename suffixes inside the parent stratum
+│   │   directory rather than as nested subdirectories. The flag column
+│   │   columns map: advanced_resp/icu→high_support_icu_enc, advanced_resp/no_icu→
+│   │   high_support_no_icu_enc, nippv_hfnc/icu→nippv_hfnc_icu_enc,
+│   │   nippv_hfnc/no_icu→nippv_hfnc_no_icu_enc, vaso/icu→vaso_icu_enc,
+│   │   vaso/no_icu→vaso_no_icu_enc, vaso/ed_icu→vaso_ed_icu_enc,
+│   │   vaso/ed_ward→vaso_ed_ward_enc, no_imv/icu→no_imv_icu_enc,
+│   │   no_imv/no_icu→no_imv_no_icu_enc. See modules/strata.py:19-23.
 │   ├── validation/             Data quality assessment (cohort-agnostic — runs on the raw CLIF tables)
 │   ├── stats/                  Per-stratum collection-coverage tables
 │   └── meta/                   Execution reports, workflow logs, run metadata
@@ -39,7 +38,7 @@ output/
     └── imv_episodes.csv                           Per-episode IMV timestamps (repeated-measures)
 ```
 
-Each cohort directory under `overall/`, `overall_ward/`, and `strata/<name>/` shares the same internal layout. The next section explains it once.
+Each cohort directory under `overall/`, `overall_ward/`, and `strata/<name>/` shares the same internal layout. The next section explains it once. Sub-strata (`advanced_resp/icu`, `vaso/no_icu`, etc.) **do not have their own directories** — their artifacts are written into the parent stratum's `tableone/`, `figures/`, `ecdf/`, and `bins/` subdirectories with `_icu` / `_no_icu` / `_ed_icu` / `_ed_ward` filename suffixes (see `modules/strata.py:19-23`, `output_paths.py:parse_stratum`).
 
 ---
 
@@ -64,19 +63,19 @@ The same six subdirectories appear under every cohort/stratum directory. The "Co
 - `overall_ward/` → adults whose encounter block touched a ward at any point
 - `strata/icu/` → encounters in the critical-illness cohort whose `icu_enc == 1`. ECDF window: ICU stay.
 - `strata/advanced_resp/` → encounters in the critical-illness cohort that ever received `imv` / `nippv` / `cpap` (unconditionally) or `high flow nc` with `lpm_set >= 30`. ECDF window: first qualifying device `recorded_dttm` → `discharge_dttm`.
-- `strata/advanced_resp/icu/` → above **AND** `icu_enc == 1`. ECDF window: same as `advanced_resp/`.
-- `strata/advanced_resp/no_icu/` → above **AND** `icu_enc == 0` (includes deaths and ward survivors with support). ECDF window: same as `advanced_resp/`.
+- `strata/advanced_resp/<files>_icu.*` → above **AND** `icu_enc == 1`. ECDF window: same as `advanced_resp/`.
+- `strata/advanced_resp/<files>_no_icu.*` → above **AND** `icu_enc == 0` (includes deaths and ward survivors with support). ECDF window: same as `advanced_resp/`.
 - `strata/nippv_hfnc/` → encounters in the critical-illness cohort that ever received `nippv` (BiPAP) or `high flow nc` with `lpm_set >= 30`. ECDF window: first qualifying device `recorded_dttm` → `discharge_dttm`.
-- `strata/nippv_hfnc/icu/` → above **AND** `icu_enc == 1`. ECDF window: same as `nippv_hfnc/`.
-- `strata/nippv_hfnc/no_icu/` → above **AND** `icu_enc == 0` (includes deaths and ward survivors with support). ECDF window: same as `nippv_hfnc/`.
+- `strata/nippv_hfnc/<files>_icu.*` → above **AND** `icu_enc == 1`. ECDF window: same as `nippv_hfnc/`.
+- `strata/nippv_hfnc/<files>_no_icu.*` → above **AND** `icu_enc == 0` (includes deaths and ward survivors with support). ECDF window: same as `nippv_hfnc/`.
 - `strata/vaso/` → encounters in the critical-illness cohort that ever received `norepinephrine`, `epinephrine`, `phenylephrine`, `vasopressin`, `dopamine`, or `angiotensin`. ECDF window: first vasopressor `admin_dttm` → `discharge_dttm`.
-- `strata/vaso/icu/` → above **AND** `icu_enc == 1`. ECDF window: same as `vaso/`.
-- `strata/vaso/no_icu/` → above **AND** `icu_enc == 0` (includes deaths and ward survivors on vasopressors). ECDF window: same as `vaso/`.
-- `strata/vaso/ed_icu/` → encounters where the **first vasopressor was administered in the ED** and any subsequent ADT location includes ICU. ECDF window: same as `vaso/`.
-- `strata/vaso/ed_ward/` → encounters where the **first vasopressor was administered in the ED** and any subsequent ADT location includes ward but **not** ICU. ECDF window: same as `vaso/`.
+- `strata/vaso/<files>_icu.*` → above **AND** `icu_enc == 1`. ECDF window: same as `vaso/`.
+- `strata/vaso/<files>_no_icu.*` → above **AND** `icu_enc == 0` (includes deaths and ward survivors on vasopressors). ECDF window: same as `vaso/`.
+- `strata/vaso/<files>_ed_icu.*` → encounters where the **first vasopressor was administered in the ED** and any subsequent ADT location includes ICU. ECDF window: same as `vaso/`.
+- `strata/vaso/<files>_ed_ward.*` → encounters where the **first vasopressor was administered in the ED** and any subsequent ADT location includes ward but **not** ICU. ECDF window: same as `vaso/`.
 - `strata/no_imv/` → encounters in the critical-illness cohort that never received invasive mechanical ventilation (`on_vent == 0`). ECDF window: ICU stay.
-- `strata/no_imv/icu/` → above **AND** `icu_enc == 1`. ECDF window: same as `no_imv/`.
-- `strata/no_imv/no_icu/` → above **AND** `icu_enc == 0` (includes deaths and ward survivors without IMV). ECDF window: same as `no_imv/`.
+- `strata/no_imv/<files>_icu.*` → above **AND** `icu_enc == 1`. ECDF window: same as `no_imv/`.
+- `strata/no_imv/<files>_no_icu.*` → above **AND** `icu_enc == 0` (includes deaths and ward survivors without IMV). ECDF window: same as `no_imv/`.
 - `strata/deaths/` → encounters in the critical-illness cohort in ED/ward with `death_enc == 1` (`discharge_category in ('expired', 'hospice')`). ECDF window: ICU stay.
 
 The flag definitions live in `modules/strata.py:24-41`, the inclusion code is at `modules/tableone/generator.py:1561` (ward) and `generator.py:1837-1841` (critical-illness), and the stratum-to-window mapping is at `modules/ecdf/generator.py:STRATUM_WINDOW_TYPE`.
