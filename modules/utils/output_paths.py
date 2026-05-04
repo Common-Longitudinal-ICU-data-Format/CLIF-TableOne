@@ -201,8 +201,24 @@ def validation_feedback_dir() -> Path:
 
 
 def validation_monthly_trends_dir() -> Path:
-    """Directory for monthly trend CSVs."""
+    """Directory for **all-time** category counts aggregated from the monthly
+    trend data. One row per category — safe under /final because the time
+    dimension is collapsed away. Writers should produce per-month detail
+    under ``validation_monthly_trends_raw_dir()`` and an aggregate here.
+    """
     return VALIDATION / 'monthly_trends'
+
+
+def validation_monthly_trends_raw_dir() -> Path:
+    """Directory for **per-month** category trend CSVs (raw).
+
+    Per-month counts can include very small N rows (single-digit patient
+    counts in a specific category in a specific month), which is the same
+    small-cell risk the table_one suppression policy addresses. We park
+    the per-month detail in /intermediate so it's available locally for
+    QA but never shipped to the consortium.
+    """
+    return INTERMEDIATE / 'validation' / 'monthly_trends'
 
 
 def validation_pdf_reports_dir() -> Path:

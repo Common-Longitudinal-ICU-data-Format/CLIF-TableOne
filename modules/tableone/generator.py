@@ -31,6 +31,16 @@ Converted from: code/archives/generate_table_one_2_1.ipynb
 import warnings
 warnings.filterwarnings("ignore", category=FutureWarning, module="pandas")
 
+# Force matplotlib to use the headless 'Agg' backend before importing pyplot.
+# Belt-and-suspenders alongside MPLBACKEND=Agg set in run_project.py — this
+# guards any code path that imports generator.py without going through the
+# top-level runner (e.g. tests, notebooks). Prevents the macOS GUI backend
+# from spawning a Python dock icon during runs.
+import os as _os
+_os.environ.setdefault("MPLBACKEND", "Agg")
+import matplotlib
+matplotlib.use("Agg", force=False)
+
 import pandas as pd
 pd.set_option('future.no_silent_downcasting', True)
 import numpy as np
@@ -92,526 +102,38 @@ import sys
 import warnings
 
 
-def _waterfall_chunk(args):
-    """Process a chunk of encounters through the waterfall (top-level for pickling)."""
-    chunk_df, id_col = args
-    from clifpy.utils.waterfall import process_resp_support_waterfall
-    return process_resp_support_waterfall(chunk_df, id_col=id_col, verbose=False)
-
-
-def crosstab_demographics(patient_df: pd.DataFrame) -> pd.DataFrame:
-    """Cross-tabulate race × ethnicity × sex for NIH enrollment reporting.
-
-    Parameters:
-        patient_df: One row per unique patient with columns
-                    race_category, ethnicity_category, sex_category.
-
-    Returns:
-        DataFrame with race rows, (ethnicity, sex) MultiIndex columns,
-        and margin totals.
-    """
-    # CLIF 2.1 patient schema permissible values
-    race_values = [
-        'American Indian or Alaska Native',
-        'Asian',
-        'Native Hawaiian or Other Pacific Islander',
-        'Black or African American',
-        'White',
-        'Other',
-        'Unknown',
-    ]
-    ethnicity_values = ['Non-Hispanic', 'Hispanic', 'Unknown']
-    sex_values = ['Female', 'Male', 'Unknown']
-
-    df = patient_df[['race_category', 'ethnicity_category', 'sex_category']].copy()
-    df.fillna('Unknown', inplace=True)
-
-    ct = pd.crosstab(
-        df['race_category'],
-        [df['ethnicity_category'], df['sex_category']],
-        margins=True,
-        margins_name='Total',
-    )
-
-    # Build expected column ordering
-    col_tuples = [(eth, sex) for eth in ethnicity_values for sex in sex_values]
-    col_tuples.append(('Total', ''))
-    desired_columns = pd.MultiIndex.from_tuples(col_tuples)
-
-    row_order = race_values + ['Total']
-
-    ct = ct.reindex(index=row_order, columns=desired_columns, fill_value=0)
-    ct.index.name = 'Racial Categories'
-
-    # Small-cell suppression: replace body cells with values 1–9 with "<10"
-    # and deduct from the row total, column total, and grand total so visible
-    # cells still sum to the displayed totals. Zeros are left as 0.
-    ct = ct.astype(object)
-    n_rows, n_cols = ct.shape
-    for i in range(n_rows - 1):
-        for j in range(n_cols - 1):
-            v = ct.iat[i, j]
-            if 1 <= v < 10:
-                ct.iat[i, j] = '<10'
-                ct.iat[i, -1] = ct.iat[i, -1] - v
-                ct.iat[-1, j] = ct.iat[-1, j] - v
-                ct.iat[-1, -1] = ct.iat[-1, -1] - v
-
-    return ct
-
-
 # ============================================================================
-# Extracted summary functions for stratified output generation
+# Helper functions extracted to submodules during the modularization refactor.
+# These re-imports keep the names available on `generator` itself (for any
+# legacy callers) and let `main()` below use them as before. Each module
+# contains exactly the same code that used to live here, byte-for-byte —
+# this is a pure refactor, not a behavior change.
 # ============================================================================
 
-def _suffixed(basename: str, suffix: str) -> str:
-    """Insert *suffix* before the file extension: 'foo.csv' + '_icu' -> 'foo_icu.csv'."""
-    stem, ext = os.path.splitext(basename)
-    return f'{stem}{suffix}{ext}'
-
-
-def _combine_sub_stratum_halves(left_df, right_df, left_col, right_col):
-    """Side-by-side merge of two sub-stratum Table Ones.
-
-    Preserves left_df's row order, then appends any Variables present
-    only in right_df. Missing cells become empty strings.
-    """
-    left_vars = left_df['Variable'].tolist()
-    right_vars = right_df['Variable'].tolist()
-    ordered = left_vars + [v for v in right_vars if v not in set(left_vars)]
-    merged = (
-        pd.DataFrame({'Variable': ordered})
-        .merge(left_df, on='Variable', how='left')
-        .merge(right_df, on='Variable', how='left')
-        .fillna('')
-    )
-    return merged[['Variable', left_col, right_col]]
-
-
-def generate_ventilator_settings_summary(resp_valid, vent_settings, output_dir, suffix=''):
-    """Generate ventilator settings summary CSVs."""
-    os.makedirs(output_dir, exist_ok=True)
-    existing_settings = [col for col in vent_settings if col in resp_valid.columns]
-    if not existing_settings or len(resp_valid) == 0:
-        return
-
-    medians = resp_valid.groupby(['device_category', 'mode_category'])[existing_settings].median()
-    q1 = resp_valid.groupby(['device_category', 'mode_category'])[existing_settings].quantile(0.25)
-    q3 = resp_valid.groupby(['device_category', 'mode_category'])[existing_settings].quantile(0.75)
-
-    medians_reset = medians.reset_index()
-    q1_reset = q1.reset_index()
-    q3_reset = q3.reset_index()
-
-    settings_summary = medians_reset[['device_category', 'mode_category']].copy()
-    for setting in existing_settings:
-        if setting in medians.columns:
-            settings_summary[setting] = (
-                medians_reset[setting].round(1).astype(str) + ' (' +
-                q1_reset[setting].round(1).astype(str) + '-' +
-                q3_reset[setting].round(1).astype(str) + ')'
-            )
-
-    rename_dict = {}
-    if 'mode_category' in settings_summary.columns:
-        rename_dict['mode_category'] = 'ventilator_setting'
-    column_mapping = {
-        'fio2_set': 'FiO2 Set', 'lpm_set': 'LPM Set',
-        'tidal_volume_set': 'Tidal Volume Set', 'resp_rate_set': 'Resp Rate Set',
-        'pressure_control_set': 'Pressure Control Set', 'peep_set': 'PEEP Set',
-        'pressure_support_set': 'Pressure Support Set', 'flow_rate_set': 'Flow Rate Set'
-    }
-    for old_name, new_name in column_mapping.items():
-        if old_name in settings_summary.columns:
-            rename_dict[old_name] = new_name
-    settings_summary = settings_summary.rename(columns=rename_dict)
-    sort_col = 'ventilator_setting' if 'ventilator_setting' in settings_summary.columns else 'mode_category'
-    settings_summary = settings_summary.sort_values(['device_category', sort_col])
-    settings_summary.to_csv(os.path.join(output_dir, _suffixed('ventilator_settings_by_device_mode.csv', suffix)), index=False)
-
-    # Counts table
-    counts_summary = resp_valid.groupby(['device_category', 'mode_category'])[existing_settings].count().reset_index()
-    counts_rename = {}
-    if 'mode_category' in counts_summary.columns:
-        counts_rename['mode_category'] = 'ventilator_setting'
-    for old_name, new_name in column_mapping.items():
-        col_n = old_name
-        if col_n in counts_summary.columns:
-            counts_rename[col_n] = new_name + ' (N)'
-    counts_summary = counts_summary.rename(columns=counts_rename)
-    sort_col = 'ventilator_setting' if 'ventilator_setting' in counts_summary.columns else 'mode_category'
-    counts_summary = counts_summary.sort_values(['device_category', sort_col])
-    counts_summary.to_csv(os.path.join(output_dir, _suffixed('ventilator_settings_counts_by_device_mode.csv', suffix)), index=False)
-
-    # Total observations
-    total_obs_df = pd.DataFrame({
-        'metric': ['total_respiratory_support_observations'],
-        'value': [len(resp_valid)]
-    })
-    total_obs_df.to_csv(os.path.join(output_dir, _suffixed('ventilator_settings_total_observations.csv', suffix)), index=False)
-
-
-def generate_tidal_volume_stats(resp_imv_post_start, output_dir, suffix=''):
-    """Generate tidal volume stats for volume control modes."""
-    os.makedirs(output_dir, exist_ok=True)
-    volume_control_modes = ['assist control-volume control', 'pressure-regulated volume control']
-    volume_mode_data = resp_imv_post_start[
-        resp_imv_post_start['mode_category'].isin(volume_control_modes)
-    ].copy()
-    if len(volume_mode_data) == 0 or 'tidal_volume_set' not in volume_mode_data.columns:
-        return
-
-    volume_mode_data['hour_bin'] = volume_mode_data['hours_from_vent_start'].round(0).astype(int)
-    volume_mode_data_7d = volume_mode_data[volume_mode_data['hour_bin'] <= 168].copy()
-
-    tv_stats = volume_mode_data_7d.groupby('hour_bin')['tidal_volume_set'].agg([
-        ('median', 'median'),
-        ('q25', lambda x: x.quantile(0.25)),
-        ('q75', lambda x: x.quantile(0.75)),
-        ('mean', 'mean'),
-        ('std', 'std'),
-        ('count', 'count')
-    ]).reset_index()
-    tv_stats = tv_stats[tv_stats['count'] >= 10]
-
-    tv_stats.to_csv(os.path.join(output_dir, _suffixed('tidal_volume_volume_control_modes.csv', suffix)), index=False)
-    tv_stats[['hour_bin', 'mean', 'std', 'count']].to_csv(
-        os.path.join(output_dir, _suffixed('tidal_volume_volume_control_modes_mean_sd.csv', suffix)), index=False)
-
-
-def generate_pressure_control_stats(resp_imv_post_start, output_dir, suffix=''):
-    """Generate pressure control stats for pressure control mode."""
-    os.makedirs(output_dir, exist_ok=True)
-    pressure_mode_data = resp_imv_post_start[
-        resp_imv_post_start['mode_category'].isin(['pressure control'])
-    ].copy()
-    if len(pressure_mode_data) == 0 or 'pressure_control_set' not in pressure_mode_data.columns:
-        return
-
-    pressure_mode_data['hour_bin'] = pressure_mode_data['hours_from_vent_start'].round(0).astype(int)
-    pressure_mode_data_7d = pressure_mode_data[pressure_mode_data['hour_bin'] <= 168].copy()
-
-    pc_stats = pressure_mode_data_7d.groupby('hour_bin')['pressure_control_set'].agg([
-        ('median', 'median'),
-        ('q25', lambda x: x.quantile(0.25)),
-        ('q75', lambda x: x.quantile(0.75)),
-        ('mean', 'mean'),
-        ('std', 'std'),
-        ('count', 'count')
-    ]).reset_index()
-    pc_stats = pc_stats[pc_stats['count'] >= 10]
-
-    pc_stats.to_csv(os.path.join(output_dir, _suffixed('pressure_control_pressure_control_mode.csv', suffix)), index=False)
-    pc_stats[['hour_bin', 'mean', 'std', 'count']].to_csv(
-        os.path.join(output_dir, _suffixed('pressure_control_pressure_control_mode_mean_sd.csv', suffix)), index=False)
-
-
-def generate_mode_proportions(resp_imv_post_start, output_dir, suffix=''):
-    """Generate mode proportions for first 24 hours of IMV."""
-    os.makedirs(output_dir, exist_ok=True)
-    if len(resp_imv_post_start) == 0:
-        return
-
-    imv_first_24h = resp_imv_post_start[
-        (resp_imv_post_start['hours_from_vent_start'] >= 0) &
-        (resp_imv_post_start['hours_from_vent_start'] <= 24)
-    ].copy()
-    if len(imv_first_24h) == 0:
-        return
-
-    mode_mapping = {
-        'assist control-volume control': 'Assist Control-Volume Control',
-        'pressure-regulated volume control': 'Pressure-Regulated Volume Control',
-        'simv': 'SIMV',
-        'pressure support/cpap': 'Pressure Support/CPAP',
-        'pressure support': 'Pressure Support/CPAP',
-        'cpap': 'Pressure Support/CPAP',
-        'pressure control': 'Pressure Control',
-    }
-    imv_first_24h['mode_group'] = imv_first_24h['mode_category'].str.lower().map(mode_mapping).fillna('Other')
-
-    mode_counts = imv_first_24h['mode_group'].value_counts()
-    total_obs = len(imv_first_24h)
-    mode_proportions = (mode_counts / total_obs).sort_values(ascending=False)
-
-    plot_data = pd.DataFrame({
-        'Mode': mode_proportions.index,
-        'Proportion': mode_proportions.values,
-        'Count': mode_counts[mode_proportions.index].values
-    })
-    plot_data.to_csv(os.path.join(output_dir, _suffixed('mode_proportions_first_24h.csv', suffix)), index=False)
-
-
-def generate_medications_hourly(meds_merged, total_icu_encounters, med_groups, output_dir, suffix=''):
-    """Generate hourly medication usage data."""
-    os.makedirs(output_dir, exist_ok=True)
-    all_meds = [med for meds in med_groups.values() for med in meds]
-
-    if len(meds_merged) == 0 or total_icu_encounters == 0:
-        return
-
-    meds_7d = meds_merged[
-        (meds_merged['med_lower'].isin(all_meds)) &
-        (meds_merged['hour_bin'].notna()) &
-        (meds_merged['hour_bin'] >= 0) &
-        (meds_merged['hour_bin'] <= 167)
-    ]
-    if len(meds_7d) == 0:
-        return
-
-    pivot = (
-        meds_7d
-        .groupby(['hour_bin', 'med_lower'])['encounter_block']
-        .nunique()
-        .unstack(fill_value=0)
-        .reindex(index=np.arange(168), columns=all_meds, fill_value=0)
-    )
-    pct_pivot = (pivot / total_icu_encounters * 100) if total_icu_encounters > 0 else pivot * 0
-
-    hourly_df = pd.DataFrame({'hour': np.arange(168)})
-    hourly_df = pd.concat([hourly_df, pivot.add_suffix('_n'), pct_pivot.add_suffix('_pct')], axis=1)
-    hourly_df.to_csv(os.path.join(output_dir, _suffixed('medications_hourly_data.csv', suffix)), index=False)
-
-
-def generate_medications_summary(meds_merged, total_icu_encounters, med_groups, output_dir, suffix=''):
-    """Generate medication summary statistics."""
-    os.makedirs(output_dir, exist_ok=True)
-    all_meds = [med for meds in med_groups.values() for med in meds]
-
-    if len(meds_merged) == 0 or total_icu_encounters == 0:
-        return
-
-    meds_7d = meds_merged[
-        (meds_merged['med_lower'].isin(all_meds)) &
-        (meds_merged['hour_bin'].notna()) &
-        (meds_merged['hour_bin'] >= 0) &
-        (meds_merged['hour_bin'] <= 167)
-    ]
-    if len(meds_7d) == 0:
-        return
-
-    summary_agg = (
-        meds_7d
-        .groupby('med_lower')['med_dose']
-        .agg(['count', 'median', lambda x: x.quantile(0.25), lambda x: x.quantile(0.75)])
-        .rename(columns={'count': 'n_admin', '<lambda_0>': 'q1_dose', '<lambda_1>': 'q3_dose'})
-    )
-    encounter_counts = meds_7d.groupby('med_lower')['encounter_block'].nunique()
-    dose_units = meds_7d.groupby('med_lower')['med_dose_unit'].agg(
-        lambda x: x.mode()[0] if len(x.mode()) > 0 else '')
-    med_to_group = {med: group for group, meds in med_groups.items() for med in meds}
-
-    summary_df = pd.DataFrame({
-        'medication': summary_agg.index,
-        'n_encounters': encounter_counts.values,
-        'pct_encounters': (encounter_counts / total_icu_encounters * 100).values,
-        'median_dose': summary_agg['median'].values,
-        'q1_dose': summary_agg['q1_dose'].values,
-        'q3_dose': summary_agg['q3_dose'].values,
-        'dose_unit': dose_units.values
-    })
-    summary_df['group'] = summary_df['medication'].map(med_to_group)
-    summary_df = summary_df[['group', 'medication', 'n_encounters', 'pct_encounters',
-                             'median_dose', 'q1_dose', 'q3_dose', 'dose_unit']]
-    summary_df.to_csv(os.path.join(output_dir, _suffixed('medications_summary_stats.csv', suffix)), index=False)
-
-
-def generate_comorbidities(cci_results, output_dir, suffix=''):
-    """Generate comorbidity prevalence per 1000 hospitalizations."""
-    os.makedirs(output_dir, exist_ok=True)
-    if len(cci_results) == 0:
-        return
-
-    total_hospitalizations = cci_results['encounter_block'].nunique()
-    exclude_columns = {'hospitalization_id', 'encounter_block', 'cci_score'}
-    comorbidity_columns = [col for col in cci_results.columns if col not in exclude_columns]
-    if not comorbidity_columns:
-        return
-
-    comorbidity_counts = cci_results[comorbidity_columns].sum()
-    comorbidity_per_1000 = (comorbidity_counts / total_hospitalizations) * 1000
-    prevalence_percent = (comorbidity_counts.values / total_hospitalizations * 100).round(2)
-
-    comorbidity_summary = pd.DataFrame({
-        'comorbidity': comorbidity_columns,
-        'n_patients': comorbidity_counts.values,
-        'prevalence_percent': prevalence_percent,
-        'per_1000_hospitalizations': comorbidity_per_1000.values.round(1)
-    }).sort_values('per_1000_hospitalizations', ascending=False).reset_index(drop=True)
-
-    comorbidity_summary.to_csv(os.path.join(output_dir, _suffixed('comorbidities_per_1000_hospitalizations.csv', suffix)), index=False)
-
-    total_comorbidities = int(comorbidity_counts.sum())
-    avg_comorbidities_per_hosp = total_comorbidities / total_hospitalizations if total_hospitalizations > 0 else 0
-    most_common_comorbidity = comorbidity_summary.iloc[0]['comorbidity']
-    most_common_per_1000 = comorbidity_summary.iloc[0]['per_1000_hospitalizations']
-
-    summary_stats_rows = [
-        ['Total hospitalizations', total_hospitalizations],
-        ['Total comorbidities across all patients', total_comorbidities],
-        ['Average comorbidities per hospitalization', f"{avg_comorbidities_per_hosp:.2f}"],
-        ['Most common comorbidity', most_common_comorbidity],
-        ['Most common: per 1000 hospitalizations', f"{most_common_per_1000:.1f}"],
-    ]
-    with open(os.path.join(output_dir, _suffixed('comorbidities_per_1000_hospitalizations_summary.csv', suffix)), 'w', newline='') as f:
-        writer = csv.writer(f)
-        writer.writerow(['Metric', 'Value'])
-        for row in summary_stats_rows:
-            writer.writerow(row)
-
-
-def generate_sofa_mortality(final_tableone_df, output_dir, suffix=''):
-    """Generate SOFA-mortality summary."""
-    os.makedirs(output_dir, exist_ok=True)
-    if 'sofa_total' not in final_tableone_df.columns or 'death_enc' not in final_tableone_df.columns:
-        return
-
-    enc_deduped = final_tableone_df.drop_duplicates(subset=['encounter_block'])
-    sofa_data = enc_deduped[enc_deduped['sofa_total'].notna()].copy()
-    if len(sofa_data) == 0:
-        return
-
-    sofa_mortality = sofa_data.groupby('sofa_total').agg(
-        count=('death_enc', 'count'),
-        mortality_rate=('death_enc', 'mean')
-    ).reset_index()
-    sofa_mortality.columns = ['sofa_score', 'count', 'mortality_rate']
-    sofa_mortality['mortality_rate'] = sofa_mortality['mortality_rate'] * 100
-    sofa_mortality['deaths'] = (sofa_mortality['mortality_rate'] / 100) * sofa_mortality['count']
-
-    def wilson_ci(successes, n, confidence=0.95):
-        z = stats.norm.ppf((1 + confidence) / 2)
-        p_hat = successes / n
-        denominator = 1 + z**2 / n
-        center = (p_hat + z**2 / (2*n)) / denominator
-        margin = z * np.sqrt((p_hat * (1 - p_hat) + z**2 / (4*n)) / n) / denominator
-        return center * 100, margin * 100
-
-    ci_data = [wilson_ci(deaths, n) if n > 0 else (0, 0)
-               for deaths, n in zip(sofa_mortality['deaths'], sofa_mortality['count'])]
-    sofa_mortality['ci_center'] = [x[0] for x in ci_data]
-    sofa_mortality['ci_margin'] = [x[1] for x in ci_data]
-    sofa_mortality['ci_lower'] = (sofa_mortality['mortality_rate'] - sofa_mortality['ci_margin']).clip(lower=0)
-    sofa_mortality['ci_upper'] = (sofa_mortality['mortality_rate'] + sofa_mortality['ci_margin']).clip(upper=100)
-    sofa_mortality['total_encounters'] = len(sofa_data)
-
-    sofa_export = sofa_mortality[['sofa_score', 'total_encounters', 'count', 'deaths',
-                                  'mortality_rate', 'ci_lower', 'ci_upper', 'ci_margin']].copy()
-    sofa_export.columns = ['sofa_score', 'total_encounters', 'n_encounters', 'n_deaths',
-                           'mortality_rate_percent', 'ci_lower_95', 'ci_upper_95', 'ci_margin_95']
-    sofa_export['n_encounters'] = sofa_export['n_encounters'].astype(int)
-    sofa_export['total_encounters'] = sofa_export['total_encounters'].astype(int)
-    sofa_export['n_deaths'] = sofa_export['n_deaths'].round(0).astype(int)
-    for col in ['mortality_rate_percent', 'ci_lower_95', 'ci_upper_95', 'ci_margin_95']:
-        sofa_export[col] = sofa_export[col].round(2)
-
-    sofa_export.to_csv(os.path.join(output_dir, _suffixed('sofa_mortality_summary.csv', suffix)), index=False)
-
-
-def generate_hospice_trends(final_tableone_df, output_dir, suffix=''):
-    """Generate hospice vs mortality trends by year."""
-    os.makedirs(output_dir, exist_ok=True)
-    required_cols = ['encounter_block', 'admission_year', 'hospice_outcome',
-                     'expired_outcome', 'hospice_or_expired']
-    if not all(c in final_tableone_df.columns for c in required_cols):
-        return
-
-    enc_deduped = final_tableone_df.drop_duplicates(subset=['encounter_block'])
-    if len(enc_deduped) == 0:
-        return
-
-    hospice_trends = enc_deduped.groupby('admission_year').agg({
-        'encounter_block': 'count',
-        'hospice_outcome': 'sum',
-        'expired_outcome': 'sum',
-        'hospice_or_expired': 'sum'
-    }).reset_index()
-    hospice_trends.columns = ['year', 'total_encounters', 'hospice', 'expired', 'hospice_or_expired']
-
-    hospice_trends['hospice_pct'] = hospice_trends['hospice'] / hospice_trends['total_encounters'] * 100
-    hospice_trends['mortality_pct'] = hospice_trends['expired'] / hospice_trends['total_encounters'] * 100
-    hospice_trends['hospice_among_eol_pct'] = (
-        hospice_trends['hospice'] / hospice_trends['hospice_or_expired'] * 100
-    )
-
-    def calc_ci(successes, n, confidence=0.95):
-        if n == 0:
-            return 0, 0
-        ci_low, ci_upp = proportion_confint(successes, n, alpha=1-confidence, method='wilson')
-        return ci_low * 100, ci_upp * 100
-
-    ci_results = [calc_ci(row['hospice'], row['hospice_or_expired'])
-                  for _, row in hospice_trends.iterrows()]
-    hospice_trends['hospice_among_eol_ci_lower'] = [x[0] for x in ci_results]
-    hospice_trends['hospice_among_eol_ci_upper'] = [x[1] for x in ci_results]
-
-    hospice_trends.to_csv(os.path.join(output_dir, _suffixed('hospice_trends_summary.csv', suffix)), index=False)
-
-
-def generate_cci_hospice_mortality(final_tableone_df, output_dir, suffix=''):
-    """Generate CCI-hospice-mortality comprehensive summary."""
-    os.makedirs(output_dir, exist_ok=True)
-    required_cols = ['encounter_block', 'cci_score', 'admission_year',
-                     'expired_outcome', 'hospice_or_expired', 'hospice_outcome']
-    if not all(c in final_tableone_df.columns for c in required_cols):
-        return
-
-    tableone_with_cci = final_tableone_df[required_cols].copy()
-    tableone_with_cci['cci_category'] = pd.cut(
-        tableone_with_cci['cci_score'],
-        bins=[-np.inf, 0, 2, 4, np.inf],
-        labels=['0 (No comorbidity)', '1-2 (Mild)', '3-4 (Moderate)', '5+ (Severe)']
-    )
-
-    cci_summary = tableone_with_cci.groupby(['admission_year', 'cci_category']).agg({
-        'encounter_block': 'count',
-        'hospice_outcome': 'sum',
-        'expired_outcome': 'sum',
-        'hospice_or_expired': 'sum'
-    }).reset_index()
-    cci_summary.columns = ['year', 'cci_category', 'total_encounters',
-                           'hospice_count', 'expired_count', 'hospice_or_expired_count']
-
-    cci_summary['mortality_pct'] = cci_summary['expired_count'] / cci_summary['total_encounters'] * 100
-    cci_summary['hospice_pct'] = cci_summary['hospice_count'] / cci_summary['total_encounters'] * 100
-    cci_summary['combined_eol_pct'] = cci_summary['hospice_or_expired_count'] / cci_summary['total_encounters'] * 100
-    cci_summary['hospice_among_eol_pct'] = cci_summary['hospice_count'] / cci_summary['hospice_or_expired_count'] * 100
-    cci_summary['hospice_capture_rate'] = cci_summary['hospice_count'] / cci_summary['expired_count'] * 100
-
-    def calc_ci(row):
-        if row['hospice_or_expired_count'] == 0:
-            return pd.Series({'hospice_eol_ci_lower': np.nan, 'hospice_eol_ci_upper': np.nan})
-        ci_low, ci_upp = proportion_confint(
-            row['hospice_count'], row['hospice_or_expired_count'], alpha=0.05, method='wilson')
-        return pd.Series({'hospice_eol_ci_lower': ci_low * 100, 'hospice_eol_ci_upper': ci_upp * 100})
-
-    cci_summary[['hospice_eol_ci_lower', 'hospice_eol_ci_upper']] = cci_summary.apply(calc_ci, axis=1)
-
-    cci_summary = cci_summary[['year', 'cci_category', 'total_encounters',
-                                'expired_count', 'mortality_pct', 'hospice_count', 'hospice_pct',
-                                'hospice_or_expired_count', 'combined_eol_pct',
-                                'hospice_among_eol_pct', 'hospice_eol_ci_lower', 'hospice_eol_ci_upper',
-                                'hospice_capture_rate']]
-    cci_summary.to_csv(os.path.join(output_dir, _suffixed('cci_hospice_mortality_comprehensive_summary.csv', suffix)), index=False)
-
-    # Plot data
-    categories = ['0 (No comorbidity)', '1-2 (Mild)', '3-4 (Moderate)', '5+ (Severe)']
-    plot_data = []
-    for category in categories:
-        cat_data = cci_summary[cci_summary['cci_category'] == category].sort_values('year')
-        plot_data.append(cat_data.assign(cci_category_label=category))
-    plot_data_df = pd.concat(plot_data, axis=0)
-    plot_data_df.to_csv(os.path.join(output_dir, _suffixed('cci_mortality_hospice_trends_by_year_category_plotdata.csv', suffix)), index=False)
-
-
-def generate_demographic_crosstab(patient_df, output_dir, suffix=''):
-    """Generate NIH enrollment report demographic crosstab."""
-    os.makedirs(output_dir, exist_ok=True)
-    enrollment_report = crosstab_demographics(patient_df)
-    enrollment_report.to_csv(os.path.join(output_dir, _suffixed('demographic_crosstab_race_ethnicity_sex.csv', suffix)))
-
-
-def main(memory_monitor=None, cohort_mode='critical_illness') -> bool:
+from ._helpers import _suffixed, _combine_sub_stratum_halves
+from .respiratory_helpers import _waterfall_chunk
+from .nih_report import crosstab_demographics, generate_demographic_crosstab
+from .ventilation_stats import (
+    generate_ventilator_settings_summary,
+    generate_tidal_volume_stats,
+    generate_pressure_control_stats,
+    generate_mode_proportions,
+)
+from .medications_stats import (
+    generate_medications_hourly,
+    generate_medications_summary,
+)
+from .comorbidities_stats import generate_comorbidities
+from .sofa_stats import generate_sofa_mortality
+from .outcomes_stats import (
+    generate_hospice_trends,
+    generate_cci_hospice_mortality,
+)
+
+
+
+
+def main(memory_monitor=None, cohort_mode='critical_illness', force_refresh=False) -> bool:
     """
     Main execution function for Table One generation.
 
@@ -695,10 +217,15 @@ def main(memory_monitor=None, cohort_mode='critical_illness') -> bool:
     clifpy_dir = str(_validation_json_reports_dir())
     summary_stats_dir = str(_summary_stats_dir())
 
-    print(f"\n=� Configuration:")
+    # Intermediate output directory (configurable via config.json, defaults to output/intermediate)
+    intermediate_dir = project_root / config.get('intermediate_path', 'output/intermediate')
+    intermediate_dir.mkdir(parents=True, exist_ok=True)
+
+    print(f"\n=\U0001f527 Configuration:")
     print(f"   Data directory: {config['tables_path']}")
     print(f"   File type: {config['file_type']}")
     print(f"   Timezone: {config['timezone']}")
+    print(f"   Intermediate: {intermediate_dir}")
 
 
     # ==============================================================================
@@ -1536,6 +1063,31 @@ def main(memory_monitor=None, cohort_mode='critical_illness') -> bool:
     clif.hospitalization.df = hosp_stitched
     clif.adt.df = adt_stitched
 
+    # Assign admission_year per encounter_block = min(admission_dttm) across
+    # stitched hospitalizations.  NaT → year 0 ("unknown").  This column is
+    # used by the Phase 3 year-sharding loop; for now it's additive-only.
+    _year_map = (
+        clif.hospitalization.df
+        .groupby('encounter_block')['admission_dttm']
+        .min()
+        .reset_index()
+    )
+    _year_map['admission_year'] = (
+        _year_map['admission_dttm'].dt.year
+        .fillna(0)
+        .astype(int)
+    )
+    encounter_mapping = encounter_mapping.merge(
+        _year_map[['encounter_block', 'admission_year']],
+        on='encounter_block',
+        how='left',
+    )
+    encounter_mapping['admission_year'] = encounter_mapping['admission_year'].fillna(0).astype(int)
+    _n_nat = (encounter_mapping['admission_year'] == 0).sum()
+    if _n_nat > 0:
+        print(f"   ⚠️ {_n_nat} encounter mappings with NaT admission_dttm → admission_year=0")
+    del _year_map
+
     # Store the encounter mapping in the orchestrator for later use
     clif.encounter_mapping = encounter_mapping
 
@@ -1671,7 +1223,7 @@ def main(memory_monitor=None, cohort_mode='critical_illness') -> bool:
     #    df so the second run can skip the expensive recomputation.  Cache is
     #    invalidated if the raw respiratory_support parquet is newer.
     import types as _types
-    _waterfall_cache_path = project_root / 'output/intermediate' / 'respiratory_support_waterfall.parquet'
+    _waterfall_cache_path = intermediate_dir / 'respiratory_support_waterfall.parquet'
     _raw_resp_path = Path(config['tables_path']) / f"clif_respiratory_support.{config['file_type']}"
     _cache_valid = (
         _waterfall_cache_path.exists()
@@ -1894,14 +1446,13 @@ def main(memory_monitor=None, cohort_mode='critical_illness') -> bool:
     final_cohort['nippv_hfnc_enc'] = final_cohort['nippv_hfnc_enc'].fillna(0).astype(int)
 
     # Set support flags to 0 if is_procedural_ld_only is 1
-    # (procedural/L&D only encounters without ICU should not count as having support).
-    # In ward mode, ward-touching is the inclusion criterion, so support metrics for
-    # ward+procedural encounters should be reported as-is (the procedural visit doesn't
-    # invalidate real vasopressor / advanced respiratory use on the ward).
-    if cohort_mode != 'ward':
-        final_cohort.loc[final_cohort['is_procedural_ld_only'] == 1, 'high_support_enc'] = 0
-        final_cohort.loc[final_cohort['is_procedural_ld_only'] == 1, 'vaso_support_enc'] = 0
-        final_cohort.loc[final_cohort['is_procedural_ld_only'] == 1, 'nippv_hfnc_enc'] = 0
+    # (procedural/L&D only encounters without ICU should not count as having
+    # advanced respiratory / vaso support). Apply the same zeroing in BOTH
+    # critical-illness and ward modes so the strobe support counts use a
+    # consistent definition across cohorts (ward subset ≤ CI total).
+    final_cohort.loc[final_cohort['is_procedural_ld_only'] == 1, 'high_support_enc'] = 0
+    final_cohort.loc[final_cohort['is_procedural_ld_only'] == 1, 'vaso_support_enc'] = 0
+    final_cohort.loc[final_cohort['is_procedural_ld_only'] == 1, 'nippv_hfnc_enc'] = 0
     # ── Define cohort and filter ────────────────────────────────────────
     # Critical-illness cohort: ICU stay OR died/hospice OR advanced resp
     # support OR vasopressor support, excluding procedural/L&D-only encounters.
@@ -1931,6 +1482,76 @@ def main(memory_monitor=None, cohort_mode='critical_illness') -> bool:
     strobe_counts["2_advanced_resp_support_hospitalizations"] = (final_cohort['high_support_enc'] == 1).sum()
     strobe_counts["2b_nippv_hfnc_hospitalizations"] = (final_cohort['nippv_hfnc_enc'] == 1).sum()
     strobe_counts["3_vasoactive_hospitalizations"] = (final_cohort['vaso_support_enc'] == 1).sum()
+
+    # ------------------------------------------------------------------
+    # Phase 2a: Sanity-check cohort_builder against inline logic.
+    # build_critical_illness_cohort() must produce the same encounter_blocks
+    # as the inline computation above.  This assertion will be removed once
+    # the inline code is replaced by cohort_builder in a later phase.
+    # ------------------------------------------------------------------
+    if cohort_mode != 'ward':
+        from modules.tableone.cohort_builder import build_critical_illness_cohort
+
+        _builder_result = build_critical_illness_cohort(
+            adt_df=all_encounters,
+            resp_support_df=clif.respiratory_support.df,
+            meds_continuous_df=clif.medication_admin_continuous.df,
+            encounter_mapping_df=encounter_mapping,
+        )
+        _inline_cohort_blocks = set(final_cohort['encounter_block'])
+        _builder_cohort_blocks = _builder_result.encounter_blocks
+        if _inline_cohort_blocks != _builder_cohort_blocks:
+            _only_builder = _builder_cohort_blocks - _inline_cohort_blocks
+            _only_inline = _inline_cohort_blocks - _builder_cohort_blocks
+            print(f"⚠️  cohort_builder DISAGREES with inline logic!")
+            print(f"   n_builder={len(_builder_cohort_blocks)}, n_inline={len(_inline_cohort_blocks)}")
+            print(f"   Only in builder: {_only_builder}")
+            print(f"   Only in inline:  {_only_inline}")
+            raise AssertionError(
+                f"cohort_builder disagrees with inline: "
+                f"builder={len(_builder_cohort_blocks)}, inline={len(_inline_cohort_blocks)}"
+            )
+        print(f"✅ cohort_builder matches inline logic: {len(_inline_cohort_blocks):,} encounter_blocks")
+        del _builder_result, _inline_cohort_blocks, _builder_cohort_blocks
+    # ------------------------------------------------------------------
+
+    # ------------------------------------------------------------------
+    # Phase 2b: Produce filtered cohort parquets for heavy CLIF tables.
+    # These are written to output/intermediate/clif_filtered/ and will be
+    # used in Phase 2c to replace full-table loads.  For now we only
+    # produce them — downstream loads are unchanged.
+    # ------------------------------------------------------------------
+    from modules.tableone.cohort_filter import (
+        compute_or_use_cached_filtered_tables, hash_cohort_definition,
+    )
+    from modules.tableone.cohort_builder import DEFAULT_VASO_MEDS
+
+    _cohort_hash = hash_cohort_definition(
+        version="2026.05.cohort.v1",
+        params={
+            "age_threshold": 18,
+            "year_range": [2018, 2024],
+            "hfnc_lpm_threshold": 30,
+            "vaso_meds": list(DEFAULT_VASO_MEDS),
+        },
+    )
+
+    _cohort_ids_for_filter = set(cohort_enc_hospitalization_ids)
+    _filter_manifest, _filter_cached = compute_or_use_cached_filtered_tables(
+        source_dir=Path(config['tables_path']),
+        dest_dir=intermediate_dir / 'clif_filtered',
+        cohort_hash=_cohort_hash,
+        cohort_ids_callable=lambda: _cohort_ids_for_filter,
+        force_refresh=force_refresh,
+    )
+    if _filter_cached:
+        print(f"✅ Filtered CLIF cache hit ({_filter_manifest.produced_at}) "
+              f"— reusing {len(_filter_manifest.source_files)} tables")
+    else:
+        print(f"✅ Filtered CLIF tables built — {len(_filter_manifest.source_files)} tables, "
+              f"cohort N={_filter_manifest.n_cohort_ids:,}")
+    del _cohort_ids_for_filter, _filter_manifest, _filter_cached, _cohort_hash
+    # ------------------------------------------------------------------
 
     # ------------------------------------------------------------------
     # ED-vasopressor sub-strata: identify encounters where the first
@@ -2059,11 +1680,26 @@ def main(memory_monitor=None, cohort_mode='critical_illness') -> bool:
     # Calculate the count
     strobe_counts['4_other_critically_ill'] = final_cohort.loc[final_cohort['other_critically_ill'] == 1,
                                                                 'encounter_block'].nunique()
-    strobe_counts['5_all_critically_ill'] = final_cohort['encounter_block'].nunique()
     if cohort_mode == 'ward':
+        # In ward mode, final_cohort still contains every ward-touching encounter
+        # (the ward branch never filters by cohort_enc). Count critically-ill
+        # ward-touching encounters explicitly using the same definition as CI:
+        # icu_enc OR death_enc OR high_support_enc OR vaso_support_enc, with
+        # procedural/L&D-only zeroing already applied above.
+        strobe_counts['5_all_critically_ill'] = final_cohort.loc[
+            (final_cohort['icu_enc'] == 1)
+            | (final_cohort['death_enc'] == 1)
+            | (final_cohort['high_support_enc'] == 1)
+            | (final_cohort['vaso_support_enc'] == 1),
+            'encounter_block'
+        ].nunique()
         strobe_counts['6_ward_no_critical_care'] = final_cohort.loc[
             final_cohort['ward_no_critical_care'] == 1, 'encounter_block'
         ].nunique()
+    else:
+        # In CI mode, final_cohort has already been filtered to critically-ill
+        # encounters at the cohort_enc==1 step, so its size IS the count.
+        strobe_counts['5_all_critically_ill'] = final_cohort['encounter_block'].nunique()
 
 
     # ==============================================================================
@@ -2208,7 +1844,25 @@ def main(memory_monitor=None, cohort_mode='critical_illness') -> bool:
     summary_df['Died'] = summary_df['Died'].fillna(0).astype(bool)
     summary_df['Advanced O2 Support'] = summary_df['Advanced O2 Support'].fillna(0).astype(bool)
     summary_df['Vasoactive Support'] = summary_df['Vasoactive Support'].fillna(0).astype(bool)
-    summary_df.to_csv(os.path.join(output_dir, 'upset_data.csv'), index=False)
+
+    # Save per-encounter (encounter_block-level) data to intermediate. This is
+    # patient-level data and must NOT be exported to the shareable /final tree.
+    raw_upset_dir = str(_tableone_raw_dir())
+    os.makedirs(raw_upset_dir, exist_ok=True)
+    summary_df.to_csv(os.path.join(raw_upset_dir, 'upset_data.csv'), index=False)
+
+    # Save aggregated intersection counts (max 16 rows for 4 booleans) to /final.
+    # This is the form needed for cross-site consortium UpSet plots and carries
+    # no re-identification risk.
+    upset_pattern_cols = ['ICU Hospitalizations', 'Died', 'Advanced O2 Support', 'Vasoactive Support']
+    upset_counts_df = (
+        summary_df.groupby(upset_pattern_cols, as_index=False)
+                  .size()
+                  .rename(columns={'size': 'n'})
+                  .sort_values('n', ascending=False)
+                  .reset_index(drop=True)
+    )
+    upset_counts_df.to_csv(os.path.join(output_dir, 'upset_data.csv'), index=False)
 
     # ========== UpSet Plot ==========
     fig = plt.figure(figsize=(16, 12))
@@ -2296,10 +1950,10 @@ def main(memory_monitor=None, cohort_mode='critical_illness') -> bool:
     # # Final cohort df
     # ==============================================================================
 
-    final_tableone_df = cohort_df[['patient_id', 'hospitalization_id', 'encounter_block', 'admission_dttm', 
+    final_tableone_df = cohort_df[['patient_id', 'hospitalization_id', 'encounter_block', 'admission_dttm',
                                     'discharge_dttm', 'age_at_admission', 'discharge_category', 'admission_type_category',
-                                    'race_category', 'ethnicity_category', 'sex_category', 'death_dttm', 
-                                    'icu_enc', 'death_enc', 'cohort_enc']].drop_duplicates()
+                                    'race_category', 'ethnicity_category', 'sex_category', 'death_dttm',
+                                    'icu_enc', 'death_enc', 'cohort_enc', 'admission_year']].drop_duplicates()
 
     final_cohort_merge_cols = ['encounter_block',
                                'high_support_enc',
@@ -2861,10 +2515,17 @@ def main(memory_monitor=None, cohort_mode='critical_illness') -> bool:
     # The waterfall already ran earlier (before the high_support_enc flag) so
     # respiratory_support data is already filled. For ward mode the user opted
     # out of these characteristics for memory + time.
-    if cohort_mode == 'ward':
-        print("\nSkipping IMV / respiratory support characteristics block (ward mode)")
-
-    for _imv_iter in (range(1) if cohort_mode != 'ward' else range(0)):
+    # ------------------------------------------------------------------
+    # _compute_per_encounter_features: enriches final_tableone_df with
+    # all per-encounter clinical columns (IMV, vent modes, meds, CCI,
+    # ECMO, CRRT, sepsis, SOFA, VFD, NIDFD, mortality trends).
+    #
+    # Defined as a local closure so it can read main()'s scope directly
+    # (avoids threading ~15 parameters). Phase 3c will wrap this in a
+    # year loop; for now it's called once with the full cohort.
+    # ------------------------------------------------------------------
+    def _compute_per_encounter_features():
+        nonlocal final_tableone_df
         # Filter to final cohort hospitalizations (waterfall already applied earlier)
         clif.respiratory_support.df = clif.respiratory_support.df[
             clif.respiratory_support.df['hospitalization_id'].isin(final_hosp_ids)
@@ -2875,7 +2536,7 @@ def main(memory_monitor=None, cohort_mode='critical_illness') -> bool:
         resp_stitched = clif.respiratory_support.df
 
         # Write detailed vent hours debug log to intermediate output
-        _vent_log_path = project_root / 'output' / 'intermediate' / 'vent_hours_debug.log'
+        _vent_log_path = intermediate_dir / 'vent_hours_debug.log'
         os.makedirs(_vent_log_path.parent, exist_ok=True)
         _vent_log = open(_vent_log_path, 'w')
         _vent_log.write("=" * 80 + "\n")
@@ -2930,6 +2591,27 @@ def main(memory_monitor=None, cohort_mode='critical_illness') -> bool:
             vent_start_time=('recorded_dttm', 'min'),
             vent_end_time=('recorded_dttm', 'max')
         ).reset_index()
+
+        # Compute NI device start time for NIDFD (mirrors vent_start_end for VFD)
+        _ni_mask = (
+            resp_stitched['device_category'].isin(['nippv', 'cpap'])
+            | (
+                (resp_stitched['device_category'] == 'high flow nc')
+                & (resp_stitched['lpm_set'] >= 30)
+            )
+        )
+        _resp_ni = resp_stitched[_ni_mask]
+        if len(_resp_ni) > 0:
+            ni_start = (
+                _resp_ni.groupby('encounter_block')['recorded_dttm']
+                .min()
+                .reset_index()
+                .rename(columns={'recorded_dttm': 'ni_device_start_dttm'})
+            )
+            final_tableone_df = final_tableone_df.merge(ni_start, on='encounter_block', how='left')
+            print(f"  NI device start computed for {len(ni_start):,} encounters")
+            del ni_start
+        del _resp_ni, _ni_mask
 
         #  Add on_vent flag to final_cohort
         final_tableone_df = final_tableone_df.merge(
@@ -3020,7 +2702,7 @@ def main(memory_monitor=None, cohort_mode='critical_illness') -> bool:
         )
 
         # Save per-episode table for downstream repeated-measures analyses
-        _imv_ep_path = project_root / 'output' / 'intermediate' / 'imv_episodes.csv'
+        _imv_ep_path = intermediate_dir / 'imv_episodes.csv'
         os.makedirs(_imv_ep_path.parent, exist_ok=True)
         extub_per_episode.to_csv(_imv_ep_path, index=False)
         print(f"  Per-episode IMV data written to: {_imv_ep_path}")
@@ -3237,28 +2919,9 @@ def main(memory_monitor=None, cohort_mode='critical_illness') -> bool:
 
         print(f"\nSettings to calculate: {len(existing_settings)}, vent settings")
 
-        # ✅ SUPER OPTIMIZATION: Calculate each stat separately (pandas can optimize better)
-        results = []
-
-        # Median and mean/std (fast built-ins)
-        medians = resp_imv.groupby('encounter_block')[existing_settings].median()
-        medians.columns = [f'{col}_median' for col in medians.columns]
-
-        means = resp_imv.groupby('encounter_block')[existing_settings].mean()
-        means.columns = [f'{col}_mean' for col in means.columns]
-
-        stds = resp_imv.groupby('encounter_block')[existing_settings].std()
-        stds.columns = [f'{col}_std' for col in stds.columns]
-
-        # Quantiles (still need to use slower method, but only once each)
-        q1 = resp_imv.groupby('encounter_block')[existing_settings].quantile(0.25)
-        q1.columns = [f'{col}_q1' for col in q1.columns]
-
-        q3 = resp_imv.groupby('encounter_block')[existing_settings].quantile(0.75)
-        q3.columns = [f'{col}_q3' for col in q3.columns]
-
-        # Combine all statistics
-        vent_settings_stats = pd.concat([medians, q1, q3, means, stds], axis=1).reset_index()
+        # DuckDB-accelerated per-encounter vent statistics (Phase 5 swap)
+        from modules.tableone.ventilation_duckdb import compute_per_encounter_vent_stats
+        vent_settings_stats = compute_per_encounter_vent_stats(resp_imv, existing_settings)
 
         print(f"✅ Calculated statistics for {len(existing_settings)} settings")
         print(f"   Total encounters: {len(vent_settings_stats):,}")
@@ -3465,22 +3128,20 @@ def main(memory_monitor=None, cohort_mode='critical_illness') -> bool:
 
         print(f"Calculating statistics for {len(group_counts)} device-mode combinations from full respiratory support data...")
 
-        # Calculate median, Q1, Q3 (only for existing columns)
-        medians = resp_valid.groupby(['device_category', 'mode_category'])[vent_settings].median()
-        q1 = resp_valid.groupby(['device_category', 'mode_category'])[vent_settings].quantile(0.25)
-        q3 = resp_valid.groupby(['device_category', 'mode_category'])[vent_settings].quantile(0.75)
-
-        # ✅ FIX: Reset index for all before combining
-        medians_reset = medians.reset_index()
-        q1_reset = q1.reset_index()
-        q3_reset = q3.reset_index()
+        # DuckDB-accelerated device×mode vent statistics (Phase 5 swap)
+        from modules.tableone.ventilation_duckdb import compute_vent_stats_by_device_mode
+        _dm_stats = compute_vent_stats_by_device_mode(resp_valid, vent_settings)
+        medians_reset = _dm_stats['medians']
+        q1_reset = _dm_stats['q1']
+        q3_reset = _dm_stats['q3']
+        del _dm_stats
 
         # Create settings summary starting with device and mode columns
         settings_summary = medians_reset[['device_category', 'mode_category']].copy()
 
         # ✅ Format as "median (q1-q3)" using .values (no index issues)
         for setting in vent_settings:
-            if setting in medians.columns:
+            if setting in medians_reset.columns:
                 # Use .values to avoid index alignment issues
                 settings_summary[setting] = (
                     medians_reset[setting].round(1).astype(str) + ' (' +
@@ -3518,10 +3179,7 @@ def main(memory_monitor=None, cohort_mode='critical_illness') -> bool:
         settings_summary = settings_summary.sort_values(['device_category', sort_col])
 
         # Display and save
-        print("\n" + "="*80)
-        print("VENTILATOR SETTINGS BY DEVICE AND MODE CATEGORY")
-        print("="*80)
-        print(settings_summary.to_string(index=False))
+        print(f"\n📊 Ventilator settings by device + mode: {len(settings_summary)} (device, mode, setting) combinations summarized.")
 
         _vsbdm_path = os.path.join(output_dir, 'ventilator_settings_by_device_mode.csv')
         settings_summary.to_csv(_vsbdm_path, index=False)
@@ -3567,8 +3225,7 @@ def main(memory_monitor=None, cohort_mode='critical_illness') -> bool:
         sort_col = 'ventilator_setting' if 'ventilator_setting' in counts_summary.columns else 'mode_category'
         counts_summary = counts_summary.sort_values(['device_category', sort_col])
 
-        print("\nObservation Counts by Device and Mode:")
-        print(counts_summary.to_string(index=False))
+        print(f"📊 Observation counts by device + mode: {len(counts_summary)} (device, mode) rows summarized.")
 
         _vscbdm_path = os.path.join(output_dir, 'ventilator_settings_counts_by_device_mode.csv')
         counts_summary.to_csv(_vscbdm_path, index=False)
@@ -3634,10 +3291,8 @@ def main(memory_monitor=None, cohort_mode='critical_illness') -> bool:
         # Calculate proportions
         mode_proportions = (mode_counts / total_obs).sort_values(ascending=False)
 
-        print(f"\n📊 Mode Category Counts:")
-        for mode, count in mode_counts.items():
-            proportion = count / total_obs
-            print(f"   {mode}: {count:,} ({proportion:.1%})")
+        # Per-mode counts can include small modes (<10); log totals only.
+        print(f"\n📊 Mode category counts: {len(mode_counts)} modes across {total_obs:,} first-24h IMV observations.")
 
         # ============================================================================
         # 4. Create DataFrame for Plotting
@@ -3649,8 +3304,7 @@ def main(memory_monitor=None, cohort_mode='critical_illness') -> bool:
             'Count': mode_counts[mode_proportions.index].values
         })
 
-        print("\nPlot Data:")
-        print(plot_data.to_string(index=False))
+        print(f"📊 Mode proportions plot data ready: {len(plot_data)} mode groups.")
 
         # Save the data
         _mp24_path = os.path.join(output_dir, 'mode_proportions_first_24h.csv')
@@ -3748,6 +3402,22 @@ def main(memory_monitor=None, cohort_mode='critical_illness') -> bool:
             print(f"  ✅ VFDs computed for {len(vfd_df):,} IMV encounters")
             print(f"     VFD median: {vfd_df['vfd_28'].median():.0f}, "
                   f"mean: {vfd_df['vfd_28'].mean():.1f}")
+
+        # ── 28-day Non-Invasive Device Free Days ─────────────────────
+        from modules.tableone.nidfd_calculator import calculate_non_invasive_device_free_days
+        if 'ni_device_start_dttm' in final_tableone_df.columns:
+            nidfd_df = calculate_non_invasive_device_free_days(
+                resp_stitched, final_tableone_df,
+                id_col='encounter_block',
+            )
+            if len(nidfd_df) > 0:
+                final_tableone_df = final_tableone_df.merge(
+                    nidfd_df, on='encounter_block', how='left'
+                )
+                print(f"  ✅ NIDFDs computed for {len(nidfd_df):,} NIPPV/HFNC encounters")
+                print(f"     NIDFD median: {nidfd_df['nidfd_28'].median():.0f}, "
+                      f"mean: {nidfd_df['nidfd_28'].mean():.1f}")
+            del nidfd_df
 
         # Memory cleanup: Clear respiratory detailed analysis
         print("Clearing respiratory detailed analysis data from memory...")
@@ -3866,7 +3536,12 @@ def main(memory_monitor=None, cohort_mode='critical_illness') -> bool:
 
     # Pre-load only weight_kg vitals using Polars for efficiency
     print("Pre-loading weight data for medication conversion...")
-    vitals_path = os.path.join(clif.data_directory, 'clif_vitals.parquet')
+    _vitals_filtered_path = intermediate_dir / 'clif_filtered' / 'vitals_cohort.parquet'
+    if _vitals_filtered_path.exists():
+        vitals_path = str(_vitals_filtered_path)
+        print(f"   Using filtered vitals cache: {vitals_path}")
+    else:
+        vitals_path = os.path.join(clif.data_directory, 'clif_vitals.parquet')
 
     # Use Polars to load only what we need
     weight_df_pl = (
@@ -3938,8 +3613,9 @@ def main(memory_monitor=None, cohort_mode='critical_illness') -> bool:
     # Show any failed conversions
     failed_conversions = conversion_counts[conversion_counts['_convert_status'] != 'success']
     if len(failed_conversions) > 0:
-        print(f"\n⚠️ Found {len(failed_conversions)} conversion issues:")
-        print(failed_conversions[['med_category', '_clean_unit', '_convert_status', 'count']].to_string(index=False))
+        # Per-(category, unit) failure counts can include small cells; log totals only.
+        n_failed_rows = int(failed_conversions['count'].sum())
+        print(f"\n⚠️ Med-unit conversion issues: {len(failed_conversions)} (med_category, unit) combinations / {n_failed_rows:,} affected rows. See conversion_counts CSV for breakdown.")
 
     # Clean up weight data to free memory
     del weight_vitals_df, weight_df_pl
@@ -4495,7 +4171,7 @@ def main(memory_monitor=None, cohort_mode='critical_illness') -> bool:
     cci_results = calculate_cci( clif.hospital_diagnosis, hierarchy=True)
 
     cci_results = (
-        cci_results.merge(encounter_mapping, on="hospitalization_id")
+        cci_results.merge(encounter_mapping[['hospitalization_id', 'encounter_block']], on="hospitalization_id")
         .drop(columns=["hospitalization_id"])
         .groupby("encounter_block")
         .max()
@@ -4634,38 +4310,30 @@ def main(memory_monitor=None, cohort_mode='critical_illness') -> bool:
     # ==============================================================================
 
     print(f"\nLoading crrt_therapy table...")
+    _crrt_filtered_path = intermediate_dir / 'clif_filtered' / 'crrt_therapy_cohort.parquet'
     try:
-        clif.load_table(
-            'crrt_therapy',
-            filters={
-                'hospitalization_id': final_hosp_ids
-            }
-        )
-        clif.crrt_therapy.df = pd.merge(
-            clif.crrt_therapy.df,
-            encounter_mapping,
-            on='hospitalization_id',
-            how='left'
-        )
-        clif.crrt_therapy.df['on_crrt'] = 1
-        # Keep only encounter_block and on_crrt
-        on_crrt_df = clif.crrt_therapy.df[['encounter_block', 'on_crrt']].drop_duplicates()
-        # Join with final_tableone_df on encounter_block (left join)
+        if _crrt_filtered_path.exists():
+            _crrt_df = pd.read_parquet(_crrt_filtered_path)
+            _crrt_df = _crrt_df[_crrt_df['hospitalization_id'].isin(final_hosp_ids)]
+            print(f"   crrt_therapy loaded from filtered cache: {len(_crrt_df):,} rows")
+        else:
+            clif.load_table(
+                'crrt_therapy',
+                filters={'hospitalization_id': final_hosp_ids}
+            )
+            _crrt_df = clif.crrt_therapy.df
+            print(f"   crrt_therapy loaded from source: {len(_crrt_df):,} rows")
+        _crrt_df = pd.merge(_crrt_df, encounter_mapping, on='hospitalization_id', how='left')
+        _crrt_df['on_crrt'] = 1
+        on_crrt_df = _crrt_df[['encounter_block', 'on_crrt']].drop_duplicates()
         final_tableone_df = final_tableone_df.merge(on_crrt_df, on='encounter_block', how='left')
-        # Before proceeding, ensure 'on_crrt' column exists after the merge; if not, create it
         if 'on_crrt' not in final_tableone_df.columns:
             final_tableone_df['on_crrt'] = 0
         else:
             final_tableone_df['on_crrt'] = final_tableone_df['on_crrt'].fillna(0).astype(int)
-        # MCIDE and summary statistics moved to separate script: generate_mcide_and_stats.py
-        # get_value_counts_mcide(clif.crrt_therapy, 'crrt_therapy', ['crrt_mode_name', 'crrt_mode_category'], output_dir=mcide_dir, config=config)
-        # create_summary_table(clif.crrt_therapy,
-        #                         ['blood_flow_rate', 'pre_filter_replacement_fluid_rate', 'post_filter_replacement_fluid_rate',
-        #                             'dialysate_flow_rate', 'ultrafiltration_out'],
-        #                         group_by_cols='crrt_mode_category',
-        #                         output_dir=summary_stats_dir)
+        del _crrt_df, on_crrt_df
     except FileNotFoundError as e:
-        print(f"Warning: Failed to load the ECMO table: {e}. Proceeding without CRRT data.")
+        print(f"Warning: Failed to load the CRRT table: {e}. Proceeding without CRRT data.")
 
     checkpoint("CRRT Complete")
 
@@ -4674,9 +4342,12 @@ def main(memory_monitor=None, cohort_mode='critical_illness') -> bool:
     # ==============================================================================
 
     if cohort_mode == 'ward':
-        print("\nSkipping ASE computation (ward mode)")
-        final_tableone_df['sepsis_events_by_sepsis_col'] = 0
-        final_tableone_df['sepsis_events_by_episode_id'] = 0
+        # Skip ASE entirely in ward mode. We deliberately do NOT add the
+        # sepsis_events_* columns here — their absence causes the Table One
+        # row builder (Sepsis events / Encounters with >=1 sepsis event)
+        # to skip those rows, so the ward CSV doesn't carry misleading 0/0%
+        # rows. CI cohort still computes and reports sepsis below.
+        print("\nSkipping ASE computation (ward mode); sepsis rows will be omitted from ward Table One")
     else:
         print(f"\nComputing Adult Sepsis Events (ASE)...")
         ASE_BATCH_SIZE = 50_000
@@ -4713,10 +4384,9 @@ def main(memory_monitor=None, cohort_mode='critical_illness') -> bool:
                     verbose=True
                 )
 
-            # Print sample of ASE results
-            print("\n--- ASE Results Sample (first 20 rows) ---")
-            print(ase_df.head(20).to_string())
-            print(f"--- End ASE Sample ({len(ase_df)} total rows) ---\n")
+            # ASE results contain hospitalization_id (direct identifier) — do
+            # NOT echo rows to the log. Summary line only.
+            print(f"\n✅ ASE computation complete: {len(ase_df):,} sepsis-event rows across {ase_df['hospitalization_id'].nunique():,} hospitalizations.\n")
 
             # Map hospitalization_id → encounter_block
             ase_enc = ase_df.merge(
@@ -4914,7 +4584,7 @@ def main(memory_monitor=None, cohort_mode='critical_illness') -> bool:
     # # Run batch summary
     # events_summary = count_all_clinical_events(clif)
 
-    os.makedirs(project_root / 'output/intermediate', exist_ok=True)
+    os.makedirs(intermediate_dir, exist_ok=True)
     # Debug parquet write — cohort-aware filename so the ward run doesn't clobber
     # the critical-illness debug parquet (or vice versa).
     _test_parquet_name = (
@@ -4922,7 +4592,7 @@ def main(memory_monitor=None, cohort_mode='critical_illness') -> bool:
         if cohort_mode == 'ward'
         else 'final_tableone_df_test.parquet'
     )
-    final_tableone_df.to_parquet(project_root / 'output/intermediate' / _test_parquet_name)
+    final_tableone_df.to_parquet(intermediate_dir / _test_parquet_name)
     # ==============================================================================
     # # SOFA calculation
     # ==============================================================================
@@ -5162,8 +4832,10 @@ def main(memory_monitor=None, cohort_mode='critical_illness') -> bool:
         # Prepare Comprehensive Hospice Trend Data
         # ============================================================================
 
-        # Extract year from admission_dttm
-        final_tableone_df['admission_year'] = final_tableone_df['admission_dttm'].dt.year
+        # admission_year already set in Phase 3a from min(admission_dttm)
+        # per encounter_block. Only assign here if missing (backward compat).
+        if 'admission_year' not in final_tableone_df.columns:
+            final_tableone_df['admission_year'] = final_tableone_df['admission_dttm'].dt.year
 
         # Create outcome variables (encounter-level, matching death_enc pattern)
         _hospice_mask = (final_tableone_df['discharge_category'].str.lower() == 'hospice')
@@ -5610,8 +5282,52 @@ def main(memory_monitor=None, cohort_mode='critical_illness') -> bool:
         plt.close()
 
         checkpoint("Mortality Trends Complete")
+    # -- end of _compute_per_encounter_features --
 
-    strobe_counts
+    if cohort_mode == 'ward':
+        print("\nSkipping IMV / respiratory support characteristics block (ward mode)")
+    else:
+        # ── Year-sharded processing (Phase 3c) ──────────────────────────
+        # Process each admission_year independently so only one year's
+        # heavy CLIF tables are in memory at a time.
+        # ────────────────────────────────────────────────────────────────
+        _full_tableone_df = final_tableone_df.copy()
+        _full_hosp_ids = list(final_hosp_ids)
+        _resp_support_backup = clif.respiratory_support.df.copy()
+
+        _years = sorted(_full_tableone_df['admission_year'].dropna().unique())
+        print(f"\n{'='*80}")
+        print(f" Year-sharded processing: {len(_years)} years ({min(_years):.0f}–{max(_years):.0f})")
+        print(f"{'='*80}")
+
+        _year_results = []
+        for _yr in _years:
+            _yr = int(_yr)
+            print(f"\n{'─'*60}")
+            print(f" Processing year {_yr} ...")
+            print(f"{'─'*60}")
+
+            _yr_mask = _full_tableone_df['admission_year'] == _yr
+            final_tableone_df = _full_tableone_df[_yr_mask].copy()
+            final_hosp_ids = final_tableone_df['hospitalization_id'].unique().tolist()
+            print(f"  Encounters: {len(final_tableone_df):,}  "
+                  f"Hospitalizations: {len(final_hosp_ids):,}")
+
+            clif.respiratory_support.df = _resp_support_backup[
+                _resp_support_backup['hospitalization_id'].isin(final_hosp_ids)
+            ].copy()
+
+            _compute_per_encounter_features()
+            _year_results.append(final_tableone_df)
+            print(f"  Year {_yr} complete: {len(final_tableone_df):,} rows, "
+                  f"{len(final_tableone_df.columns)} columns")
+
+        final_tableone_df = pd.concat(_year_results, ignore_index=True)
+        final_hosp_ids = _full_hosp_ids
+        print(f"\n{'='*80}")
+        print(f" Year-sharded processing complete: {len(final_tableone_df):,} total rows")
+        print(f"{'='*80}")
+        del _full_tableone_df, _full_hosp_ids, _resp_support_backup, _year_results
 
 
     # ==============================================================================
@@ -5653,17 +5369,23 @@ def main(memory_monitor=None, cohort_mode='critical_illness') -> bool:
             lambda g: ((g['expired_outcome'] == 0) & (g['hospice_outcome'] == 0)).any()
         ).sort_values(['encounter_block', 'admission_dttm'])
 
-        os.makedirs(project_root / 'output/intermediate', exist_ok=True)
+        os.makedirs(intermediate_dir, exist_ok=True)
         _problem_blocks.to_csv(
-            project_root / 'output/intermediate/mortality_dedup_debug.csv', index=False
+            intermediate_dir / 'mortality_dedup_debug.csv', index=False
         )
         print(f"\n🔍 Mortality dedup debug: {_problem_blocks['encounter_block'].nunique()} encounter_blocks "
               f"with death_enc=1 but missing outcome breakdown")
-        print(f"   Saved: output/intermediate/mortality_dedup_debug.csv ({len(_problem_blocks)} rows)")
+        print(f"   Saved: {intermediate_dir / 'mortality_dedup_debug.csv'} ({len(_problem_blocks)} rows)")
 
     if duplicates > 0:
-        print("\n⚠️  Multiple rows per encounter_block found. Keeping last value...")
-        tableone_df = final_tableone_df.drop_duplicates(subset=['encounter_block'], keep='last')
+        print("\n⚠️  Multiple rows per encounter_block found. Keeping earliest admission...")
+        # Sort by admission_dttm so the earliest hospitalization in each
+        # stitched encounter_block wins — deterministic regardless of
+        # processing order (year-sharded vs single-pass).
+        final_tableone_df = final_tableone_df.sort_values(
+            ['encounter_block', 'admission_dttm']
+        )
+        tableone_df = final_tableone_df.drop_duplicates(subset=['encounter_block'], keep='first')
     else:
         tableone_df = final_tableone_df
 
@@ -5672,7 +5394,7 @@ def main(memory_monitor=None, cohort_mode='critical_illness') -> bool:
             _problem_blocks['encounter_block'].unique()
         )][_mort_cols]
         _post.to_csv(
-            project_root / 'output/intermediate/mortality_dedup_debug_post.csv', index=False
+            intermediate_dir / 'mortality_dedup_debug_post.csv', index=False
         )
         print(f"   Post-dedup: {len(_post)} rows saved to mortality_dedup_debug_post.csv")
         del _post
@@ -6124,11 +5846,9 @@ def main(memory_monitor=None, cohort_mode='critical_illness') -> bool:
     # Generate overall table
     tbl_overall = make_table_one_optimized(tableone_df, patient_df)
 
-    print("\n" + "="*80)
-    print("TABLE ONE - OVERALL")
-    print("="*80)
-    print(tbl_overall.to_string(index=False))
-
+    # NOTE: do NOT print the full table to the log — raw cell counts include
+    # values <10 that get suppressed in the shareable /final copy, and the log
+    # is shared when reporting issues. Print a one-line summary only.
     # Save — the literal table_one_*.csv files live under intermediate/
     # (raw, unsuppressed). Small-cell suppression later writes their
     # safe counterpart to final/ via tableone_final_dir().
@@ -6136,7 +5856,7 @@ def main(memory_monitor=None, cohort_mode='critical_illness') -> bool:
     os.makedirs(_raw_dir, exist_ok=True)
     _t1o_path = os.path.join(_raw_dir, 'table_one_overall.csv')
     tbl_overall.to_csv(_t1o_path, index=False)
-    print(f"\n✅ Saved: {_t1o_path}")
+    print(f"\n✅ Saved table_one_overall.csv ({len(tbl_overall)} rows × {len(tbl_overall.columns)} cols) → {_t1o_path}")
 
     checkpoint("Overall Table One Computed")
 
@@ -6174,17 +5894,12 @@ def main(memory_monitor=None, cohort_mode='critical_illness') -> bool:
             .rename(columns={"index": "Variable"})
         )
     
-        print("\n" + "="*80)
-        print("TABLE ONE - BY YEAR")
-        print("="*80)
-        print(table_by_year.to_string(index=False))
-    
-        # Save
+        # Save (full table not printed — see note above for table_one_overall)
         _raw_dir = str(_tableone_raw_dir())
         os.makedirs(_raw_dir, exist_ok=True)
         _t1by_path = os.path.join(_raw_dir, 'table_one_by_year.csv')
         table_by_year.to_csv(_t1by_path, index=False)
-        print(f"\n✅ Saved: {_t1by_path}")
+        print(f"\n✅ Saved table_one_by_year.csv ({len(table_by_year)} rows × {len(table_by_year.columns)} cols) → {_t1by_path}")
 
     # ============================================================================
     # Step 4b: Compute PF/SF ratios for advanced_resp strata
@@ -6409,7 +6124,58 @@ def main(memory_monitor=None, cohort_mode='critical_illness') -> bool:
                     print(f"  ✅ Added VFD rows ({len(_vfd_data):,} IMV encounters, "
                           f"median VFD={_vfd_data.median():.0f})")
 
-            # ── NEE rows (vaso strata) ─────────────────────────────────
+            # ── 28-day NIDFD rows (any stratum with NIPPV/HFNC encounters) ──
+            if 'nidfd_28' in df_strat.columns:
+                _nidfd_data = df_strat['nidfd_28'].dropna()
+                if len(_nidfd_data) > 0:
+                    def _nidfd_stat(series):
+                        d = series.dropna()
+                        if len(d) == 0:
+                            return ''
+                        return f"{d.median():.0f} [{d.quantile(0.25):.0f}, {d.quantile(0.75):.0f}]"
+
+                    _nidfd_new = {'Variable': [
+                        '28-day NIDFD (NIPPV/HFNC encounters), n (%)',
+                        '  NIDFD, median [Q1, Q3]',
+                    ]}
+                    for _col in strat_table.columns:
+                        if _col == 'Variable':
+                            continue
+                        if _col == 'Overall':
+                            _n_ni = len(_nidfd_data)
+                            _N = len(df_strat)
+                            _nidfd_new[_col] = [
+                                f"{_n_ni:,} ({100*_n_ni/_N:.1f}%)",
+                                _nidfd_stat(_nidfd_data),
+                            ]
+                        else:  # year columns
+                            _yr_nidfd = df_strat.loc[
+                                df_strat['admission_year'] == int(_col), 'nidfd_28'
+                            ].dropna()
+                            _yr_N = len(df_strat[df_strat['admission_year'] == int(_col)])
+                            _pct = f"{100*len(_yr_nidfd)/_yr_N:.1f}%" if _yr_N > 0 else "0.0%"
+                            _nidfd_new[_col] = [
+                                f"{len(_yr_nidfd):,} ({_pct})",
+                                _nidfd_stat(_yr_nidfd),
+                            ]
+
+                    _nidfd_rows = pd.DataFrame(_nidfd_new)
+                    # Insert after VFD rows if present, otherwise after LOS section
+                    _nidfd_idx = strat_table[
+                        strat_table['Variable'].str.contains(
+                            'VFD|Post-device LOS|length of stay', case=False, na=False
+                        )
+                    ].index
+                    _nidfd_insert = _nidfd_idx[-1] + 1 if len(_nidfd_idx) > 0 else len(strat_table)
+                    strat_table = pd.concat([
+                        strat_table.iloc[:_nidfd_insert],
+                        _nidfd_rows,
+                        strat_table.iloc[_nidfd_insert:],
+                    ], ignore_index=True)
+                    print(f"  ✅ Added NIDFD rows ({len(_nidfd_data):,} NIPPV/HFNC encounters, "
+                          f"median NIDFD={_nidfd_data.median():.0f})")
+
+            # ── NEE rows (vaso strata) ────────────────────��────────────
             _NEE_STRATA = {
                 'vaso', 'vaso/icu', 'vaso/no_icu',
                 'vaso/ed_icu', 'vaso/ed_ward',
@@ -6461,33 +6227,17 @@ def main(memory_monitor=None, cohort_mode='critical_illness') -> bool:
                     print(f"  ✅ Added NEE rows ({len(_nee_peak):,} encounters, "
                           f"peak NEE median={_nee_peak.median():.3f})")
 
-            # ── Time to ICU/Ward after first ED pressor ───────────────
-            _ED_VASO_TIMING_STRATA = {'vaso/ed_icu', 'vaso/ed_ward'}
-            if stratum_name in _ED_VASO_TIMING_STRATA and 'first_vaso_dttm' in df_strat.columns:
-                _target_loc = 'icu' if stratum_name == 'vaso/ed_icu' else 'ward'
-                _target_label = 'ICU' if _target_loc == 'icu' else 'Ward'
-
-                # First post-pressor target-location in_dttm per encounter
-                _timing_adt = adt_cohort[
-                    adt_cohort['location_category'].str.contains(_target_loc, na=False)
-                    if _target_loc == 'icu'
-                    else adt_cohort['location_category'] == _target_loc
-                ][['encounter_block', 'in_dttm']].copy()
-                _timing_adt = _timing_adt.rename(columns={'in_dttm': 'target_in_dttm'})
-
-                _timing = df_strat[['encounter_block', 'first_vaso_dttm']].dropna(
-                    subset='first_vaso_dttm'
-                ).merge(_timing_adt, on='encounter_block', how='inner')
-                _timing = _timing[_timing['target_in_dttm'] > _timing['first_vaso_dttm']]
-
-                if len(_timing) > 0:
-                    # Keep earliest post-pressor target location per encounter
-                    _timing = _timing.sort_values('target_in_dttm').drop_duplicates(
-                        subset='encounter_block', keep='first'
-                    )
-                    _timing['hours_to_target'] = (
-                        _timing['target_in_dttm'] - _timing['first_vaso_dttm']
-                    ).dt.total_seconds() / 3600
+            # ── Time to ICU after first ED pressor (ed_icu stratum) ───
+            if stratum_name == 'vaso/ed_icu' and 'first_vaso_dttm' in df_strat.columns:
+                from modules.tableone.time_to_icu_calculator import calculate_time_to_icu_after_pressor
+                _ticu_df = calculate_time_to_icu_after_pressor(
+                    df_strat,
+                    pressor_dttm_col='first_vaso_dttm',
+                    icu_dttm_col='first_icu_in_dttm',
+                    flag_col='vaso_ed_icu_enc',
+                )
+                if len(_ticu_df) > 0:
+                    _df_with_timing = df_strat.merge(_ticu_df, on='encounter_block', how='left')
 
                     def _timing_stat(series):
                         d = series.dropna()
@@ -6496,28 +6246,23 @@ def main(memory_monitor=None, cohort_mode='critical_illness') -> bool:
                         return f"{d.median():.1f} [{d.quantile(0.25):.1f}, {d.quantile(0.75):.1f}]"
 
                     _timing_new = {'Variable': [
-                        f'Time to {_target_label} after first pressor (hours), median [Q1, Q3]',
+                        'Time to ICU after first ED pressor (hr), median [Q1, Q3]',
                     ]}
-                    # Merge timing back to df_strat for year splits
-                    _timing_by_enc = _timing[['encounter_block', 'hours_to_target']]
-                    _df_with_timing = df_strat.merge(_timing_by_enc, on='encounter_block', how='left')
-
                     for _col in strat_table.columns:
                         if _col == 'Variable':
                             continue
                         if _col == 'Overall':
-                            _timing_new[_col] = [_timing_stat(_df_with_timing['hours_to_target'])]
-                        else:  # year columns
+                            _timing_new[_col] = [_timing_stat(_df_with_timing['time_to_icu_hours'])]
+                        else:
                             _yr_timing = _df_with_timing.loc[
-                                _df_with_timing['admission_year'] == int(_col), 'hours_to_target'
+                                _df_with_timing['admission_year'] == int(_col), 'time_to_icu_hours'
                             ]
                             _timing_new[_col] = [_timing_stat(_yr_timing)]
 
                     _timing_rows = pd.DataFrame(_timing_new)
-                    # Insert after NEE rows, or after LOS section
                     _timing_idx = strat_table[
                         strat_table['Variable'].str.contains(
-                            'NEE|VFD|Post-device LOS|length of stay', case=False, na=False
+                            'NEE|NIDFD|VFD|Post-device LOS|length of stay', case=False, na=False
                         )
                     ].index
                     _timing_insert = _timing_idx[-1] + 1 if len(_timing_idx) > 0 else len(strat_table)
@@ -6526,9 +6271,10 @@ def main(memory_monitor=None, cohort_mode='critical_illness') -> bool:
                         _timing_rows,
                         strat_table.iloc[_timing_insert:],
                     ], ignore_index=True)
-                    print(f"  ✅ Added time-to-{_target_label} row "
-                          f"(median={_timing['hours_to_target'].median():.1f}h, "
-                          f"n={len(_timing):,})")
+                    print(f"  ✅ Added time-to-ICU row "
+                          f"(median={_ticu_df['time_to_icu_hours'].median():.1f}h, "
+                          f"n={len(_ticu_df):,})")
+                    del _ticu_df, _df_with_timing
 
             # Slugify stratum_name for the filename — sub-strata resolve to the
             # parent directory so no nested icu/no_icu subdirs are created.
@@ -6582,11 +6328,18 @@ def main(memory_monitor=None, cohort_mode='critical_illness') -> bool:
                 if len(strat_pf_sf) > 0:
                     strat_tableone_dir = str(_tableone_dir(stratum=stratum_name))
                     os.makedirs(strat_tableone_dir, exist_ok=True)
-                    # Per-encounter CSV
-                    pf_sf_path = os.path.join(strat_tableone_dir, _suffixed('pf_sf_summary_24h.csv', _strat_suffix))
+
+                    # Per-encounter CSV is patient-level data (encounter_block
+                    # IDs + high-resolution onset_dttm + per-encounter
+                    # measurements). Write to /intermediate ONLY — never to
+                    # the shareable /final tree. Same policy as upset_data.
+                    raw_strat_dir = str(_tableone_raw_dir(stratum=stratum_name))
+                    os.makedirs(raw_strat_dir, exist_ok=True)
+                    pf_sf_path = os.path.join(raw_strat_dir, _suffixed('pf_sf_summary_24h.csv', _strat_suffix))
                     strat_pf_sf.to_csv(pf_sf_path, index=False)
-                    print(f"  ✅ PF/SF per-encounter: {pf_sf_path}")
-                    # Aggregate stats CSV
+                    print(f"  ✅ PF/SF per-encounter (intermediate): {pf_sf_path}")
+
+                    # Aggregate stats CSV — safe to ship under /final.
                     agg_stats = generate_aggregate_stats(strat_pf_sf)
                     agg_path = os.path.join(strat_tableone_dir, _suffixed('pf_sf_aggregate_stats.csv', _strat_suffix))
                     agg_stats.to_csv(agg_path, index=False)
@@ -6626,22 +6379,19 @@ def main(memory_monitor=None, cohort_mode='critical_illness') -> bool:
     # ============================================================================
     # NIH Enrollment Report — race × ethnicity × sex cross-tabulation
     # ============================================================================
-    print("\n" + "="*80)
-    print("GENERATING NIH ENROLLMENT REPORT")
-    print("="*80)
-
+    # NIH enrollment crosstab — small-cell suppressed CSV is written but not
+    # echoed to the log (raw cells can be <10).
     enrollment_report = crosstab_demographics(patient_df)
-    print(enrollment_report.to_string())
 
     _dx_path = os.path.join(output_dir, 'demographic_crosstab_race_ethnicity_sex.csv')
     enrollment_report.to_csv(_dx_path)
-    print(f"\n✅ Saved: {_dx_path}")
+    print(f"\n✅ Saved demographic_crosstab_race_ethnicity_sex.csv ({len(enrollment_report)} rows × {len(enrollment_report.columns)} cols) → {_dx_path}")
 
     print("\n" + "="*80)
     print("✅ TABLE ONE GENERATION COMPLETE")
     print("="*80)
 
-    os.makedirs(project_root / 'output/intermediate', exist_ok=True)
+    os.makedirs(intermediate_dir, exist_ok=True)
     # Cohort-aware parquet filename: ward run writes to a parallel file so downstream
     # pipelines (ECDF, collection stats, MCIDE) that read final_tableone_df.parquet
     # via modules/strata.py continue to see the critical-illness cohort untouched.
@@ -6650,7 +6400,7 @@ def main(memory_monitor=None, cohort_mode='critical_illness') -> bool:
         if cohort_mode == 'ward'
         else 'final_tableone_df.parquet'
     )
-    final_tableone_df.to_parquet(project_root / 'output/intermediate' / _final_parquet_name)
+    final_tableone_df.to_parquet(intermediate_dir / _final_parquet_name)
 
     # ============================================================================
     # Step 6: Generate Stratified Summary CSVs by Encounter Type

@@ -33,8 +33,17 @@ export const api = {
   clearAllFeedback: () => request('DELETE', '/feedback'),
   downloadReport: (type) => `${BASE}/reports/download/${type}`,  // returns URL string
   tableReport: (name) => `${BASE}/reports/table/${name}`,  // returns URL string
+  // Table One — legacy (cohort='ci' implied), kept for any caller that hasn't migrated.
   getTableone: (key) => request('GET', `/tableone/${key}`),
   getTableoneTab: (tab) => request('GET', `/tableone/data/${tab}`),
   getTableoneImage: (filename) => `${BASE}/tableone/images/${filename}`,  // returns URL string
+  // Table One — cohort-aware (cohort ∈ 'ci' | 'ward')
+  getTableoneAvailable: (cohort) => request('GET', `/tableone/${cohort}/available`),
+  getTableoneStrobe: (cohort) => request('GET', `/tableone/${cohort}/strobe`),
+  getTableoneTabFor: (cohort, tab) => request('GET', `/tableone/${cohort}/data/${tab}`),
+  getTableoneImageFor: (cohort, filename) => `${BASE}/tableone/${cohort}/images/${filename}`,
+  // Strata: lazy per-stratum fetch.  /strata returns the list; /strata/{stratum} returns its tables.
+  getTableoneStrataList: (cohort) => request('GET', `/tableone/${cohort}/strata`),
+  getTableoneStratum: (cohort, stratum) => request('GET', `/tableone/${cohort}/strata/${stratum}`),
   getMcide: (name) => request('GET', `/mcide/${name}`),
 };

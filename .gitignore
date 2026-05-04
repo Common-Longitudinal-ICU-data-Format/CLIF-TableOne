@@ -70,3 +70,7 @@ consortium_figures.py
 
 # Local-only suppression calibration tool — sites' raw exports + review HTML/CSV
 dev/calibrate_suppression/
+
+
+CLIF-TableOne-2025-all-sites/
+dev/

@@ -253,10 +253,12 @@ class ProgressDisplay:
     def _strip_ansi(s):
         return _ANSI_RE.sub("", s)
 
-    # Text that signals the workflow is done and the web app is about to
-    # start.  When we see any of these, snap the bar to 100% and tear the
-    # live display down so uvicorn's output can scroll normally.
+    # Text that signals the workflow is done.  When we see any of these,
+    # snap the bar to 100% and tear the live display down so the summary
+    # block (runtime, per-step status, Overall Status) and any uvicorn
+    # output can scroll normally on the terminal.
     _END_OF_WORKFLOW_MARKERS = (
+        "workflow summary",
         "launching web app",
         "🚀 launching web app",
     )

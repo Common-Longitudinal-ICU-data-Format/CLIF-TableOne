@@ -369,6 +369,72 @@ class ClifDB:
             ), []
         return "LOWER(TRIM(d.reference_unit)) = ?", [unit_l]
 
+    # -- batch ECDF helpers (Phase: ECDF optimization) -------------------------
+
+    def preload_icu_joined_view(self, table_name: str, value_col: str,
+                                 datetime_col: str, category_col: str = None) -> str:
+        """Create a DuckDB temp view pre-joined with icu_windows + temporal filter.
+
+        Returns the view name.  Subsequent queries against this view avoid
+        re-reading parquet metadata and re-joining on every call.
+        """
+        parquet_path = self.table_path(table_name)
+        view_name = f"_icu_{table_name}"
+        cols = f"d.hospitalization_id, d.{value_col}, d.{datetime_col}"
+        if category_col:
+            cols += f", LOWER(TRIM(d.{category_col})) AS _category"
+        if table_name == 'labs':
+            cols += ", LOWER(TRIM(d.reference_unit)) AS _unit"
+
+        sql = f"""
+            CREATE OR REPLACE TEMP VIEW {view_name} AS
+            SELECT {cols}
+            FROM read_parquet('{parquet_path}') AS d
+            INNER JOIN icu_windows AS w USING (hospitalization_id)
+            WHERE d.{datetime_col}::TIMESTAMP BETWEEN w.in_dttm AND w.out_dttm
+        """
+        if category_col is None:
+            sql += f" AND d.{value_col} IS NOT NULL"
+        self._con.execute(sql)
+        logger.info("Registered ICU-joined view '%s' for %s", view_name, table_name)
+        return view_name
+
+    def fetch_batch_categories(self, view_name: str, value_col: str,
+                                categories: list, table_type: str = 'labs') -> dict:
+        """Fetch values for ALL categories in one query from a pre-joined view.
+
+        Returns dict of ``{(category, unit_or_None): numpy.ndarray}``.
+        """
+        import numpy as _np
+
+        if table_type == 'labs':
+            sql = f"""
+                SELECT _category, _unit, {value_col}
+                FROM {view_name}
+                WHERE _category IS NOT NULL
+            """
+            result = self._con.execute(sql).fetchdf()
+            out = {}
+            for (cat, unit), grp in result.groupby(['_category', '_unit']):
+                vals = grp[value_col].dropna().to_numpy()
+                if len(vals) > 0:
+                    out[(cat, unit)] = vals
+            return out
+        else:
+            # vitals — no unit column
+            sql = f"""
+                SELECT _category, {value_col}
+                FROM {view_name}
+                WHERE _category IS NOT NULL
+            """
+            result = self._con.execute(sql).fetchdf()
+            out = {}
+            for cat, grp in result.groupby('_category'):
+                vals = grp[value_col].dropna().to_numpy()
+                if len(vals) > 0:
+                    out[(cat, None)] = vals
+            return out
+
     # -- lifecycle -----------------------------------------------------------
 
     def close(self) -> None:

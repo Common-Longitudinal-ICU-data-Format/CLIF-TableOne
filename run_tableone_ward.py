@@ -29,11 +29,16 @@ def main():
         action='store_true',
         help='Enable detailed memory profiling'
     )
+    parser.add_argument(
+        '--force-refresh',
+        action='store_true',
+        help='Bypass filtered-CLIF-table cache and rebuild from raw source parquets'
+    )
     args = parser.parse_args()
 
     try:
         # Initialize and run the Ward Table One generator
-        runner = TableOneRunner(cohort_mode='ward')
+        runner = TableOneRunner(cohort_mode='ward', force_refresh=args.force_refresh)
         success = runner.run(profile_mode=args.profile)
 
         # Exit with appropriate code

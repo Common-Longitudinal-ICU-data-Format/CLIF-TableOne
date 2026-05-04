@@ -143,7 +143,11 @@ class BaseTableAnalyzer(ABC):
                 dtype = original_schema[col_name]
                 if hasattr(dtype, 'time_zone') and dtype.time_zone is None:
                     lf = lf.with_columns(
-                        pl.col(col_name).dt.replace_time_zone(self.timezone)
+                        pl.col(col_name).dt.replace_time_zone(
+                            self.timezone,
+                            non_existent='null',
+                            ambiguous='earliest',
+                        )
                     )
 
             # Cast _id columns to string (matches clifpy behavior)
@@ -472,25 +476,55 @@ class BaseTableAnalyzer(ABC):
             json.dump(serializable, f, indent=2, default=str)
 
     def save_monthly_trend_csvs(self, dqa_result: Dict[str, Any]) -> Optional[str]:
-        """Extract monthly trends from P.6 result and save as CSVs to validation/monthly_trends/."""
-        from modules.utils.output_paths import validation_monthly_trends_dir
+        """Extract monthly trends from P.6 result and write CSVs in two places:
+
+        - /intermediate/validation/monthly_trends/<table>_<col>_monthly.csv
+          (per-month detail, raw N — local QA only, not shareable because
+          single-digit (month, category) cells are a small-cell risk)
+        - /final/validation/monthly_trends/<table>_<col>_overall.csv
+          (per-category counts collapsed across all months — time dimension
+          gone, so the small-cell risk that drives the policy is gone too)
+        """
+        from modules.utils.output_paths import (
+            validation_monthly_trends_dir,
+            validation_monthly_trends_raw_dir,
+        )
         p6 = dqa_result.get('plausibility', {}).get('category_temporal_consistency', {})
         monthly_trends = p6.get('metrics', {}).get('monthly_trends', {})
         if not monthly_trends:
             return None
 
         table_name = self.get_table_name()
-        trends_dir = validation_monthly_trends_dir()
-        trends_dir.mkdir(parents=True, exist_ok=True)
+        raw_dir   = validation_monthly_trends_raw_dir()
+        final_dir = validation_monthly_trends_dir()
+        raw_dir.mkdir(parents=True, exist_ok=True)
+        final_dir.mkdir(parents=True, exist_ok=True)
 
         for cat_col, records in monthly_trends.items():
             if not records:
                 continue
-            filepath = str(trends_dir / f"{table_name}_{cat_col}_monthly.csv")
             df = pd.DataFrame(records)
-            df.to_csv(filepath, index=False)
 
-        return str(trends_dir)
+            # Per-month detail → /intermediate (raw, unsuppressed).
+            df.to_csv(raw_dir / f"{table_name}_{cat_col}_monthly.csv", index=False)
+
+            # All-time per-category aggregate → /final.
+            # Sum n across months. Drop 'avg' from the overall — its meaning
+            # is ambiguous when collapsing time, and the per-month file
+            # already carries it for QA.
+            if 'n' in df.columns:
+                group_cols = [c for c in df.columns if c not in ('month_year', 'n', 'avg')]
+                if group_cols:
+                    df_overall = (
+                        df.groupby(group_cols, dropna=False, as_index=False)
+                          .agg(n=('n', 'sum'))
+                    )
+                    df_overall.to_csv(
+                        final_dir / f"{table_name}_{cat_col}_overall.csv",
+                        index=False,
+                    )
+
+        return str(final_dir)
 
     def get_table_name(self) -> str:
         """Get the table name from the analyzer class."""

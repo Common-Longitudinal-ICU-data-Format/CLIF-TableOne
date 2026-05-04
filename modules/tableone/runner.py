@@ -18,18 +18,21 @@ from modules.utils.memory_monitor import MemoryMonitor
 class TableOneRunner:
     """Runner for Table One generation with memory monitoring and validation."""
 
-    def __init__(self, config=None, cohort_mode='critical_illness'):
+    def __init__(self, config=None, cohort_mode='critical_illness', force_refresh=False):
         """Initialize Table One runner with configuration.
 
         Args:
             config: Optional config dict. Loaded from config/config.json if None.
             cohort_mode: 'critical_illness' (default) or 'ward'. Drives which Table
                 One pipeline runs and where outputs are written.
+            force_refresh: If True, bypass the filtered-CLIF-table cache and
+                rebuild from raw source parquets.
         """
         self.config = config or self.load_config()
         self.memory_monitor = None
         self.project_root = Path(__file__).parent.parent.parent
         self.cohort_mode = cohort_mode
+        self.force_refresh = force_refresh
 
     def load_config(self):
         """Load configuration from config.json."""
@@ -147,7 +150,7 @@ class TableOneRunner:
         try:
             # Import and execute the main function with memory monitoring
             from .generator import main
-            success = main(memory_monitor=self.memory_monitor, cohort_mode=self.cohort_mode)
+            success = main(memory_monitor=self.memory_monitor, cohort_mode=self.cohort_mode, force_refresh=self.force_refresh)
 
             self.memory_monitor.checkpoint("Script Complete")
 

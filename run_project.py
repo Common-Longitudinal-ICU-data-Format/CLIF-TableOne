@@ -8,9 +8,10 @@ This script orchestrates the complete CLIF analysis workflow:
 3. Automatic web app launch (on successful completion)
 
 Usage:
-    python run_project.py                          # Full validation + table one + app
+    python run_project.py                          # Full: validation + CI + ward + ECDF + app
+    python run_project.py --no-ward --no-ecdf      # CI table one only (fastest)
     python run_project.py --validate-only          # Only run validation
-    python run_project.py --tableone-only          # Only run table one + app
+    python run_project.py --tableone-only          # CI + ward table one (no validation/ECDF)
     python run_project.py --tables patient adt     # Validate specific tables
     python run_project.py --no-launch-app          # Skip automatic app launch
 """
@@ -19,6 +20,14 @@ import os
 import sys
 import io
 import warnings
+
+# Force the headless matplotlib backend BEFORE any matplotlib import in this
+# process or any child subprocess. Without this, macOS picks the "MacOSX"
+# GUI backend on first import, which registers Python as a foreground app and
+# spawns a dock icon (the rainbow pinwheel) for the duration of the run.
+# Setting MPLBACKEND in os.environ also propagates to subprocess.Popen children
+# (run_tableone_ward.py, run_ecdf.py, run_analysis.py) so they're headless too.
+os.environ.setdefault("MPLBACKEND", "Agg")
 
 # Silence pandas FutureWarnings (and related deprecations) before anything else
 # imports pandas.  Propagated to subprocesses below via PYTHONWARNINGS.
@@ -52,9 +61,10 @@ from datetime import datetime
 class ProjectRunner:
     """Orchestrates the complete CLIF analysis workflow."""
 
-    def __init__(self, config_path='config/config.json', verbose=False):
+    def __init__(self, config_path='config/config.json', verbose=False, force_refresh=False):
         self.config_path = config_path
         self.verbose = verbose
+        self.force_refresh = force_refresh
         self.config = self.load_config()
         self.start_time = datetime.now()
         self.log_file = self.setup_logging()
@@ -390,7 +400,7 @@ class ProjectRunner:
                 sys.stdout = TeeOutput(old_stdout, stdout_capture)
 
                 # Use the new TableOneRunner directly
-                runner = TableOneRunner(self.config)
+                runner = TableOneRunner(self.config, force_refresh=self.force_refresh)
                 success = runner.run(profile_mode=False)
 
             finally:
@@ -441,6 +451,8 @@ class ProjectRunner:
         self.logger.info("(memory from any prior in-process Table One run is released before this starts)")
 
         cmd = [sys.executable, 'run_tableone_ward.py']
+        if self.force_refresh:
+            cmd.append('--force-refresh')
         self.logger.info(f"Running: {' '.join(cmd)}")
 
         try:
@@ -726,14 +738,53 @@ class ProjectRunner:
             print(message)
             self.logger.info(message)
 
+        # ⏱️ Total runtime — surfaced FIRST in the summary block and also
+        # mirrored to stdout via plain print() so it's visible on the terminal
+        # even when the user has redirected the workflow log to a file.
+        _h = int(elapsed_time // 3600)
+        _m = int((elapsed_time % 3600) // 60)
+        _s = elapsed_time % 60
+        if _h:
+            _hms = f"{_h}h {_m}m {_s:.1f}s"
+        elif _m:
+            _hms = f"{_m}m {_s:.1f}s"
+        else:
+            _hms = f"{_s:.1f}s"
+        total_time_line = (
+            f"⏱️  TOTAL RUNTIME: {_hms}  "
+            f"({elapsed_time:.1f} s / {elapsed_time/60:.1f} min)"
+        )
+        # Print both ways: stdout for terminal visibility, logger for the log file.
+        print("\n" + "=" * len(total_time_line))
+        print(total_time_line)
+        print("=" * len(total_time_line) + "\n")
+        self.logger.info(total_time_line)
+
         print_and_log(f"Start Time: {self.start_time.strftime('%Y-%m-%d %H:%M:%S')}")
         print_and_log(f"End Time:   {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
         print_and_log(f"Duration:   {elapsed_time:.1f} seconds ({elapsed_time/60:.1f} minutes)\n")
 
+        # Per-step status. Distinguish:
+        #   exit_code == 0       → [SUCCESS]
+        #   exit_code == 2       → [PARTIAL] (e.g. validation: pipeline ran but
+        #                          some tables had errors / one was absent)
+        #   any other non-zero   → [FAILED]
+        def _status(result):
+            if not result:
+                return None
+            if result.get('success'):
+                return "[SUCCESS]"
+            if result.get('exit_code') == 2:
+                return "[PARTIAL]"
+            return "[FAILED]"
+
+        step_statuses = []  # for overall rollup
+
         # Validation results
         if self.results['validation']:
-            val_status = "[SUCCESS]" if self.results['validation']['success'] else "[FAILED]"
+            val_status = _status(self.results['validation'])
             print_and_log(f"Validation:        {val_status}")
+            step_statuses.append(val_status)
 
             # Show critical tables status if relevant
             if 'critical_tables_ok' in self.results['validation']:
@@ -742,29 +793,43 @@ class ProjectRunner:
 
         # Table One results
         if self.results['tableone']:
-            tbl_status = "[SUCCESS]" if self.results['tableone']['success'] else "[FAILED]"
+            tbl_status = _status(self.results['tableone'])
             print_and_log(f"Table One (CI):    {tbl_status}")
+            step_statuses.append(tbl_status)
 
         # Ward Table One results
         if self.results['tableone_ward']:
-            ward_status = "[SUCCESS]" if self.results['tableone_ward']['success'] else "[FAILED]"
+            ward_status = _status(self.results['tableone_ward'])
             print_and_log(f"Table One (Ward):  {ward_status}")
+            step_statuses.append(ward_status)
 
         # Get ECDF results
         if self.results['get_ecdf']:
-            ecdf_status = "[SUCCESS]" if self.results['get_ecdf']['success'] else "[FAILED]"
+            ecdf_status = _status(self.results['get_ecdf'])
             print_and_log(f"Get ECDF:          {ecdf_status}")
+            step_statuses.append(ecdf_status)
 
-        # Overall success now only depends on validation critical tables
-        # App should launch unless critical tables validation fails
-        if self.results['validation']:
-            # Success if critical tables passed (even if overall validation had some failures)
-            self.results['overall_success'] = self.results['validation'].get('critical_tables_ok', False)
+        # Overall rollup: SUCCESS only if every step was SUCCESS; PARTIAL if any
+        # step is PARTIAL and none are FAILED; FAILED if any step is FAILED.
+        # Critical-tables gate still controls whether the app may launch.
+        if "[FAILED]" in step_statuses:
+            overall = "[FAILED]"
+        elif "[PARTIAL]" in step_statuses:
+            overall = "[PARTIAL]"
         else:
-            # If validation wasn't run, consider it successful (for --tableone-only mode)
-            self.results['overall_success'] = True
+            overall = "[SUCCESS]"
 
-        print_and_log(f"\nOverall Status:    {'[SUCCESS]' if self.results['overall_success'] else '[FAILED]'}")
+        if self.results['validation']:
+            # App-launch gate: critical tables must pass; PARTIAL on validation
+            # is still allowed to proceed downstream.
+            self.results['overall_success'] = (
+                self.results['validation'].get('critical_tables_ok', False)
+                and overall != "[FAILED]"
+            )
+        else:
+            self.results['overall_success'] = (overall != "[FAILED]")
+
+        print_and_log(f"\nOverall Status:    {overall}")
 
         # Output locations
         print_and_log(f"\n[FOLDER] Output Locations:")
@@ -1129,9 +1194,9 @@ Examples:
   %(prog)s --ward-only                        # Only ward table one (isolated subprocess)
   %(prog)s --get-ecdf-only                    # Only get ECDF bins
   %(prog)s --get-ecdf-only --visualize        # Get ECDF + interactive HTML viewers
-  %(prog)s --ward                             # Full workflow + ward table one
-  %(prog)s --get-ecdf --ward                  # Full workflow + ward table one + ECDF
-  %(prog)s --tableone-only --ward             # Both critical-illness and ward table ones
+  %(prog)s --no-ward                          # Full workflow without ward table one
+  %(prog)s --no-ecdf                          # Full workflow without ECDF generation
+  %(prog)s --no-ward --no-ecdf                # CI table one only (fastest full run)
   %(prog)s --tables patient adt               # Validate specific tables
         """
     )
@@ -1144,20 +1209,24 @@ Examples:
                                 help='Only run critical-illness table one generation step')
     workflow_group.add_argument('--ward-only', action='store_true',
                                 help='Only run ward table one generation step (isolated subprocess)')
-    workflow_group.add_argument('--ward', action='store_true',
-                                help='Include ward table one generation in workflow (runs after '
-                                     'critical-illness table one in an isolated subprocess so peak '
-                                     'RAM equals max of the two cohorts, not the sum)')
+    workflow_group.add_argument('--ward', action='store_true', default=None,
+                                help='(deprecated, now default) Include ward table one generation')
+    workflow_group.add_argument('--no-ward', action='store_true',
+                                help='Skip ward table one generation')
     workflow_group.add_argument('--get-ecdf-only', action='store_true',
                                 help='Only run get ECDF bins step')
-    workflow_group.add_argument('--get-ecdf', action='store_true',
-                                help='Include get ECDF bins in workflow')
+    workflow_group.add_argument('--get-ecdf', action='store_true', default=None,
+                                help='(deprecated, now default) Include get ECDF bins')
+    workflow_group.add_argument('--no-ecdf', action='store_true',
+                                help='Skip ECDF generation')
     workflow_group.add_argument('--visualize', action='store_true',
                                 help='Generate interactive HTML distribution viewers (for get ECDF)')
     workflow_group.add_argument('--continue-on-error', action='store_true',
                                 help='Continue to next step even if previous step fails')
     workflow_group.add_argument('--no-launch-app', action='store_true',
                                 help='Skip automatic web app launch after completion')
+    workflow_group.add_argument('--force-refresh', action='store_true',
+                                help='Bypass filtered-CLIF-table cache and rebuild from raw source parquets')
 
     # Validation options
     validation_group = parser.add_argument_group('Validation Options')
@@ -1190,7 +1259,7 @@ Examples:
     elif args.tableone_only:
         validate = False
         tableone = True
-        ward_tableone = args.ward  # allow --tableone-only --ward to run both table ones
+        ward_tableone = not args.no_ward
         get_ecdf = False
     elif args.ward_only:
         validate = False
@@ -1203,13 +1272,11 @@ Examples:
         ward_tableone = False
         get_ecdf = True
     else:
-        # Default: run validation and tableone
+        # Default: run validation + tableone + ward + ecdf (opt-out via --no-ward / --no-ecdf)
         validate = True
         tableone = True
-        # Ward table one only if explicitly requested
-        ward_tableone = args.ward
-        # Get ECDF only if explicitly requested
-        get_ecdf = args.get_ecdf
+        ward_tableone = not args.no_ward
+        get_ecdf = not args.no_ecdf
 
     # Default terminal UX: live rich progress bar.  --verbose keeps the
     # full scroll behavior.  File logs are captured the same way in both modes.
@@ -1275,7 +1342,7 @@ Examples:
             _orig_stderr = None
 
     # Initialize runner
-    runner = ProjectRunner(config_path=args.config, verbose=args.verbose)
+    runner = ProjectRunner(config_path=args.config, verbose=args.verbose, force_refresh=args.force_refresh)
 
     # Run workflow
     try:
