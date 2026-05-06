@@ -133,6 +133,19 @@ from .outcomes_stats import (
 
 
 
+def _safe_timedelta_seconds(a, b):
+    """Compute (a - b) in seconds, handling mixed tz-aware/naive datetimes.
+
+    Sites store datetimes inconsistently (some tz-aware, some naive).
+    Subtracting mismatched types raises 'cannot subtract DatetimeArray
+    from ndarray'.  This helper normalizes both sides to tz-naive UTC
+    before subtraction.
+    """
+    a = pd.to_datetime(a, utc=True).dt.tz_localize(None)
+    b = pd.to_datetime(b, utc=True).dt.tz_localize(None)
+    return (a - b).dt.total_seconds()
+
+
 def main(memory_monitor=None, cohort_mode='critical_illness', force_refresh=False) -> bool:
     """
     Main execution function for Table One generation.
@@ -2182,8 +2195,7 @@ def main(memory_monitor=None, cohort_mode='critical_illness', force_refresh=Fals
 
     # compute LOS in days (out - in)
     icu_summary['first_icu_los_days'] = (
-        (icu_summary['first_icu_out_dttm'] - icu_summary['first_icu_in_dttm'])
-        .dt.total_seconds()
+        _safe_timedelta_seconds(icu_summary['first_icu_out_dttm'], icu_summary['first_icu_in_dttm'])
         / (3600 * 24)
     )
 
@@ -2637,8 +2649,8 @@ def main(memory_monitor=None, cohort_mode='critical_illness', force_refresh=Fals
 
         # Step 2: Duration this device was "in effect"
         resp_stitched['duration_hours'] = (
-            (resp_stitched['next_recorded_dttm'] - resp_stitched['recorded_dttm'])
-            .dt.total_seconds() / 3600
+            _safe_timedelta_seconds(resp_stitched['next_recorded_dttm'], resp_stitched['recorded_dttm'])
+            / 3600
         )
 
         # Log duration calculation for same IMV encounter as waterfall sample
@@ -2896,7 +2908,7 @@ def main(memory_monitor=None, cohort_mode='critical_illness', force_refresh=Fals
 
         # Calculate hours from vent start (time 0)
         resp_imv['hours_from_vent_start'] = (
-            (resp_imv['recorded_dttm'] - resp_imv['vent_start_dttm']).dt.total_seconds() / 3600
+            _safe_timedelta_seconds(resp_imv['recorded_dttm'], resp_imv['vent_start_dttm']) / 3600
         )
 
         # Filter to only records at or after vent start
@@ -3848,8 +3860,9 @@ def main(memory_monitor=None, cohort_mode='critical_illness', force_refresh=Fals
         )
 
         meds_merged['hours_from_icu'] = (
-            pd.to_datetime(meds_merged['admin_dttm']) - pd.to_datetime(meds_merged['first_icu_in_dttm'])
-        ).dt.total_seconds() / 3600
+            _safe_timedelta_seconds(meds_merged['admin_dttm'], meds_merged['first_icu_in_dttm'])
+            / 3600
+        )
 
         # Filter and bin (vectorized), handle non-finite for hour_bin, avoid IntCastingNaNError
         meds_merged['med_lower'] = meds_merged['med_category'].str.lower()
@@ -3993,8 +4006,9 @@ def main(memory_monitor=None, cohort_mode='critical_illness', force_refresh=Fals
         )
 
         meds_merged['hours_from_icu'] = (
-            pd.to_datetime(meds_merged['admin_dttm']) - pd.to_datetime(meds_merged['first_icu_in_dttm'])
-        ).dt.total_seconds() / 3600
+            _safe_timedelta_seconds(meds_merged['admin_dttm'], meds_merged['first_icu_in_dttm'])
+            / 3600
+        )
 
         meds_merged['med_lower'] = meds_merged['med_category'].str.lower()
         finite_mask = np.isfinite(meds_merged['hours_from_icu'])
@@ -4341,19 +4355,35 @@ def main(memory_monitor=None, cohort_mode='critical_illness', force_refresh=Fals
     # # Sepsis (CDC Adult Sepsis Event)
     # ==============================================================================
 
-    if cohort_mode == 'ward':
-        # Skip ASE entirely in ward mode. We deliberately do NOT add the
-        # sepsis_events_* columns here — their absence causes the Table One
-        # row builder (Sepsis events / Encounters with >=1 sepsis event)
-        # to skip those rows, so the ward CSV doesn't carry misleading 0/0%
-        # rows. CI cohort still computes and reports sepsis below.
-        print("\nSkipping ASE computation (ward mode); sepsis rows will be omitted from ward Table One")
-    else:
-        print(f"\nComputing Adult Sepsis Events (ASE)...")
-        ASE_BATCH_SIZE = 50_000
-        try:
+    # ── ASE (Adult Sepsis Event) — runs for BOTH CI and ward cohorts ──
+    # Results are cached to intermediate_dir so only the first cohort
+    # run pays the full DuckDB cost; the second reuses the cache.
+    print(f"\nComputing Adult Sepsis Events (ASE)...")
+    ASE_BATCH_SIZE = 50_000
+    _ase_cache_path = intermediate_dir / 'ase_cache.parquet'
+
+    try:
+        # ── Cache check: reuse if source data hasn't changed ──────
+        _ase_cache_valid = False
+        if _ase_cache_path.exists():
+            _src_tables = ['clif_labs', 'clif_vitals', 'clif_medication_admin_continuous']
+            _src_mtime = 0
+            for _tbl in _src_tables:
+                _p = Path(config['tables_path']) / f"{_tbl}.{config['file_type']}"
+                if _p.exists():
+                    _src_mtime = max(_src_mtime, _p.stat().st_mtime)
+            _ase_cache_valid = _ase_cache_path.stat().st_mtime >= _src_mtime
+            if _ase_cache_valid:
+                print(f"   ✅ ASE cache hit — loading from {_ase_cache_path.name}")
+
+        if _ase_cache_valid:
+            ase_df = pd.read_parquet(_ase_cache_path)
+            # Filter to this run's hospitalization IDs
+            ase_df = ase_df[ase_df['hospitalization_id'].isin(final_hosp_ids)]
+            print(f"   Loaded {len(ase_df):,} ASE rows for {ase_df['hospitalization_id'].nunique():,} hospitalizations (from cache)")
+        else:
+            # ── Full computation (batched) ────────────────────────
             if len(final_hosp_ids) > ASE_BATCH_SIZE:
-                # Batch to keep DuckDB memory bounded
                 batches = [
                     final_hosp_ids[i:i + ASE_BATCH_SIZE]
                     for i in range(0, len(final_hosp_ids), ASE_BATCH_SIZE)
@@ -4384,38 +4414,50 @@ def main(memory_monitor=None, cohort_mode='critical_illness', force_refresh=Fals
                     verbose=True
                 )
 
-            # ASE results contain hospitalization_id (direct identifier) — do
-            # NOT echo rows to the log. Summary line only.
-            print(f"\n✅ ASE computation complete: {len(ase_df):,} sepsis-event rows across {ase_df['hospitalization_id'].nunique():,} hospitalizations.\n")
+            # Cache for the sibling cohort run (CI → ward or ward → CI)
+            _ase_cache_path.parent.mkdir(parents=True, exist_ok=True)
+            ase_df.to_parquet(_ase_cache_path, index=False)
+            print(f"   Cached ASE → {_ase_cache_path.name}")
 
-            # Map hospitalization_id → encounter_block
-            ase_enc = ase_df.merge(
-                encounter_mapping[['hospitalization_id', 'encounter_block']],
-                on='hospitalization_id',
-                how='inner'
-            )
+        print(f"\n✅ ASE computation complete: {len(ase_df):,} sepsis-event rows across {ase_df['hospitalization_id'].nunique():,} hospitalizations.\n")
 
-            # Count sepsis events per encounter_block using both methods
-            sepsis_rows = ase_enc[ase_enc['sepsis'] == 1]
-            counts_by_sepsis = sepsis_rows.groupby('encounter_block').size().reset_index(name='sepsis_events_by_sepsis_col')
-            counts_by_episode = sepsis_rows.groupby('encounter_block')['episode_id'].count().reset_index(name='sepsis_events_by_episode_id')
+        # Map hospitalization_id → encounter_block
+        ase_enc = ase_df.merge(
+            encounter_mapping[['hospitalization_id', 'encounter_block']],
+            on='hospitalization_id',
+            how='inner'
+        )
 
-            sepsis_counts = counts_by_sepsis.merge(counts_by_episode, on='encounter_block', how='outer')
+        # Count sepsis events per encounter_block using both methods
+        sepsis_rows = ase_enc[ase_enc['sepsis'] == 1]
+        counts_by_sepsis = sepsis_rows.groupby('encounter_block').size().reset_index(name='sepsis_events_by_sepsis_col')
+        counts_by_episode = sepsis_rows.groupby('encounter_block')['episode_id'].count().reset_index(name='sepsis_events_by_episode_id')
 
-            final_tableone_df = final_tableone_df.merge(sepsis_counts, on='encounter_block', how='left')
-            final_tableone_df['sepsis_events_by_sepsis_col'] = final_tableone_df['sepsis_events_by_sepsis_col'].fillna(0).astype(int)
-            final_tableone_df['sepsis_events_by_episode_id'] = final_tableone_df['sepsis_events_by_episode_id'].fillna(0).astype(int)
+        sepsis_counts = counts_by_sepsis.merge(counts_by_episode, on='encounter_block', how='outer')
 
-            total_by_sepsis = final_tableone_df['sepsis_events_by_sepsis_col'].sum()
-            total_by_episode = final_tableone_df['sepsis_events_by_episode_id'].sum()
-            enc_with_sepsis = (final_tableone_df['sepsis_events_by_sepsis_col'] > 0).sum()
-            print(f"   Total sepsis events (via sepsis col): {total_by_sepsis:,}")
-            print(f"   Total sepsis events (via episode_id): {total_by_episode:,}")
-            print(f"   Encounters with >=1 sepsis event: {enc_with_sepsis:,} / {len(final_tableone_df):,}")
-        except Exception as e:
-            print(f"Warning: Failed to compute ASE: {e}. Proceeding without sepsis data.")
-            final_tableone_df['sepsis_events_by_sepsis_col'] = 0
-            final_tableone_df['sepsis_events_by_episode_id'] = 0
+        # Drop any pre-existing sepsis columns to avoid _x/_y suffixes
+        for _sc in ['sepsis_events_by_sepsis_col', 'sepsis_events_by_episode_id']:
+            if _sc in final_tableone_df.columns:
+                final_tableone_df = final_tableone_df.drop(columns=_sc)
+        final_tableone_df = final_tableone_df.merge(sepsis_counts, on='encounter_block', how='left')
+        final_tableone_df['sepsis_events_by_sepsis_col'] = final_tableone_df['sepsis_events_by_sepsis_col'].fillna(0).astype(int)
+        final_tableone_df['sepsis_events_by_episode_id'] = final_tableone_df['sepsis_events_by_episode_id'].fillna(0).astype(int)
+
+        total_by_sepsis = final_tableone_df['sepsis_events_by_sepsis_col'].sum()
+        total_by_episode = final_tableone_df['sepsis_events_by_episode_id'].sum()
+        enc_with_sepsis = (final_tableone_df['sepsis_events_by_sepsis_col'] > 0).sum()
+        print(f"   Total sepsis events (via sepsis col): {total_by_sepsis:,}")
+        print(f"   Total sepsis events (via episode_id): {total_by_episode:,}")
+        print(f"   Encounters with >=1 sepsis event: {enc_with_sepsis:,} / {len(final_tableone_df):,}")
+
+        # Add sepsis incidence to strobe counts
+        strobe_counts['sepsis_encounters'] = int(enc_with_sepsis)
+        strobe_counts['sepsis_incidence_pct'] = round(100 * enc_with_sepsis / len(final_tableone_df), 1) if len(final_tableone_df) > 0 else 0
+
+    except Exception as e:
+        print(f"Warning: Failed to compute ASE: {e}. Proceeding without sepsis data.")
+        final_tableone_df['sepsis_events_by_sepsis_col'] = 0
+        final_tableone_df['sepsis_events_by_episode_id'] = 0
 
     checkpoint("Sepsis Complete")
 
@@ -5286,7 +5328,143 @@ def main(memory_monitor=None, cohort_mode='critical_illness', force_refresh=Fals
 
     if cohort_mode == 'ward':
         print("\nSkipping IMV / respiratory support characteristics block (ward mode)")
+
+        # ── Ward ASE: load from CI run's cache or compute fresh ───────
+        _ase_cache_path = intermediate_dir / 'ase_cache.parquet'
+        print(f"\nComputing Adult Sepsis Events (ASE) for ward cohort...")
+        try:
+            _ase_cache_valid = False
+            if _ase_cache_path.exists():
+                _src_tables = ['clif_labs', 'clif_vitals', 'clif_medication_admin_continuous']
+                _src_mtime = 0
+                for _tbl in _src_tables:
+                    _p = Path(config['tables_path']) / f"{_tbl}.{config['file_type']}"
+                    if _p.exists():
+                        _src_mtime = max(_src_mtime, _p.stat().st_mtime)
+                _ase_cache_valid = _ase_cache_path.stat().st_mtime >= _src_mtime
+
+            if _ase_cache_valid:
+                ase_df = pd.read_parquet(_ase_cache_path)
+                ase_df = ase_df[ase_df['hospitalization_id'].isin(final_hosp_ids)]
+                print(f"   ✅ ASE cache hit — {len(ase_df):,} rows for ward cohort")
+            else:
+                ASE_BATCH_SIZE = 50_000
+                if len(final_hosp_ids) > ASE_BATCH_SIZE:
+                    batches = [
+                        final_hosp_ids[i:i + ASE_BATCH_SIZE]
+                        for i in range(0, len(final_hosp_ids), ASE_BATCH_SIZE)
+                    ]
+                    print(f"   Processing {len(final_hosp_ids):,} hospitalizations in {len(batches)} batches of ≤{ASE_BATCH_SIZE:,}")
+                    ase_parts = []
+                    for idx, batch_ids in enumerate(batches, 1):
+                        print(f"   Batch {idx}/{len(batches)} ({len(batch_ids):,} IDs)...")
+                        part = compute_ase(
+                            hospitalization_ids=batch_ids,
+                            config_path=config_path,
+                            data_directory=config['tables_path'],
+                            filetype=config['file_type'],
+                            verbose=False
+                        )
+                        ase_parts.append(part)
+                        gc.collect()
+                    ase_df = pd.concat(ase_parts, ignore_index=True)
+                    del ase_parts
+                    gc.collect()
+                else:
+                    ase_df = compute_ase(
+                        hospitalization_ids=final_hosp_ids,
+                        config_path=config_path,
+                        data_directory=config['tables_path'],
+                        filetype=config['file_type'],
+                        verbose=True
+                    )
+                _ase_cache_path.parent.mkdir(parents=True, exist_ok=True)
+                ase_df.to_parquet(_ase_cache_path, index=False)
+                print(f"   Cached ASE → {_ase_cache_path.name}")
+
+            # Map hospitalization_id → encounter_block and merge
+            ase_enc = ase_df.merge(
+                encounter_mapping[['hospitalization_id', 'encounter_block']],
+                on='hospitalization_id', how='inner'
+            )
+            sepsis_rows = ase_enc[ase_enc['sepsis'] == 1]
+            counts_by_sepsis = sepsis_rows.groupby('encounter_block').size().reset_index(name='sepsis_events_by_sepsis_col')
+            counts_by_episode = sepsis_rows.groupby('encounter_block')['episode_id'].count().reset_index(name='sepsis_events_by_episode_id')
+            sepsis_counts = counts_by_sepsis.merge(counts_by_episode, on='encounter_block', how='outer')
+            # Drop any pre-existing sepsis columns to avoid _x/_y suffixes
+            for _sc in ['sepsis_events_by_sepsis_col', 'sepsis_events_by_episode_id']:
+                if _sc in final_tableone_df.columns:
+                    final_tableone_df = final_tableone_df.drop(columns=_sc)
+            final_tableone_df = final_tableone_df.merge(sepsis_counts, on='encounter_block', how='left')
+            final_tableone_df['sepsis_events_by_sepsis_col'] = final_tableone_df['sepsis_events_by_sepsis_col'].fillna(0).astype(int)
+            final_tableone_df['sepsis_events_by_episode_id'] = final_tableone_df['sepsis_events_by_episode_id'].fillna(0).astype(int)
+
+            enc_with_sepsis = (final_tableone_df['sepsis_events_by_sepsis_col'] > 0).sum()
+            print(f"   Encounters with >=1 sepsis event: {enc_with_sepsis:,} / {len(final_tableone_df):,}")
+            strobe_counts['sepsis_encounters'] = int(enc_with_sepsis)
+            strobe_counts['sepsis_incidence_pct'] = round(100 * enc_with_sepsis / len(final_tableone_df), 1) if len(final_tableone_df) > 0 else 0
+            del ase_df, ase_enc
+        except Exception as e:
+            print(f"   ⚠️ Ward ASE failed: {e}. Proceeding without sepsis data.")
+
     else:
+        # ── Pre-compute ASE cache for full cohort before year loop ─────
+        # ASE is expensive (DuckDB joins labs+vitals+meds per encounter).
+        # Compute once for all IDs, cache to parquet. The per-year passes
+        # inside _compute_per_encounter_features load from cache + filter.
+        _ase_cache_path = intermediate_dir / 'ase_cache.parquet'
+        _ase_cache_valid = False
+        if _ase_cache_path.exists():
+            _src_tables = ['clif_labs', 'clif_vitals', 'clif_medication_admin_continuous']
+            _src_mtime = 0
+            for _tbl in _src_tables:
+                _p = Path(config['tables_path']) / f"{_tbl}.{config['file_type']}"
+                if _p.exists():
+                    _src_mtime = max(_src_mtime, _p.stat().st_mtime)
+            _ase_cache_valid = _ase_cache_path.stat().st_mtime >= _src_mtime
+
+        if not _ase_cache_valid:
+            print(f"\nPre-computing ASE for full cohort ({len(final_hosp_ids):,} IDs) before year loop...")
+            ASE_BATCH_SIZE = 50_000
+            try:
+                if len(final_hosp_ids) > ASE_BATCH_SIZE:
+                    batches = [
+                        final_hosp_ids[i:i + ASE_BATCH_SIZE]
+                        for i in range(0, len(final_hosp_ids), ASE_BATCH_SIZE)
+                    ]
+                    print(f"   Processing in {len(batches)} batches of ≤{ASE_BATCH_SIZE:,}")
+                    ase_parts = []
+                    for idx, batch_ids in enumerate(batches, 1):
+                        print(f"   Batch {idx}/{len(batches)} ({len(batch_ids):,} IDs)...")
+                        part = compute_ase(
+                            hospitalization_ids=batch_ids,
+                            config_path=config_path,
+                            data_directory=config['tables_path'],
+                            filetype=config['file_type'],
+                            verbose=False
+                        )
+                        ase_parts.append(part)
+                        gc.collect()
+                    _ase_full = pd.concat(ase_parts, ignore_index=True)
+                    del ase_parts
+                else:
+                    _ase_full = compute_ase(
+                        hospitalization_ids=final_hosp_ids,
+                        config_path=config_path,
+                        data_directory=config['tables_path'],
+                        filetype=config['file_type'],
+                        verbose=True
+                    )
+                _ase_cache_path.parent.mkdir(parents=True, exist_ok=True)
+                _ase_full.to_parquet(_ase_cache_path, index=False)
+                print(f"   ✅ ASE pre-computed and cached: {len(_ase_full):,} rows → {_ase_cache_path.name}")
+                del _ase_full
+                gc.collect()
+            except Exception as e:
+                print(f"   ⚠️ ASE pre-computation failed: {e}. Per-year passes will attempt individually.")
+        else:
+            print(f"\n✅ ASE cache valid — year passes will load from {_ase_cache_path.name}")
+
         # ── Year-sharded processing (Phase 3c) ──────────────────────────
         # Process each admission_year independently so only one year's
         # heavy CLIF tables are in memory at a time.
@@ -6021,11 +6199,13 @@ def main(memory_monitor=None, cohort_mode='critical_illness', force_refresh=Fals
 
                 if len(_strat_onset) > 0:
                     _strat_onset['pre_device_los_days'] = (
-                        _strat_onset['onset_dttm'] - _strat_onset['admission_dttm']
-                    ).dt.total_seconds() / 86400
+                        _safe_timedelta_seconds(_strat_onset['onset_dttm'], _strat_onset['admission_dttm'])
+                        / 86400
+                    )
                     _strat_onset['post_device_los_days'] = (
-                        _strat_onset['discharge_dttm'] - _strat_onset['onset_dttm']
-                    ).dt.total_seconds() / 86400
+                        _safe_timedelta_seconds(_strat_onset['discharge_dttm'], _strat_onset['onset_dttm'])
+                        / 86400
+                    )
 
                     def _device_los_stat(series):
                         d = series.dropna()

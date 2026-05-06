@@ -87,10 +87,9 @@ def calculate_time_to_icu_after_pressor(
     if len(sub) == 0:
         return pd.DataFrame(columns=[id_col, "time_to_icu_hours"])
 
-    # Defensive: coerce to datetime if not already typed.
+    # Defensive: coerce to tz-naive UTC to avoid mixed tz subtraction errors.
     for col in (pressor_dttm_col, icu_dttm_col):
-        if not pd.api.types.is_datetime64_any_dtype(sub[col]):
-            sub[col] = pd.to_datetime(sub[col], errors="coerce", utc=True)
+        sub[col] = pd.to_datetime(sub[col], utc=True, errors="coerce").dt.tz_localize(None)
 
     # Drop rows missing either timestamp (data-quality drop).
     sub = sub[sub[pressor_dttm_col].notna() & sub[icu_dttm_col].notna()].copy()
