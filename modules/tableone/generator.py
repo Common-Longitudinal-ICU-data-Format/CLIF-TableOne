@@ -99,6 +99,7 @@ import plotly.io as pio
 import polars as pl
 import seaborn as sns
 import sys
+import traceback
 import warnings
 
 
@@ -131,6 +132,11 @@ from .outcomes_stats import (
 )
 
 
+
+
+# Clinical threshold: minimum HFNC LPM to qualify as advanced respiratory support.
+# Used in cohort definition, NI device detection, and NIDFD computation.
+HFNC_LPM_THRESHOLD = 30
 
 
 def _safe_timedelta_seconds(a, b):
@@ -1186,7 +1192,7 @@ def main(memory_monitor=None, cohort_mode='critical_illness', force_refresh=Fals
     }).reset_index()
 
     encounter_locations['has_procedural_or_ld'] = encounter_locations['location_category'].apply(
-            lambda locs: any(loc in {'procedural', 'l&d'} for loc in locs)
+            lambda locs: any(loc in {'procedural', 'l&d'} for loc in locs if loc is not None)
         )
 
     # Step 3: Flag as procedural/L&D only if: 
@@ -1270,11 +1276,12 @@ def main(memory_monitor=None, cohort_mode='critical_illness', force_refresh=Fals
         except Exception as e:
             # If specific columns don't exist, try loading without the optional new columns
             print(f"⚠️ Warning: Could not load all requested columns: {e}")
+            traceback.print_exc()
             print("   Attempting to load with core columns only...")
 
-            # Core columns that should always exist
+            # Core columns that should always exist (exclude optional settings)
             core_rst_columns = [col for col in rst_required_columns
-                               if col not in ['flow_rate_set']]
+                               if col not in ['flow_rate_set', 'lpm_set']]
 
             clif.load_table('respiratory_support',
                                    columns=core_rst_columns,
@@ -1357,7 +1364,7 @@ def main(memory_monitor=None, cohort_mode='critical_illness', force_refresh=Fals
     )
     hfnc_mask = (
         (clif.respiratory_support.df['device_category'] == 'high flow nc')
-        & (clif.respiratory_support.df['lpm_set'] >= 30)
+        & (clif.respiratory_support.df['lpm_set'] >= HFNC_LPM_THRESHOLD)
     )
     advanced_support_hosp_ids = clif.respiratory_support.df.loc[
         always_mask | hfnc_mask, 'encounter_block'
@@ -1384,7 +1391,7 @@ def main(memory_monitor=None, cohort_mode='critical_illness', force_refresh=Fals
         (clif.respiratory_support.df['device_category'] == 'nippv')
         | (
             (clif.respiratory_support.df['device_category'] == 'high flow nc')
-            & (clif.respiratory_support.df['lpm_set'] >= 30)
+            & (clif.respiratory_support.df['lpm_set'] >= HFNC_LPM_THRESHOLD)
         ),
         'encounter_block'
     ].unique()
@@ -1615,13 +1622,13 @@ def main(memory_monitor=None, cohort_mode='critical_illness', force_refresh=Fals
     ]
 
     # Classify: any post-pressor ICU → ed_icu; any post-pressor ward (no ICU) → ed_ward
-    _post_locs = _post_pressor_adt.groupby('encounter_block')['location_category'].agg(set)
+    _post_locs = _post_pressor_adt.groupby('encounter_block')['location_category'].agg(lambda x: set(x.dropna()))
     ed_vaso_icu_blocks = set(
-        _post_locs[_post_locs.apply(lambda locs: any('icu' in loc for loc in locs))].index
+        _post_locs[_post_locs.apply(lambda locs: any('icu' in str(loc) for loc in locs if loc is not None))].index
     )
     ed_vaso_ward_blocks = set(
         _post_locs[
-            _post_locs.apply(lambda locs: 'ward' in locs and not any('icu' in loc for loc in locs))
+            _post_locs.apply(lambda locs: 'ward' in {l for l in locs if l is not None} and not any('icu' in str(loc) for loc in locs if loc is not None))
         ].index
     )
     print(f"  ED→ICU: {len(ed_vaso_icu_blocks):,}, ED→Ward: {len(ed_vaso_ward_blocks):,}")
@@ -1709,6 +1716,7 @@ def main(memory_monitor=None, cohort_mode='critical_illness', force_refresh=Fals
         strobe_counts['6_ward_no_critical_care'] = final_cohort.loc[
             final_cohort['ward_no_critical_care'] == 1, 'encounter_block'
         ].nunique()
+        strobe_counts['ward_cohort_total'] = final_cohort['encounter_block'].nunique()
     else:
         # In CI mode, final_cohort has already been filtered to critically-ill
         # encounters at the cohort_enc==1 step, so its size IS the count.
@@ -2515,6 +2523,7 @@ def main(memory_monitor=None, cohort_mode='critical_illness', force_refresh=Fals
             )
         except Exception as e:
             print(f"[WARN] ADT location coverage analysis failed: {e}")
+            traceback.print_exc()
 
 
     # ==============================================================================
@@ -2609,7 +2618,7 @@ def main(memory_monitor=None, cohort_mode='critical_illness', force_refresh=Fals
             resp_stitched['device_category'].isin(['nippv', 'cpap'])
             | (
                 (resp_stitched['device_category'] == 'high flow nc')
-                & (resp_stitched['lpm_set'] >= 30)
+                & (resp_stitched['lpm_set'] >= HFNC_LPM_THRESHOLD)
             )
         )
         _resp_ni = resp_stitched[_ni_mask]
@@ -2740,7 +2749,7 @@ def main(memory_monitor=None, cohort_mode='critical_illness', force_refresh=Fals
             )
         except Exception as e:
             print(f"  ⚠️ KM plot failed: {e}")
-            import traceback; traceback.print_exc()
+            traceback.print_exc()
 
         try:
             plot_min_pf_sf_per_day_post_intubation(
@@ -2753,7 +2762,7 @@ def main(memory_monitor=None, cohort_mode='critical_illness', force_refresh=Fals
             )
         except Exception as e:
             print(f"  ⚠️ Daily PF/SF plot failed: {e}")
-            import traceback; traceback.print_exc()
+            traceback.print_exc()
 
 
         # ==============================================================================
@@ -3345,6 +3354,7 @@ def main(memory_monitor=None, cohort_mode='critical_illness', force_refresh=Fals
             print("   Skipping ventilator settings table image generation")
         except Exception as e:
             print(f"⚠️ Error generating ventilator settings table: {e}")
+            traceback.print_exc()
             print("   Skipping ventilator settings table image generation")
 
         fig, ax = plt.subplots(figsize=(6, 8))
@@ -4361,6 +4371,8 @@ def main(memory_monitor=None, cohort_mode='critical_illness', force_refresh=Fals
     print(f"\nComputing Adult Sepsis Events (ASE)...")
     ASE_BATCH_SIZE = 50_000
     _ase_cache_path = intermediate_dir / 'ase_cache.parquet'
+    strobe_counts.setdefault('sepsis_encounters', 0)
+    strobe_counts.setdefault('sepsis_incidence_pct', 0)
 
     try:
         # ── Cache check: reuse if source data hasn't changed ──────
@@ -4456,6 +4468,7 @@ def main(memory_monitor=None, cohort_mode='critical_illness', force_refresh=Fals
 
     except Exception as e:
         print(f"Warning: Failed to compute ASE: {e}. Proceeding without sepsis data.")
+        traceback.print_exc()
         final_tableone_df['sepsis_events_by_sepsis_col'] = 0
         final_tableone_df['sepsis_events_by_episode_id'] = 0
 
@@ -5406,6 +5419,7 @@ def main(memory_monitor=None, cohort_mode='critical_illness', force_refresh=Fals
             del ase_df, ase_enc
         except Exception as e:
             print(f"   ⚠️ Ward ASE failed: {e}. Proceeding without sepsis data.")
+            traceback.print_exc()
 
     else:
         # ── Pre-compute ASE cache for full cohort before year loop ─────
@@ -5462,6 +5476,7 @@ def main(memory_monitor=None, cohort_mode='critical_illness', force_refresh=Fals
                 gc.collect()
             except Exception as e:
                 print(f"   ⚠️ ASE pre-computation failed: {e}. Per-year passes will attempt individually.")
+                traceback.print_exc()
         else:
             print(f"\n✅ ASE cache valid — year passes will load from {_ase_cache_path.name}")
 
@@ -5507,6 +5522,73 @@ def main(memory_monitor=None, cohort_mode='critical_illness', force_refresh=Fals
         print(f"{'='*80}")
         del _full_tableone_df, _full_hosp_ids, _resp_support_backup, _year_results
 
+
+    # ── Re-generate CONSORT diagram with sepsis incidence ────────────
+    # The first CONSORT was drawn before ASE ran (sepsis data unavailable).
+    # Now that strobe_counts has sepsis_encounters, regenerate with the
+    # sepsis % added to the final aggregate box.
+    if strobe_counts.get('sepsis_encounters', 0) > 0:
+        print("\nRegenerating CONSORT diagram with sepsis incidence...")
+        try:
+            _n_cohort = final_tableone_df['encounter_block'].nunique()
+            _n_sepsis = strobe_counts['sepsis_encounters']
+            _sepsis_pct = strobe_counts['sepsis_incidence_pct']
+
+            if cohort_mode == 'ward':
+                _final_label = 'Ward Cohort'
+                _final_mort_key = 'Ward Cohort'
+            else:
+                _final_label = 'All Critically Ill Adults'
+                _final_mort_key = 'All Critically Ill Adults'
+
+            fig, ax = plt.subplots(1, 1, figsize=(14, 8))
+            ax.set_xlim(-1, 13)
+            ax.set_ylim(0, 14)
+            ax.axis('off')
+
+            box_style = "round,pad=0.1"
+            def _box(x, y, w, h, text, fs=11, fw='bold'):
+                from matplotlib.patches import FancyBboxPatch
+                ax.add_patch(FancyBboxPatch((x-w/2, y-h/2), w, h, boxstyle=box_style,
+                             facecolor='white', edgecolor='black', linewidth=1.5))
+                ax.text(x, y, text, ha='center', va='center', fontsize=fs, fontweight=fw, wrap=True)
+                return {'x': x, 'y': y, 'bottom': y-h/2, 'top': y+h/2}
+            def _arrow(f, t):
+                ax.annotate('', xy=(t['x'], t['top']+0.1), xytext=(f['x'], f['bottom']-0.1),
+                            arrowprops=dict(arrowstyle='->', lw=2, color='black'))
+
+            diagram_title = 'Ward Cohort' if cohort_mode == 'ward' else 'Cohort'
+            ax.text(5, 13, diagram_title, ha='center', va='center', fontsize=16, fontweight='bold')
+
+            b1 = _box(5, 12, 3, 0.7, f"Total Hospitalizations\nn = {strobe_counts['0_total_hospitalizations']:,}")
+            b2 = _box(5, 10.5, 3, 0.7, f"Stitched Adult Hospitalizations\nn = {strobe_counts['1b_after_stitching']:,}")
+            _arrow(b1, b2)
+
+            b3_icu = _box(1, 8, 3, 0.9, f"ICU Hospitalizations\nn = {strobe_counts['1_icu_encounters']:,}\nMortality: {mortality_rates['ICU Hospitalizations']:.2f}%")
+            b3_resp = _box(4.5, 8, 3, 0.9, f"Advanced Respiratory Support\nn = {strobe_counts['2_advanced_resp_support_hospitalizations']:,}\nMortality: {mortality_rates['Advanced Respiratory Support']:.2f}%")
+            b3_vaso = _box(8, 8, 3, 0.9, f"Vasoactive Hospitalizations\nn = {strobe_counts['3_vasoactive_hospitalizations']:,}\nMortality: {mortality_rates['Vasoactive Hospitalizations']:.2f}%")
+            b3_other = _box(11.3, 8, 3, 0.9, f"Other Critically Ill\nn = {strobe_counts['4_other_critically_ill']:,}\nMortality: {mortality_rates['Other Critically Ill']:.2f}%")
+            _arrow(b2, b3_icu); _arrow(b2, b3_resp); _arrow(b2, b3_vaso); _arrow(b2, b3_other)
+
+            if cohort_mode == 'ward':
+                ward_only_n = strobe_counts.get('6_ward_no_critical_care', 0)
+                _box(8, 6.3, 4.5, 0.9, f"Ward only (survived, no critical care)\nn = {ward_only_n:,}", fs=10)
+
+            # Final box with mortality AND sepsis incidence
+            _box(5.7, 4.5, 5.2, 1.3,
+                 f"{_final_label}\nn = {_n_cohort:,}\n"
+                 f"Mortality: {mortality_rates[_final_mort_key]:.2f}%\n"
+                 f"Sepsis (CDC ASE): {_n_sepsis:,} ({_sepsis_pct}%)",
+                 fs=12)
+
+            plt.tight_layout()
+            plt.savefig(os.path.join(figures_dir, 'consort_flow_diagram.png'),
+                        dpi=300, bbox_inches='tight', facecolor='white', edgecolor='none')
+            plt.close()
+            print(f"  ✅ CONSORT diagram updated with sepsis: {_n_sepsis:,} ({_sepsis_pct}%)")
+        except Exception as e:
+            print(f"  ⚠️ CONSORT regeneration failed: {e}")
+            traceback.print_exc()
 
     # ==============================================================================
     # # TableOne
@@ -5575,7 +5657,39 @@ def main(memory_monitor=None, cohort_mode='critical_illness', force_refresh=Fals
             intermediate_dir / 'mortality_dedup_debug_post.csv', index=False
         )
         print(f"   Post-dedup: {len(_post)} rows saved to mortality_dedup_debug_post.csv")
-        del _post
+
+    # ── Per-group sepsis incidence (computed from deduped tableone_df) ──
+    # Must be AFTER dedup so counts match the Table One exactly.
+    if 'sepsis_events_by_sepsis_col' in tableone_df.columns:
+        _has_sepsis = tableone_df['sepsis_events_by_sepsis_col'] > 0
+        _total_sepsis = int(_has_sepsis.sum())
+        _total_N = len(tableone_df)
+        strobe_counts['sepsis_encounters'] = _total_sepsis
+        strobe_counts['sepsis_incidence_pct'] = round(100 * _total_sepsis / _total_N, 1) if _total_N > 0 else 0
+
+        _group_flags = {
+            'icu': 'icu_enc',
+            'advanced_resp': 'high_support_enc',
+            'vaso': 'vaso_support_enc',
+            'other_ci': 'other_critically_ill',
+        }
+        for _gname, _gcol in _group_flags.items():
+            if _gcol in tableone_df.columns:
+                _grp = tableone_df[tableone_df[_gcol] == 1]
+                _grp_sepsis = int((_grp['sepsis_events_by_sepsis_col'] > 0).sum())
+                _grp_N = len(_grp)
+                strobe_counts[f'sepsis_{_gname}_encounters'] = _grp_sepsis
+                strobe_counts[f'sepsis_{_gname}_pct'] = round(100 * _grp_sepsis / _grp_N, 1) if _grp_N > 0 else 0
+
+        # Re-save strobe_counts.csv with sepsis data
+        strobe_counts_df = pd.DataFrame(list(strobe_counts.items()), columns=['count_name', 'count_value'])
+        strobe_counts_df.to_csv(os.path.join(output_dir, 'strobe_counts.csv'), index=False)
+        print(f"   Sepsis (post-dedup): {_total_sepsis:,} / {_total_N:,} ({strobe_counts['sepsis_incidence_pct']}%)")
+        print(f"   By group: ICU={strobe_counts.get('sepsis_icu_pct',0)}%, "
+              f"AdvResp={strobe_counts.get('sepsis_advanced_resp_pct',0)}%, "
+              f"Vaso={strobe_counts.get('sepsis_vaso_pct',0)}%, "
+              f"Other={strobe_counts.get('sepsis_other_ci_pct',0)}%")
+
     if cohort_mode != 'ward':
         del _death_rows, _problem_blocks
 
@@ -5896,6 +6010,24 @@ def main(memory_monitor=None, cohort_mode='critical_illness', force_refresh=Fals
                         rows.append(("  Extubation failure ≤48hr, n (% of extubated)",
                                      f"{_n_fail:,} ({100*_n_fail/len(_extubated):.1f}%)"))
 
+        # ── VFD (overall table) ──────────────────────────────────────
+        if 'vfd_28' in df.columns:
+            _vfd = df['vfd_28'].dropna()
+            if len(_vfd) > 0:
+                rows.append(("28-day VFD (IMV encounters), n (%)",
+                             f"{len(_vfd):,} ({100*len(_vfd)/N_enc:.1f}%)"))
+                rows.append(("  VFD, median [Q1, Q3]",
+                             f"{_vfd.median():.0f} [{_vfd.quantile(.25):.0f}, {_vfd.quantile(.75):.0f}]"))
+
+        # ── NIDFD (overall table) ────────────────────────────────────
+        if 'nidfd_28' in df.columns:
+            _nidfd = df['nidfd_28'].dropna()
+            if len(_nidfd) > 0:
+                rows.append(("28-day NIDFD (NIPPV/HFNC encounters), n (%)",
+                             f"{len(_nidfd):,} ({100*len(_nidfd)/N_enc:.1f}%)"))
+                rows.append(("  NIDFD, median [Q1, Q3]",
+                             f"{_nidfd.median():.0f} [{_nidfd.quantile(.25):.0f}, {_nidfd.quantile(.75):.0f}]"))
+
         # -------------------------------------------------------------------------
         # 10. Vasopressors
         # -------------------------------------------------------------------------
@@ -6099,7 +6231,6 @@ def main(memory_monitor=None, cohort_mode='critical_illness', force_refresh=Fals
             print(f"PF/SF ratios computed for {len(pf_sf_per_encounter):,} encounters")
         except Exception as e:
             print(f"⚠️ PF/SF calculation failed: {e}")
-            import traceback
             traceback.print_exc()
         checkpoint("PF/SF Ratios Computed")
 
