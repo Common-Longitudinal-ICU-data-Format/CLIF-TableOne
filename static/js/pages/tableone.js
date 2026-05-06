@@ -434,10 +434,10 @@ function renderCohortFlowSVG(strobe, mortality, cohort) {
   const stitchedJoin = strobe['1b_stitched_hosp_ids'];
 
   const branches = [
-    { label: 'ICU',                  n: strobe['1_icu_encounters'],                       mort: mortality['ICU Hospitalizations'] },
-    { label: 'Advanced respiratory', n: strobe['2_advanced_resp_support_hospitalizations'], mort: mortality['Advanced Respiratory Support'] },
-    { label: 'Vasoactive support',   n: strobe['3_vasoactive_hospitalizations'],          mort: mortality['Vasoactive Hospitalizations'] },
-    { label: 'Other critically ill', n: strobe['4_other_critically_ill'],                 mort: mortality['Other Critically Ill'] },
+    { label: 'ICU',                  n: strobe['1_icu_encounters'],                       mort: mortality['ICU Hospitalizations'],          sepsisPct: strobe['sepsis_icu_pct'] },
+    { label: 'Advanced respiratory', n: strobe['2_advanced_resp_support_hospitalizations'], mort: mortality['Advanced Respiratory Support'],  sepsisPct: strobe['sepsis_advanced_resp_pct'] },
+    { label: 'Vasoactive support',   n: strobe['3_vasoactive_hospitalizations'],          mort: mortality['Vasoactive Hospitalizations'],   sepsisPct: strobe['sepsis_vaso_pct'] },
+    { label: 'Other critically ill', n: strobe['4_other_critically_ill'],                 mort: mortality['Other Critically Ill'],           sepsisPct: strobe['sepsis_other_ci_pct'] },
   ];
   if (cohort === 'ward') {
     branches.push({
@@ -447,9 +447,13 @@ function renderCohortFlowSVG(strobe, mortality, cohort) {
     });
   }
 
+  // Sepsis incidence for the final box (if ASE was computed)
+  const sepsisN   = strobe['sepsis_encounters'];
+  const sepsisPct = strobe['sepsis_incidence_pct'];
+
   const bottom = cohort === 'ci'
-    ? { label: 'All critically ill adults', n: strobe['5_all_critically_ill'], mort: mortality['All Critically Ill Adults'] }
-    : { label: 'Ward cohort (all)',         n: strobe['0_total_hospitalizations'], mort: mortality['Ward Cohort'] };
+    ? { label: 'All critically ill adults', n: strobe['5_all_critically_ill'], mort: mortality['All Critically Ill Adults'], sepsisN, sepsisPct }
+    : { label: 'Ward cohort (all)',         n: strobe['0_total_hospitalizations'], mort: mortality['Ward Cohort'], sepsisN, sepsisPct };
 
   // Layout — viewBox so the SVG scales fluidly to its container.
   const W = 1100;
@@ -459,7 +463,7 @@ function renderCohortFlowSVG(strobe, mortality, cohort) {
   // Each branch box is the same width; gap = 12.
   const gap = 12;
   const branchBoxW = Math.floor((W - 2 * padX - gap * (branchN - 1)) / branchN);
-  const branchBoxH = 96;
+  const branchBoxH = 110;  // taller to fit mortality + sepsis lines
 
   const topBoxW = 360;
   const topBoxH = 64;
@@ -468,7 +472,7 @@ function renderCohortFlowSVG(strobe, mortality, cohort) {
   const yTop2   = yTop1 + topBoxH + 56;
   const yBranch = yTop2 + topBoxH + 70;
   const yBottom = yBranch + branchBoxH + 70;
-  const H       = yBottom + branchBoxH + 24;
+  const H       = yBottom + branchBoxH + 48;  // extra room for sepsis line in bottom box
 
   const cx = W / 2;
 
@@ -489,17 +493,19 @@ function renderCohortFlowSVG(strobe, mortality, cohort) {
   const branchStartX = (W - branchTotalW) / 2;
   branches.forEach((b, i) => {
     const x = branchStartX + i * (branchBoxW + gap);
-    svg += flowBox(x, yBranch, branchBoxW, branchBoxH, b.label, b.n, b.mort, false);
+    svg += flowBox(x, yBranch, branchBoxW, branchBoxH, b.label, b.n, b.mort, false, null, b.sepsisPct);
     svg += flowArrow(cx, yTop2 + topBoxH, x + branchBoxW / 2, yBranch);
   });
 
-  // Bottom summary box (accented)
-  svg += flowBox(cx - topBoxW/2, yBottom, topBoxW, branchBoxH, bottom.label, bottom.n, bottom.mort, true);
+  // Bottom summary box (accented) — includes sepsis incidence if available
+  const bottomBoxH = (bottom.sepsisN && Number(bottom.sepsisN) > 0) ? branchBoxH + 20 : branchBoxH;
+  svg += flowBox(cx - topBoxW/2, yBottom, topBoxW, bottomBoxH, bottom.label, bottom.n, bottom.mort, true, bottom.sepsisN, bottom.sepsisPct);
 
-  // Arrows from each branch down to bottom, EXCEPT the ward-only box
-  // which is a survivor catch-all that doesn't roll up into 'critically ill'.
+  // Arrows from each branch down to bottom.
+  // In CI mode, skip the ward-only box (it doesn't exist).
+  // In ward mode, ALL branches (including ward-only) flow to the final box.
   branches.forEach((b, i) => {
-    if (b.label.startsWith('Ward only')) return;
+    if (cohort === 'ci' && b.label.startsWith('Ward only')) return;
     const x = branchStartX + i * (branchBoxW + gap);
     svg += flowArrow(x + branchBoxW / 2, yBranch + branchBoxH, cx, yBottom);
   });
@@ -508,17 +514,23 @@ function renderCohortFlowSVG(strobe, mortality, cohort) {
   return svg;
 }
 
-function flowBox(x, y, w, h, label, n, mort, accent) {
+function flowBox(x, y, w, h, label, n, mort, accent, sepsisN, sepsisPct) {
   const fmtN = (v) => (v == null ? '—' : Number(v).toLocaleString());
   const stroke = accent ? 'var(--primary)' : 'var(--border-strong)';
   const strokeW = accent ? 2 : 1;
   const fill = 'var(--bg-secondary)';
 
-  // Vertical centering depends on whether mortality line is present.
-  const hasMort = mort != null && Number.isFinite(Number(mort));
-  const labelY = hasMort ? y + 24 : y + h/2 - 6;
-  const nY     = hasMort ? y + 54 : y + h/2 + 18;
-  const mortY  = y + 80;
+  const hasMort   = mort != null && Number.isFinite(Number(mort));
+  // For branch boxes: sepsisPct is passed directly (no sepsisN).
+  // For bottom box: both sepsisN and sepsisPct are passed.
+  const hasSepsis = (sepsisN != null && Number(sepsisN) > 0) || (sepsisPct != null && Number(sepsisPct) > 0);
+  const nLines    = 1 + (hasMort ? 1 : 0) + (hasSepsis ? 1 : 0);
+
+  // Vertical centering depends on how many detail lines are present.
+  const labelY = nLines >= 3 ? y + 18 : (hasMort ? y + 24 : y + h/2 - 6);
+  const nY     = nLines >= 3 ? y + 44 : (hasMort ? y + 54 : y + h/2 + 18);
+  const mortY  = nLines >= 3 ? y + 66 : y + 80;
+  const sepsisY = nLines >= 3 ? y + 84 : y + 80;
 
   return `
     <g>
@@ -530,6 +542,8 @@ function flowBox(x, y, w, h, label, n, mort, accent) {
             style="fill:var(--text);font-size:22px;font-weight:700;font-family:var(--font-family);">${escapeXML(fmtN(n))}</text>
       ${hasMort ? `<text x="${x + w/2}" y="${mortY}" text-anchor="middle"
             style="fill:var(--text-muted);font-size:12px;font-family:var(--font-family);">Mortality: ${Number(mort).toFixed(1)}%</text>` : ''}
+      ${hasSepsis ? `<text x="${x + w/2}" y="${sepsisY}" text-anchor="middle"
+            style="fill:var(--text-muted);font-size:12px;font-family:var(--font-family);">Sepsis: ${sepsisN != null && Number(sepsisN) > 0 ? Number(sepsisN).toLocaleString() + ' (' + Number(sepsisPct).toFixed(1) + '%)' : Number(sepsisPct).toFixed(1) + '%'}</text>` : ''}
     </g>`;
 }
 
