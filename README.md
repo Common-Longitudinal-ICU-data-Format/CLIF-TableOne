@@ -48,20 +48,21 @@ Edit `config/config.json`:
 `uv` is cross-platform — the command below works on **Linux, macOS, and Windows**:
 
 ```bash
-uv run python run_project.py --no-summary --get-ecdf --ward
+uv run python run_project.py --no-summary
 ```
 
-This validates all 16 beta-ready CLIF tables, builds the critical-illness and ward Table One, and computes ECDF / bins distributions.
+This validates all 16 CLIF tables, builds the critical-illness and ward Table One, and computes ECDF/bins distributions. Ward and ECDF are included by default.
 
 | Flag | Purpose |
 |---|---|
 | `--no-summary` | Skip per-table summary statistics generation |
-| `--get-ecdf` | Compute ECDF + quantile bins for labs / vitals / respiratory_support |
-| `--ward` | **Also** generate the parallel ward Table One (see §5a) |
-| `--ward-only` | Only generate the ward Table One (skip validation + critical-illness Table One) |
+| `--no-ecdf` | Skip ECDF generation (saves memory on constrained systems) |
+| `--no-ward` | Skip ward Table One generation |
+| `--ward-only` | Only generate the ward Table One (skip validation + CI Table One) |
 | `--validate-only` | Run validation only |
-| `--tableone-only` | Run Table One only |
+| `--tableone-only` | Run Table One only (CI + ward, no validation/ECDF) |
 | `--get-ecdf-only` | Run ECDF only |
+| `--force-refresh` | Bypass filtered-table cache and rebuild from raw source |
 
 For the full flag list: `uv run python run_project.py --help`. Advanced workflows and granular per-table commands live in [`advanced_usage.md`](advanced_usage.md). 
 
@@ -303,6 +304,27 @@ output/
 
 For **what each file contains**, **the cohort filter applied**, and **which module generates it**, see [`OUTPUT_REFERENCE.md`](OUTPUT_REFERENCE.md).
 
+
+## AI-Assisted Validation Review
+
+You can use an AI coding assistant to interactively review your validation results, diagnose issues, and get specific fix recommendations. The repo ships with `CLAUDE.md` and `AGENTS.md` that give the assistant full context about the pipeline, validation checks, and common fixes.
+
+**Using Claude Code:**
+```bash
+cd CLIF-TableOne
+claude   # Opens Claude Code with CLAUDE.md context auto-loaded
+# Then ask: "Review my validation results and tell me what to fix"
+```
+
+**Using Codex or other tools:**
+Open the repo in your AI tool of choice — it will pick up `AGENTS.md` automatically.
+
+**What the assistant can do:**
+- Read your `*_dqa.json` files and summarize pass/fail by table
+- Explain what each validation error means and whether it's critical
+- Suggest specific ETL fixes for unit mismatches, missing columns, or relational errors
+- Cross-check your Table One numbers for internal consistency
+- Diagnose pipeline crashes from the workflow log
 
 ## Further reading
 

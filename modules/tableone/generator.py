@@ -3821,8 +3821,6 @@ def main(memory_monitor=None, cohort_mode='critical_illness', force_refresh=Fals
     print("✅ MEDICATION PROCESSING COMPLETE")
     print("="*80)
 
-    check = clif.medication_admin_continuous.df_converted.copy()
-
 
     # # Merge on encounter_block
     # meds_merged = meds_df.merge(
@@ -4140,9 +4138,17 @@ def main(memory_monitor=None, cohort_mode='critical_illness', force_refresh=Fals
         # Cleanup of in-loop intermediates (meds_7d and summary_df only
         # exist when the medication-from-ICU plot block ran)
         del meds_7d, summary_df
-    # Memory cleanup: Clear medication processing data
+    # Memory cleanup: Clear medication processing data AND the clifpy
+    # meds object (df + df_converted). Without this, the converted meds
+    # table (~10-15 GB at UMN) persists through every subsequent year pass,
+    # accumulating to 100+ GB.
     print("Clearing medication processing data from memory...")
     del meds_df, meds_converted, vaso_df, vaso_stats, med_flags
+    if hasattr(clif, 'medication_admin_continuous') and clif.medication_admin_continuous is not None:
+        if hasattr(clif.medication_admin_continuous, 'df_converted'):
+            del clif.medication_admin_continuous.df_converted
+        if hasattr(clif.medication_admin_continuous, 'df'):
+            del clif.medication_admin_continuous.df
     plt.close('all')
     gc.collect()
     checkpoint("Medication Analysis Complete")
