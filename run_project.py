@@ -34,16 +34,17 @@ os.environ.setdefault("MPLBACKEND", "Agg")
 warnings.filterwarnings("ignore")
 os.environ.setdefault("PYTHONWARNINGS", "ignore")
 
-# Force UTF-8 encoding for Windows compatibility
-# This ensures emojis and Unicode characters display correctly
+# Force UTF-8 encoding for all platforms.
+# On Windows this prevents 'charmap' codec errors when printing unicode
+# (arrows, emoji, etc.) and propagates to subprocesses (ward, ECDF).
+os.environ.setdefault("PYTHONIOENCODING", "utf-8")
+os.environ.setdefault("PYTHONUTF8", "1")
 if sys.platform == 'win32':
     try:
-        # Set console code page to UTF-8 so emojis/unicode render correctly
         os.system('chcp 65001 >nul 2>&1')
         sys.stdout.reconfigure(encoding='utf-8', errors='replace')
         sys.stderr.reconfigure(encoding='utf-8', errors='replace')
     except (AttributeError, TypeError):
-        # Fallback: wrap the buffer directly
         try:
             sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
             sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8', errors='replace')
@@ -1037,6 +1038,24 @@ class ProjectRunner:
         """
         self.print_header("[HOSPITAL] CLIF PROJECT RUNNER")
 
+        # ── Auto-clean with backup ────────────────────────────────────
+        # Move stale output/final/ to output_final_backup/ before running
+        # so old artifacts from a previous branch don't interfere.
+        # Intermediate caches (waterfall, ASE, filtered parquets) are kept
+        # so subsequent runs stay fast.  If the run succeeds the backup is
+        # deleted; if it crashes the backup is preserved for recovery.
+        import shutil
+        _project = Path(self.config_path).resolve().parent.parent
+        _final = _project / 'output' / 'final'
+        _backup = _project / 'output_final_backup'
+        if _final.exists():
+            if _backup.exists():
+                shutil.rmtree(_backup)
+            _final.rename(_backup)
+            print(f"  Backed up output/final/ → output_final_backup/")
+        self._output_backup = _backup  # remember for cleanup on success
+        # ──────────────────────────────────────────────────────────────
+
         self.logger.info("="*80)
         self.logger.info("[HOSPITAL] CLIF PROJECT RUNNER - WORKFLOW STARTING")
         self.logger.info("="*80)
@@ -1177,6 +1196,17 @@ class ProjectRunner:
             print("\nCritical tables validation failed. Cannot launch app.")
             print("Review validation report: output/final/validation/pdf_reports/combined_validation_report.pdf")
             print("\nUse --continue-on-error flag to bypass this check (not recommended)\n")
+
+        # ── Clean up backup on success ─────────────────────────────────
+        _backup = getattr(self, '_output_backup', None)
+        if _backup and _backup.exists():
+            if overall_success:
+                import shutil
+                shutil.rmtree(_backup)
+                print(f"\n  Deleted output_final_backup/ (run succeeded)")
+            else:
+                print(f"\n  ⚠️ output_final_backup/ preserved (run had failures — restore with: "
+                      f"rm -rf output/final && mv output_final_backup output/final)")
 
         return overall_success
 
