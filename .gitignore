@@ -80,3 +80,8 @@ dev/
 app_streamlit.py
 app.py
 TABLEONE_VIEWER_GUIDE.md
+
+# Legacy code/ directory shadows Python's stdlib 'code' module.
+# Deleted from repo — if it exists locally, remove it: rm -rf code/
+code/
+_archived/

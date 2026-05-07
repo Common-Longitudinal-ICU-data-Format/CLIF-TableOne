@@ -236,8 +236,7 @@ def main(memory_monitor=None, cohort_mode='critical_illness', force_refresh=Fals
     clifpy_dir = str(_validation_json_reports_dir())
     summary_stats_dir = str(_summary_stats_dir())
 
-    # Intermediate output directory (configurable via config.json, defaults to output/intermediate)
-    intermediate_dir = project_root / config.get('intermediate_path', 'output/intermediate')
+    intermediate_dir = project_root / 'output' / 'intermediate'
     intermediate_dir.mkdir(parents=True, exist_ok=True)
 
     print(f"\n=\U0001f527 Configuration:")
@@ -3623,6 +3622,16 @@ def main(memory_monitor=None, cohort_mode='critical_illness', force_refresh=Fals
 
     # Get converted data
     meds_converted = clif.medication_admin_continuous.df_converted.copy()
+
+    # Use converted doses where available — clifpy stores the result in
+    # med_dose_converted but our pipeline reads med_dose everywhere.
+    if 'med_dose_converted' in meds_converted.columns:
+        _has_converted = meds_converted['med_dose_converted'].notna()
+        meds_converted.loc[_has_converted, 'med_dose'] = meds_converted.loc[_has_converted, 'med_dose_converted']
+        print(f"  Applied converted doses: {_has_converted.sum():,} / {len(meds_converted):,} rows")
+    if 'med_dose_unit_converted' in meds_converted.columns:
+        _has_unit = meds_converted['med_dose_unit_converted'].notna()
+        meds_converted.loc[_has_unit, 'med_dose_unit'] = meds_converted.loc[_has_unit, 'med_dose_unit_converted']
 
     # Check conversion results
     conversion_counts = clif.medication_admin_continuous.conversion_counts

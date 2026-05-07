@@ -21,6 +21,14 @@ import sys
 import io
 import warnings
 
+# The legacy code/ directory shadows Python's stdlib 'code' module.
+# Rename it so it stops interfering with imports.
+_legacy = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'code')
+if os.path.isdir(_legacy):
+    os.rename(_legacy, _legacy.replace('code', '_archived'))
+    print("  Renamed legacy code/ → _archived/ (was shadowing Python stdlib)")
+del _legacy
+
 # Force the headless matplotlib backend BEFORE any matplotlib import in this
 # process or any child subprocess. Without this, macOS picks the "MacOSX"
 # GUI backend on first import, which registers Python as a foreground app and
@@ -520,6 +528,7 @@ class ProjectRunner:
             self.results['tableone_ward'] = {
                 'success': success,
                 'exit_code': exit_code,
+                'error': stderr_output.strip().split('\n')[-1] if not success and stderr_output else None,
             }
 
             return success
@@ -785,6 +794,8 @@ class ProjectRunner:
         if self.results['validation']:
             val_status = _status(self.results['validation'])
             print_and_log(f"Validation:        {val_status}")
+            if val_status == '[FAILED]' and self.results['validation'].get('error'):
+                print_and_log(f"  Error: {self.results['validation']['error']}")
             step_statuses.append(val_status)
 
             # Show critical tables status if relevant
@@ -796,18 +807,24 @@ class ProjectRunner:
         if self.results['tableone']:
             tbl_status = _status(self.results['tableone'])
             print_and_log(f"Table One (CI):    {tbl_status}")
+            if tbl_status == '[FAILED]' and self.results['tableone'].get('error'):
+                print_and_log(f"  Error: {self.results['tableone']['error']}")
             step_statuses.append(tbl_status)
 
         # Ward Table One results
         if self.results['tableone_ward']:
             ward_status = _status(self.results['tableone_ward'])
             print_and_log(f"Table One (Ward):  {ward_status}")
+            if ward_status == '[FAILED]' and self.results['tableone_ward'].get('error'):
+                print_and_log(f"  Error: {self.results['tableone_ward']['error']}")
             step_statuses.append(ward_status)
 
         # Get ECDF results
         if self.results['get_ecdf']:
             ecdf_status = _status(self.results['get_ecdf'])
             print_and_log(f"Get ECDF:          {ecdf_status}")
+            if ecdf_status == '[FAILED]' and self.results['get_ecdf'].get('error'):
+                print_and_log(f"  Error: {self.results['get_ecdf']['error']}")
             step_statuses.append(ecdf_status)
 
         # Overall rollup: SUCCESS only if every step was SUCCESS; PARTIAL if any
