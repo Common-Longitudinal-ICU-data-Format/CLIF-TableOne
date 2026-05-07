@@ -1038,23 +1038,6 @@ class ProjectRunner:
         """
         self.print_header("[HOSPITAL] CLIF PROJECT RUNNER")
 
-        # ── Auto-clean with backup ────────────────────────────────────
-        # Move stale output/final/ to output_final_backup/ before running
-        # so old artifacts from a previous branch don't interfere.
-        # Intermediate caches (waterfall, ASE, filtered parquets) are kept
-        # so subsequent runs stay fast.  If the run succeeds the backup is
-        # deleted; if it crashes the backup is preserved for recovery.
-        import shutil
-        _project = Path(self.config_path).resolve().parent.parent
-        _final = _project / 'output' / 'final'
-        _backup = _project / 'output_final_backup'
-        if _final.exists():
-            if _backup.exists():
-                shutil.rmtree(_backup)
-            _final.rename(_backup)
-            print(f"  Backed up output/final/ → output_final_backup/")
-        self._output_backup = _backup  # remember for cleanup on success
-        # ──────────────────────────────────────────────────────────────
 
         self.logger.info("="*80)
         self.logger.info("[HOSPITAL] CLIF PROJECT RUNNER - WORKFLOW STARTING")
@@ -1196,17 +1179,6 @@ class ProjectRunner:
             print("\nCritical tables validation failed. Cannot launch app.")
             print("Review validation report: output/final/validation/pdf_reports/combined_validation_report.pdf")
             print("\nUse --continue-on-error flag to bypass this check (not recommended)\n")
-
-        # ── Clean up backup on success ─────────────────────────────────
-        _backup = getattr(self, '_output_backup', None)
-        if _backup and _backup.exists():
-            if overall_success:
-                import shutil
-                shutil.rmtree(_backup)
-                print(f"\n  Deleted output_final_backup/ (run succeeded)")
-            else:
-                print(f"\n  ⚠️ output_final_backup/ preserved (run had failures — restore with: "
-                      f"rm -rf output/final && mv output_final_backup output/final)")
 
         return overall_success
 
