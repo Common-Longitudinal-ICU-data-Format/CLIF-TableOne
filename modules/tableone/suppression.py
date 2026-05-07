@@ -368,8 +368,9 @@ def apply_suppression_to_tree(
     Non-CSV files are not copied. Returns the list of written paths.
     """
     written: list[Path] = []
+    intermediate_root = intermediate_root.resolve()
     for src in _csv_files(intermediate_root):
-        rel = src.relative_to(intermediate_root)
+        rel = src.resolve().relative_to(intermediate_root)
         dst = final_root / rel
         dst.parent.mkdir(parents=True, exist_ok=True)
         try:
@@ -401,8 +402,9 @@ def scan_small_cells(
     typically walks both CI and Ward intermediate trees and tags each.
     """
     out: list[SmallCell] = []
+    intermediate_root = intermediate_root.resolve()
     for src in _csv_files(intermediate_root):
-        rel = src.relative_to(intermediate_root)
+        rel = src.resolve().relative_to(intermediate_root)
         stratum = _infer_stratum_from_path(rel)
         try:
             df = pd.read_csv(src, dtype=str, keep_default_na=False)
