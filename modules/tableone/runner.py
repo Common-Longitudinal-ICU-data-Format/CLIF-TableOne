@@ -90,8 +90,9 @@ class TableOneRunner:
             parquet_name = 'final_tableone_df.parquet'
 
         # Compute paths relative to project_root for the existence check below.
+        # resolve() both sides to handle Windows mapped drives vs UNC paths.
         def _rel(p):
-            return str(p.relative_to(self.project_root))
+            return str(p.resolve().relative_to(self.project_root.resolve()))
 
         expected_files = [
             _rel(_t1_dir() / 'table_one_overall.csv'),
@@ -193,7 +194,7 @@ class TableOneRunner:
 
         rules_path = self.project_root / 'config' / 'tableone_merge_rules.yaml'
         rules = MergeRules.from_yaml(rules_path)
-        print(f"   Rules: {rules_path.relative_to(self.project_root)} "
+        print(f"   Rules: {rules_path.resolve().relative_to(self.project_root.resolve())} "
               f"(threshold={rules.suppression.threshold}, token={rules.suppression.token!r}, "
               f"complementary={rules.suppression.apply_complementary})")
 
@@ -205,7 +206,7 @@ class TableOneRunner:
                 if not src.exists():
                     return
                 written = apply_suppression_to_tree(src, dst, rules)
-                print(f"   {label}: {len(written)} CSV(s) → {dst.relative_to(self.project_root)}")
+                print(f"   {label}: {len(written)} CSV(s) → {dst.resolve().relative_to(self.project_root.resolve())}")
                 total += len(written)
 
             if self.cohort_mode == 'ward':
