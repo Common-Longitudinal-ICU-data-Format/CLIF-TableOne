@@ -75,3 +75,8 @@ dev/calibrate_suppression/
 CLIF-TableOne-2025-all-sites/
 CLIF-TableOne-2026-all-sites/
 dev/
+
+# Deprecated Streamlit app files
+app_streamlit.py
+app.py
+TABLEONE_VIEWER_GUIDE.md

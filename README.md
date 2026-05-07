@@ -330,7 +330,7 @@ Open the repo in your AI tool of choice — it will pick up `AGENTS.md` automati
 
 - [`OUTPUT_REFERENCE.md`](OUTPUT_REFERENCE.md) — Per-file detail for everything under `output/final/`
 - [`advanced_usage.md`](advanced_usage.md) — Granular per-table validation, sampling workflows, ECDF configuration
-- [`TABLEONE_VIEWER_GUIDE.md`](TABLEONE_VIEWER_GUIDE.md) — Web app viewer documentation
+- [`CLAUDE.md`](CLAUDE.md) — AI assistant context for validation review
 
 ---
 

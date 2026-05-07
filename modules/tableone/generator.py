@@ -5687,14 +5687,43 @@ def main(memory_monitor=None, cohort_mode='critical_illness', force_refresh=Fals
                 strobe_counts[f'sepsis_{_gname}_encounters'] = _grp_sepsis
                 strobe_counts[f'sepsis_{_gname}_pct'] = round(100 * _grp_sepsis / _grp_N, 1) if _grp_N > 0 else 0
 
-        # Re-save strobe_counts.csv with sepsis data
-        strobe_counts_df = pd.DataFrame(list(strobe_counts.items()), columns=['count_name', 'count_value'])
-        strobe_counts_df.to_csv(os.path.join(output_dir, 'strobe_counts.csv'), index=False)
         print(f"   Sepsis (post-dedup): {_total_sepsis:,} / {_total_N:,} ({strobe_counts['sepsis_incidence_pct']}%)")
         print(f"   By group: ICU={strobe_counts.get('sepsis_icu_pct',0)}%, "
               f"AdvResp={strobe_counts.get('sepsis_advanced_resp_pct',0)}%, "
               f"Vaso={strobe_counts.get('sepsis_vaso_pct',0)}%, "
               f"Other={strobe_counts.get('sepsis_other_ci_pct',0)}%")
+
+    # ── Reconcile ALL strobe counts from deduped tableone_df ──────────
+    # Year-sharded processing overwrites strobe entries per-year (only the
+    # last year survives). Recompute from the final deduped dataset so
+    # strobe_counts.csv matches the Table One exactly.
+    _N = len(tableone_df)
+    strobe_counts['5_all_critically_ill'] = _N if cohort_mode != 'ward' else strobe_counts.get('5_all_critically_ill', 0)
+
+    # IMV encounters
+    if 'on_vent' in tableone_df.columns:
+        strobe_counts['IMV encounters'] = int(tableone_df['on_vent'].sum())
+
+    # Encounter type flags
+    for _flag, _key in [
+        ('icu_enc',           '1_icu_encounters'),
+        ('high_support_enc',  '2_advanced_resp_support_hospitalizations'),
+        ('nippv_hfnc_enc',    '2b_nippv_hfnc_hospitalizations'),
+        ('vaso_support_enc',  '3_vasoactive_hospitalizations'),
+        ('other_critically_ill', '4_other_critically_ill'),
+    ]:
+        if _flag in tableone_df.columns:
+            strobe_counts[_key] = int(tableone_df[_flag].sum())
+
+    if cohort_mode == 'ward':
+        if 'ward_no_critical_care' in tableone_df.columns:
+            strobe_counts['6_ward_no_critical_care'] = int(tableone_df['ward_no_critical_care'].sum())
+        strobe_counts['ward_cohort_total'] = _N
+
+    # Re-save strobe_counts.csv with all reconciled counts
+    strobe_counts_df = pd.DataFrame(list(strobe_counts.items()), columns=['count_name', 'count_value'])
+    strobe_counts_df.to_csv(os.path.join(output_dir, 'strobe_counts.csv'), index=False)
+    print(f"\n   Strobe counts reconciled from deduped data (N={_N:,})")
 
     if cohort_mode != 'ward':
         del _death_rows, _problem_blocks
