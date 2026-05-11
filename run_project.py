@@ -298,10 +298,14 @@ class ProjectRunner:
                 exit_code = process.poll()
             else:
                 # Original Unix/Linux/MacOS approach
+                # Merge stderr into stdout so child log records (which Python's
+                # logging module writes to stderr by default) are logged at the
+                # parent's INFO level in chronological order, instead of being
+                # drained at the end and re-logged as ERROR.
                 process = subprocess.Popen(
                     cmd,
                     stdout=subprocess.PIPE,
-                    stderr=subprocess.PIPE,
+                    stderr=subprocess.STDOUT,
                     text=True,
                     bufsize=1,  # Line buffered
                     universal_newlines=True,
@@ -314,15 +318,6 @@ class ProjectRunner:
                     if line:  # Skip empty lines
                         print(line)  # Show in terminal immediately
                         self.logger.info(line)  # Also log to file
-
-                # Get any remaining stderr
-                stderr_output = process.stderr.read()
-                if stderr_output:
-                    for line in stderr_output.strip().split('\n'):
-                        if line:
-                            if self.verbose:
-                                print(line, file=sys.stderr)
-                            self.logger.error(line)
 
                 # Wait for process to complete
                 exit_code = process.wait()
@@ -474,6 +469,7 @@ class ProjectRunner:
             # on "starting…" for minutes until validation flushes.
             env['PYTHONUNBUFFERED'] = '1'
 
+            last_output = ''
             if sys.platform == 'win32':
                 process = subprocess.Popen(
                     cmd,
@@ -493,12 +489,14 @@ class ProjectRunner:
                         if line:
                             print(line)
                             self.logger.info(line)
+                            last_output = line
                 exit_code = process.poll()
             else:
+                # Merge stderr into stdout: see validation subprocess above.
                 process = subprocess.Popen(
                     cmd,
                     stdout=subprocess.PIPE,
-                    stderr=subprocess.PIPE,
+                    stderr=subprocess.STDOUT,
                     text=True,
                     bufsize=1,
                     universal_newlines=True,
@@ -509,13 +507,7 @@ class ProjectRunner:
                     if line:
                         print(line)
                         self.logger.info(line)
-                stderr_output = process.stderr.read()
-                if stderr_output:
-                    for line in stderr_output.strip().split('\n'):
-                        if line:
-                            if self.verbose:
-                                print(line, file=sys.stderr)
-                            self.logger.error(line)
+                        last_output = line
                 exit_code = process.wait()
 
             success = (exit_code == 0)
@@ -528,7 +520,7 @@ class ProjectRunner:
             self.results['tableone_ward'] = {
                 'success': success,
                 'exit_code': exit_code,
-                'error': stderr_output.strip().split('\n')[-1] if not success and stderr_output else None,
+                'error': last_output if not success else None,
             }
 
             return success
