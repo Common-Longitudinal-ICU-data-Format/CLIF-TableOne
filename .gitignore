@@ -64,3 +64,8 @@ all_site_data
 # og sofa calculation, replaced with windows optimized version
 modules/sofa/calculator_og.py 
 consortium_figures.py
+
+dev/
+CLIF-TableOne-2025-all-sites/
+CLIF-TableOne-2026-all-sites/
+_archived/
