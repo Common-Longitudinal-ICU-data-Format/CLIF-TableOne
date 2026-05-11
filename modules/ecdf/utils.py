@@ -7,7 +7,7 @@ import json
 import yaml
 import os
 from typing import Dict, List, Tuple, Any
-import polars as pl
+import duckdb
 import pandas as pd
 import numpy as np
 from scipy import stats
@@ -30,7 +30,7 @@ def load_clif_config(config_path: str) -> Dict[str, Any]:
     if not os.path.exists(config_path):
         raise FileNotFoundError(f"Config not found: {config_path}")
 
-    with open(config_path, 'r') as f:
+    with open(config_path, 'r', encoding='utf-8') as f:
         config = json.load(f)
 
     required_keys = ['tables_path', 'file_type']
@@ -51,7 +51,7 @@ def load_outlier_config(config_path: str = 'get_ecdf/ecdf_config/outlier_config.
     if not os.path.exists(config_path):
         raise FileNotFoundError(f"Outlier config not found: {config_path}")
 
-    with open(config_path, 'r') as f:
+    with open(config_path, 'r', encoding='utf-8') as f:
         config = yaml.safe_load(f)
 
     return config
@@ -67,7 +67,7 @@ def load_lab_vital_config(config_path: str = 'get_ecdf/ecdf_config/lab_vital_con
     if not os.path.exists(config_path):
         raise FileNotFoundError(f"Lab/vital config not found: {config_path}")
 
-    with open(config_path, 'r') as f:
+    with open(config_path, 'r', encoding='utf-8') as f:
         config = yaml.safe_load(f)
 
     return config
@@ -80,7 +80,6 @@ def load_lab_vital_config(config_path: str = 'get_ecdf/ecdf_config/lab_vital_con
 def get_icu_hospitalization_ids(tables_path: str, file_type: str) -> List[str]:
     """
     Load ADT table and extract hospitalization IDs for ICU stays.
-    Uses Polars streaming for memory efficiency.
 
     Args:
         tables_path: Path to CLIF data directory
@@ -94,21 +93,18 @@ def get_icu_hospitalization_ids(tables_path: str, file_type: str) -> List[str]:
     if not os.path.exists(adt_path):
         raise FileNotFoundError(f"ADT file not found: {adt_path}")
 
-    # Scan ADT with Polars (lazy evaluation)
-    adt_lazy = pl.scan_parquet(adt_path)
+    con = duckdb.connect()
+    result = con.execute(
+        """
+        SELECT DISTINCT hospitalization_id
+        FROM read_parquet(?)
+        WHERE LOWER(location_category) = 'icu'
+        """,
+        [adt_path],
+    ).fetchdf()
+    con.close()
 
-    # Filter to ICU locations only
-    icu_stays = adt_lazy.filter(
-        pl.col('location_category').str.to_lowercase() == 'icu'
-    ).select('hospitalization_id').unique()
-
-    # Collect with streaming
-    icu_df = icu_stays.collect(streaming=True)
-
-    # Convert to list
-    hosp_ids = icu_df['hospitalization_id'].to_list()
-
-    return hosp_ids
+    return result['hospitalization_id'].tolist()
 
 
 # ============================================================================
@@ -150,28 +146,22 @@ def load_lab_vital_data(
     if not os.path.exists(file_path):
         raise FileNotFoundError(f"Data file not found: {file_path}")
 
-    # Scan with Polars (lazy)
-    data_lazy = pl.scan_parquet(file_path)
+    con = duckdb.connect()
+    # Register the Python list as a DuckDB table for the IN clause
+    hosp_df = pd.DataFrame({'hospitalization_id': icu_hosp_ids})
+    con.register('_hosp_filter', hosp_df)
 
-    # Filter to:
-    # 1. ICU hospitalization IDs
-    # 2. Selected category
-    # 3. Select only needed columns
-    filtered = data_lazy.filter(
-        pl.col('hospitalization_id').is_in(icu_hosp_ids) &
-        (pl.col(category_col) == category)
-    ).select([
-        'hospitalization_id',
-        datetime_col,
-        category_col,
-        value_col
-    ])
-
-    # Collect with streaming
-    df_pl = filtered.collect(streaming=True)
-
-    # Convert to pandas
-    df = df_pl.to_pandas()
+    df = con.execute(
+        f"""
+        SELECT d.hospitalization_id, d.{datetime_col},
+               d.{category_col}, d.{value_col}
+        FROM read_parquet(?) AS d
+        INNER JOIN _hosp_filter USING (hospitalization_id)
+        WHERE d.{category_col} = ?
+        """,
+        [file_path, category],
+    ).fetchdf()
+    con.close()
 
     return df
 

@@ -16,15 +16,8 @@ class ECMOMCSAnalyzer(BaseTableAnalyzer):
         """Return the correct table name with underscore."""
         return 'ecmo_mcs'
 
-    def load_table(self, sample_filter=None):
-        """
-        Load ECMO/MCS table using clifpy.
-
-        Parameters:
-        -----------
-        sample_filter : list, optional
-            List of hospitalization_ids to filter to (uses clifpy filters)
-        """
+    def load_table(self):
+        """Load ECMO/MCS table using clifpy."""
         try:
             from clifpy.tables.ecmo_mcs import EcmoMcs
             import os
@@ -45,25 +38,16 @@ class ECMOMCSAnalyzer(BaseTableAnalyzer):
                 return
 
             # Clifpy saves files directly to output_directory, so pass the final subdirectory
-            clifpy_output_dir = os.path.join(self.output_dir, "final", "clifpy")
+            from modules.utils.output_paths import validation_json_reports_dir
+            clifpy_output_dir = str(validation_json_reports_dir())
             os.makedirs(clifpy_output_dir, exist_ok=True)
 
-            # Use filters parameter ONLY when sample is provided
-            if sample_filter is not None:
-                self.table = EcmoMcs.from_file(
-                    data_directory=self.data_dir,
-                    filetype=self.filetype,
-                    timezone=self.timezone,
-                    output_directory=clifpy_output_dir,
-                    filters={'hospitalization_id': list(sample_filter)}
-                )
-            else:
-                self.table = EcmoMcs.from_file(
-                    data_directory=self.data_dir,
-                    filetype=self.filetype,
-                    timezone=self.timezone,
-                    output_directory=clifpy_output_dir
-                )
+            self.table = EcmoMcs.from_file(
+                data_directory=self.data_dir,
+                filetype=self.filetype,
+                timezone=self.timezone,
+                output_directory=clifpy_output_dir
+            )
 
             # Move any CSV files that clifpy created in parent directory to final/
             self._move_clifpy_csvs_to_final()
@@ -79,12 +63,14 @@ class ECMOMCSAnalyzer(BaseTableAnalyzer):
             self.table = None
 
     def _move_clifpy_csvs_to_final(self):
-        """Move any CSV files created by clifpy from output/ to output/final/"""
+        """Move any CSV files created by clifpy from output/ to output/final/validation/json_reports/."""
         import os
         import shutil
+        from modules.utils.output_paths import validation_json_reports_dir
 
         parent_dir = self.output_dir
-        final_dir = os.path.join(parent_dir, 'final')
+        final_dir = str(validation_json_reports_dir())
+        os.makedirs(final_dir, exist_ok=True)
 
         if not os.path.exists(parent_dir):
             return
@@ -99,7 +85,7 @@ class ECMOMCSAnalyzer(BaseTableAnalyzer):
                         dest = os.path.join(final_dir, filename)
                         try:
                             shutil.move(source, dest)
-                            print(f"Moved {filename} to final/")
+                            print(f"Moved {filename} to validation/json_reports/")
                         except Exception as e:
                             print(f"Could not move {filename}: {e}")
                         break
@@ -391,13 +377,14 @@ class ECMOMCSAnalyzer(BaseTableAnalyzer):
             }
 
         # Save to file
-        final_dir = os.path.join(self.output_dir, 'final')
+        from modules.utils.output_paths import validation_consolidated_dir
+        final_dir = str(validation_consolidated_dir())
         os.makedirs(final_dir, exist_ok=True)
 
         filepath = os.path.join(final_dir, f"{self.get_table_name()}_numeric_distributions.json")
 
         try:
-            with open(filepath, 'w') as f:
+            with open(filepath, 'w', encoding='utf-8') as f:
                 json.dump(serializable_dists, f, indent=2)
             print(f"Saved numeric distributions to {filepath}")
             return filepath
@@ -479,13 +466,14 @@ class ECMOMCSAnalyzer(BaseTableAnalyzer):
                                 }
 
         # Save to file
-        final_dir = os.path.join(self.output_dir, 'final')
+        from modules.utils.output_paths import validation_consolidated_dir
+        final_dir = str(validation_consolidated_dir())
         os.makedirs(final_dir, exist_ok=True)
 
         filepath = os.path.join(final_dir, f"{self.get_table_name()}_visualization_data.json")
 
         try:
-            with open(filepath, 'w') as f:
+            with open(filepath, 'w', encoding='utf-8') as f:
                 json.dump(viz_data, f, indent=2)
             print(f"Saved visualization data to {filepath}")
             return filepath
@@ -607,6 +595,24 @@ class ECMOMCSAnalyzer(BaseTableAnalyzer):
                 'count': int(invalid_mask.sum()),
                 'percentage': round((invalid_mask.sum() / len(df) * 100) if len(df) > 0 else 0, 2),
                 'status': 'pass' if invalid_mask.sum() == 0 else 'error',
+                'examples': examples
+            }
+
+        # Check for duplicate ECMO/MCS entries (same hospitalization + timestamp + device)
+        if all(col in df.columns for col in ['hospitalization_id', 'recorded_dttm', 'device_category']):
+            duplicates_mask = df.duplicated(subset=['hospitalization_id', 'recorded_dttm', 'device_category'], keep=False)
+            duplicates = duplicates_mask.sum()
+
+            examples = None
+            if duplicates > 0:
+                example_cols = ['hospitalization_id', 'recorded_dttm', 'device_category', 'mcs_group']
+                example_cols = [col for col in example_cols if col in df.columns]
+                examples = df[duplicates_mask][example_cols].head(10)
+
+            quality_checks['duplicate_ecmo_mcs_entries'] = {
+                'count': int(duplicates),
+                'percentage': round((duplicates / len(df) * 100) if len(df) > 0 else 0, 2),
+                'status': 'pass' if duplicates == 0 else 'warning',
                 'examples': examples
             }
 

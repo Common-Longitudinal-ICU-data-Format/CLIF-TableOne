@@ -1,9 +1,7 @@
 """Utility modules for CLIF analysis"""
 
-from .validation import (
-    format_clifpy_error,
-    determine_validation_status,
-    get_validation_summary
+from clifpy.utils.validator import (
+    run_full_dqa,
 )
 from .missingness import (
     calculate_missingness,
@@ -43,16 +41,8 @@ from .cache_manager import (
     get_completion_status,
     get_status_display
 )
-from .categorical_numeric_viz import (
-    show_categorical_numeric_distribution
-)
-from .sampling import (
-    get_icu_hospitalizations_from_adt,
-    generate_stratified_sample,
-    save_sample_list,
-    load_sample_list,
-    sample_exists
-)
+# categorical_numeric_viz requires streamlit — import lazily if needed
+# from .categorical_numeric_viz import show_categorical_numeric_distribution
 from .datetime_utils import (
     standardize_datetime_columns,
     ensure_datetime_precision_match,
@@ -61,9 +51,7 @@ from .datetime_utils import (
 
 __all__ = [
     # Validation
-    'format_clifpy_error',
-    'determine_validation_status',
-    'get_validation_summary',
+    'run_full_dqa',
     # Missingness
     'calculate_missingness',
     'get_high_missingness_columns',
@@ -98,14 +86,6 @@ __all__ = [
     'get_cache_statistics',
     'get_completion_status',
     'get_status_display',
-    # Categorical-Numeric Visualization
-    'show_categorical_numeric_distribution',
-    # Sampling
-    'get_icu_hospitalizations_from_adt',
-    'generate_stratified_sample',
-    'save_sample_list',
-    'load_sample_list',
-    'sample_exists',
     # Datetime utilities
     'standardize_datetime_columns',
     'ensure_datetime_precision_match',

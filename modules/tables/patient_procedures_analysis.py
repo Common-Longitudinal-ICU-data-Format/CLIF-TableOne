@@ -13,15 +13,8 @@ class PatientProceduresAnalyzer(BaseTableAnalyzer):
     def get_table_name(self) -> str:
         return 'patient_procedures'
 
-    def load_table(self, sample_filter=None):
-        """
-        Load Patient Procedures table using clifpy.
-
-        Parameters:
-        -----------
-        sample_filter : list, optional
-            List of hospitalization_ids to filter to (uses clifpy filters)
-        """
+    def load_table(self):
+        """Load Patient Procedures table using clifpy."""
         data_path = Path(self.data_dir)
         file_without_clif = data_path / f"patient_procedures.{self.filetype}"
         file_with_clif = data_path / f"clif_patient_procedures.{self.filetype}"
@@ -31,34 +24,17 @@ class PatientProceduresAnalyzer(BaseTableAnalyzer):
             self.table = None
             return
 
-        # Clifpy saves files directly to output_directory, so pass the final/clifpy subdirectory
-
-
-        clifpy_output_dir = os.path.join(self.output_dir, "final", "clifpy")
-
-
+        from modules.utils.output_paths import validation_json_reports_dir
+        clifpy_output_dir = str(validation_json_reports_dir())
         os.makedirs(clifpy_output_dir, exist_ok=True)
 
-
-
         try:
-            # Use filters parameter ONLY when sample is provided
-            if sample_filter is not None:
-                self.table = PatientProcedures.from_file(
-                    data_directory=self.data_dir,
-                    filetype=self.filetype,
-                    timezone=self.timezone,
-                    output_directory=clifpy_output_dir,
-                    filters={'hospitalization_id': list(sample_filter)}
-                )
-            else:
-                # Normal load without filters
-                self.table = PatientProcedures.from_file(
-                    data_directory=self.data_dir,
-                    filetype=self.filetype,
-                    timezone=self.timezone,
-                    output_directory=clifpy_output_dir
-                )
+            self.table = PatientProcedures.from_file(
+                data_directory=self.data_dir,
+                filetype=self.filetype,
+                timezone=self.timezone,
+                output_directory=clifpy_output_dir
+            )
         except Exception as e:
             print(f"⚠️  Error loading patient_procedures table: {e}")
             self.table = None
@@ -80,4 +56,26 @@ class PatientProceduresAnalyzer(BaseTableAnalyzer):
     def check_data_quality(self) -> Dict[str, Any]:
         if self.table is None or not hasattr(self.table, 'df') or self.table.df is None:
             return {'error': 'No data available'}
-        return {}
+
+        df = self.table.df
+        quality_checks = {}
+
+        # Check for duplicate procedure entries (same hospitalization + billed time + procedure code)
+        if all(col in df.columns for col in ['hospitalization_id', 'procedure_billed_dttm', 'procedure_code']):
+            duplicates_mask = df.duplicated(subset=['hospitalization_id', 'procedure_billed_dttm', 'procedure_code'], keep=False)
+            duplicates = duplicates_mask.sum()
+
+            examples = None
+            if duplicates > 0:
+                example_cols = ['hospitalization_id', 'procedure_billed_dttm', 'procedure_code', 'procedure_code_format']
+                example_cols = [col for col in example_cols if col in df.columns]
+                examples = df[duplicates_mask][example_cols].head(10)
+
+            quality_checks['duplicate_procedure_entries'] = {
+                'count': int(duplicates),
+                'percentage': round((duplicates / len(df) * 100) if len(df) > 0 else 0, 2),
+                'status': 'pass' if duplicates == 0 else 'warning',
+                'examples': examples
+            }
+
+        return quality_checks

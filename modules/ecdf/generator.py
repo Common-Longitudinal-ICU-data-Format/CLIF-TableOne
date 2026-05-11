@@ -20,19 +20,28 @@ Usage:
 
 Output structure:
     output/final/
-    ├── configs/
-    │   ├── clif_config.json
-    │   ├── lab_vital_config.yaml
-    │   └── outlier_config.yaml
-    ├── ecdf/
-    │   ├── labs/{category}_{unit}.parquet
-    │   ├── vitals/{category}.parquet
-    │   └── respiratory_support/{column}.parquet
-    ├── bins/
-    │   ├── labs/{category}_{unit}.parquet
-    │   ├── vitals/{category}.parquet
-    │   └── respiratory_support/{column}.parquet
-    └── unit_mismatches.log
+    ├── overall/
+    │   ├── ecdf/
+    │   │   ├── labs/{category}_{unit}.parquet
+    │   │   ├── vitals/{category}.parquet
+    │   │   └── respiratory_support/{column}.parquet
+    │   └── bins/
+    │       ├── labs/{category}_{unit}.parquet
+    │       ├── vitals/{category}.parquet
+    │       └── respiratory_support/{column}.parquet
+    ├── strata/
+    │   ├── icu/{ecdf,bins}/...
+    │   ├── advanced_resp/{ecdf,bins}/...
+    │   ├── vaso/{ecdf,bins}/...
+    │   └── deaths/{ecdf,bins}/...
+    └── meta/
+        ├── configs/
+        │   ├── clif_config.json
+        │   ├── lab_vital_config.yaml
+        │   └── outlier_config.yaml
+        ├── lab_category_units.csv   # (cat, unit) pairs in data + schema status
+        ├── unit_mismatches.log      # data vs CLIF labs schema (site issues)
+        └── ecdf_coverage_gaps.log   # schema-valid cats w/o bin config + errors
 """
 
 import json
@@ -41,13 +50,54 @@ import os
 import shutil
 from pathlib import Path
 from typing import Dict, List, Any, Tuple
-import polars as pl
 import pandas as pd
 import numpy as np
 from datetime import datetime
 
 # Import binning functions from the same module
 from .utils import create_all_bins
+from modules.utils.output_paths import (
+    CONFIGS,
+    OVERALL,
+    STRATA,
+    META,
+    cohort_dir,
+    meta_dir,
+    ensure_output_tree,
+)
+from modules.utils.clif_loader import ClifDB
+
+
+# Canonical qualifying-event definitions — must match modules/tableone/generator.py
+VASOACTIVE_MEDS = [
+    'norepinephrine', 'epinephrine', 'phenylephrine',
+    'vasopressin', 'dopamine', 'angiotensin',
+]
+ADVANCED_RESP_DEVICES = ['imv', 'nippv', 'cpap', 'high flow nc']
+NIPPV_HFNC_DEVICES = ['nippv', 'high flow nc']
+
+# Maps each stratum to its temporal window source.
+# 'icu' = ICU ADT windows, 'vaso' = first vasopressor → discharge,
+# 'resp' = first qualifying device → discharge,
+# 'nippv_hfnc' = first NIPPV/HFNC device → discharge.
+STRATUM_WINDOW_TYPE = {
+    'icu': 'icu',
+    'deaths': 'icu',
+    'vaso': 'vaso',
+    'vaso/icu': 'vaso',
+    'vaso/no_icu': 'vaso',
+    'vaso/ed_icu': 'vaso',
+    'vaso/ed_ward': 'vaso',
+    'advanced_resp': 'resp',
+    'advanced_resp/icu': 'resp',
+    'advanced_resp/no_icu': 'resp',
+    'nippv_hfnc': 'nippv_hfnc',
+    'nippv_hfnc/icu': 'nippv_hfnc',
+    'nippv_hfnc/no_icu': 'nippv_hfnc',
+    'no_imv': 'icu',
+    'no_imv/icu': 'icu',
+    'no_imv/no_icu': 'icu',
+}
 
 
 # ============================================================================
@@ -79,33 +129,38 @@ def load_configs(
     if not os.path.exists(clif_config_path):
         raise FileNotFoundError(f"CLIF config not found: {clif_config_path}")
 
-    with open(clif_config_path, 'r') as f:
+    with open(clif_config_path, 'r', encoding='utf-8') as f:
         clif_config = json.load(f)
 
     # Load outlier_config.yaml
     if not os.path.exists(outlier_config_path):
         raise FileNotFoundError(f"Outlier config not found: {outlier_config_path}")
 
-    with open(outlier_config_path, 'r') as f:
+    with open(outlier_config_path, 'r', encoding='utf-8') as f:
         outlier_config = yaml.safe_load(f)
 
     # Load lab_vital_config.yaml
     if not os.path.exists(lab_vital_config_path):
         raise FileNotFoundError(f"Lab/vital config not found: {lab_vital_config_path}")
 
-    with open(lab_vital_config_path, 'r') as f:
+    with open(lab_vital_config_path, 'r', encoding='utf-8') as f:
         lab_vital_config = yaml.safe_load(f)
 
     return clif_config, outlier_config, lab_vital_config
 
 
 def copy_configs_to_output(
-    output_dir: str,
+    output_dir: str = None,
     clif_config_path: str = None,
     outlier_config_path: str = None,
     lab_vital_config_path: str = None
 ):
-    """Copy configuration files to output directory."""
+    """Copy configuration files to output/final/meta/configs/.
+
+    The ``output_dir`` argument is accepted for backwards compatibility but is
+    ignored — configs are always written to the canonical CONFIGS directory
+    so they can be discovered without knowing the cohort layout.
+    """
     # Get project root and set default paths
     project_root = Path(__file__).parent.parent.parent
 
@@ -116,12 +171,12 @@ def copy_configs_to_output(
     if lab_vital_config_path is None:
         lab_vital_config_path = Path(__file__).parent / 'config' / 'lab_vital_config.yaml'
 
-    config_dir = os.path.join(output_dir, 'configs')
-    os.makedirs(config_dir, exist_ok=True)
+    config_dir = CONFIGS
+    config_dir.mkdir(parents=True, exist_ok=True)
 
-    shutil.copy(str(clif_config_path), os.path.join(config_dir, 'config.json'))
-    shutil.copy(str(outlier_config_path), os.path.join(config_dir, 'outlier_config.yaml'))
-    shutil.copy(str(lab_vital_config_path), os.path.join(config_dir, 'lab_vital_config.yaml'))
+    shutil.copy(str(clif_config_path), str(config_dir / 'config.json'))
+    shutil.copy(str(outlier_config_path), str(config_dir / 'outlier_config.yaml'))
+    shutil.copy(str(lab_vital_config_path), str(config_dir / 'lab_vital_config.yaml'))
 
     print(f"✓ Copied configs to {config_dir}")
 
@@ -131,50 +186,78 @@ def copy_configs_to_output(
 # ============================================================================
 
 def discover_lab_category_units(
-    tables_path: str,
-    file_type: str
-) -> pl.DataFrame:
+    db: ClifDB,
+) -> pd.DataFrame:
     """
     Discover all unique (lab_category, reference_unit) combinations
-    in the labs data.
+    in the labs data, with a per-pair row count.
 
     Returns:
-        Polars DataFrame with columns:
+        pandas DataFrame with columns:
         - lab_category: str
         - reference_unit: str
+        - n_rows: int (total rows in labs for this pair)
     """
-    labs_path = os.path.join(tables_path, f'clif_labs.{file_type}')
-
-    if not os.path.exists(labs_path):
-        raise FileNotFoundError(f"Labs file not found: {labs_path}")
+    labs_path = db.table_path('labs')
 
     print(f"Discovering lab category-unit combinations from {labs_path}...")
 
-    # Scan labs with Polars (lazy evaluation)
-    labs_lazy = pl.scan_parquet(labs_path)
-
-    # Get distinct (lab_category, reference_unit) pairs
-    category_units = labs_lazy.select([
-        'lab_category',
-        'reference_unit'
-    ]).unique()
-
-    # Collect with streaming
-    category_units_df = category_units.collect(streaming=True)
-
-    # Filter out null lab_category only - keep null reference_unit (will be matched with "(no units)")
-    category_units_df = category_units_df.filter(
-        pl.col('lab_category').is_not_null()
+    df = db.query_df(
+        """
+        SELECT
+            LOWER(TRIM(lab_category)) AS lab_category,
+            COALESCE(
+                NULLIF(LOWER(TRIM(reference_unit)), ''),
+                '(no units)'
+            ) AS reference_unit,
+            COUNT(*) AS n_rows
+        FROM read_parquet(?)
+        WHERE lab_category IS NOT NULL
+        GROUP BY 1, 2
+        """,
+        [labs_path],
     )
 
-    # Replace null reference_unit with "(no units)" sentinel value
-    category_units_df = category_units_df.with_columns(
-        pl.col('reference_unit').fill_null('(no units)')
-    )
+    print(f"✓ Found {len(df):,} unique (category, unit) combinations")
+    return df
 
-    print(f"✓ Found {len(category_units_df):,} unique (category, unit) combinations")
 
-    return category_units_df
+def write_lab_category_units_csv(
+    lab_category_units: pd.DataFrame,
+    labs_schema: Dict[str, Any],
+    output_path: str,
+) -> str:
+    """Write an audit CSV of every (lab_category, reference_unit) pair found
+    in the labs data, classified against the CLIF labs schema.
+
+    Columns:
+      lab_category, reference_unit, n_rows, schema_status, canonical_unit
+
+    schema_status is one of:
+      - 'ok'            — category and unit both accepted by CLIF
+      - 'unit_mismatch' — category accepted but unit spelling not in variants
+      - 'not_in_spec'   — category is not in the CLIF labs vocabulary
+
+    Sorted so 'ok' rows come first and most-frequent pairs float to the top
+    within each status group.
+    """
+    rows = []
+    for r in lab_category_units.itertuples(index=False):
+        status, canonical = _classify_lab_unit(r.lab_category, r.reference_unit, labs_schema)
+        rows.append({
+            'lab_category': r.lab_category,
+            'reference_unit': r.reference_unit,
+            'n_rows': int(getattr(r, 'n_rows', 0)),
+            'schema_status': status,
+            'canonical_unit': canonical or '',
+        })
+
+    status_order = {'ok': 0, 'unit_mismatch': 1, 'not_in_spec': 2}
+    df = pd.DataFrame(rows)
+    df['_ord'] = df['schema_status'].map(status_order).fillna(99)
+    df = df.sort_values(['_ord', 'n_rows'], ascending=[True, False]).drop(columns='_ord')
+    df.to_csv(output_path, index=False)
+    return output_path
 
 
 def sanitize_unit_for_filename(unit: str) -> str:
@@ -207,57 +290,136 @@ def sanitize_unit_for_filename(unit: str) -> str:
 # ICU Time Window Extraction
 # ============================================================================
 
-def extract_icu_time_windows(
-    tables_path: str,
-    file_type: str
-) -> pl.DataFrame:
+def extract_icu_time_windows(db: ClifDB) -> pd.DataFrame:
     """
     Extract ICU time windows from ADT table.
 
     Returns:
-        Polars DataFrame with columns:
+        pandas DataFrame with columns:
         - hospitalization_id: str
-        - in_dttm: datetime
-        - out_dttm: datetime
+        - in_dttm: datetime (timezone-naive)
+        - out_dttm: datetime (timezone-naive)
     """
-    adt_path = os.path.join(tables_path, f'clif_adt.{file_type}')
-
-    if not os.path.exists(adt_path):
-        raise FileNotFoundError(f"ADT file not found: {adt_path}")
+    adt_path = db.table_path('adt')
 
     print(f"Loading ICU time windows from {adt_path}...")
 
-    # Scan ADT with Polars (lazy evaluation)
-    adt_lazy = pl.scan_parquet(adt_path)
+    df = db.query_df(
+        """
+        SELECT hospitalization_id,
+               in_dttm::TIMESTAMP AS in_dttm,
+               out_dttm::TIMESTAMP AS out_dttm
+        FROM read_parquet(?)
+        WHERE LOWER(location_category) = 'icu'
+        """,
+        [adt_path],
+    )
 
-    # Filter to ICU locations only, select relevant columns
-    icu_windows = adt_lazy.filter(
-        pl.col('location_category').str.to_lowercase() == 'icu'
-    ).select([
-        'hospitalization_id',
-        'in_dttm',
-        'out_dttm'
-    ])
+    print(f"✓ Found {len(df):,} ICU time windows")
+    return df
 
-    # Collect with streaming
-    icu_windows_df = icu_windows.collect(streaming=True)
 
-    # Strip timezone from datetime columns to enable comparison with other datetime columns
-    icu_windows_df = icu_windows_df.with_columns([
-        pl.col('in_dttm').dt.replace_time_zone(None),
-        pl.col('out_dttm').dt.replace_time_zone(None)
-    ])
+# ============================================================================
+# Discharge Times & Event-Based Time Windows
+# ============================================================================
 
-    print(f"✓ Found {len(icu_windows_df):,} ICU time windows")
+def load_discharge_times(db: ClifDB) -> pd.DataFrame:
+    """
+    Load discharge_dttm from the hospitalization table.
 
-    return icu_windows_df
+    Returns:
+        pandas DataFrame with columns:
+        - hospitalization_id: str
+        - discharge_dttm: datetime (timezone-naive)
+    """
+    hosp_path = db.table_path('hospitalization')
+
+    print(f"Loading discharge times from {hosp_path}...")
+
+    df = db.query_df(
+        """
+        SELECT hospitalization_id,
+               discharge_dttm::TIMESTAMP AS discharge_dttm
+        FROM read_parquet(?)
+        WHERE discharge_dttm IS NOT NULL
+        """,
+        [hosp_path],
+    )
+
+    print(f"✓ Loaded discharge times for {len(df):,} hospitalizations")
+    return df
+
+
+def _extract_event_windows(
+    db: ClifDB,
+    file_path: str,
+    category_col: str,
+    datetime_col: str,
+    qualifying_values: List[str],
+    label: str,
+) -> pd.DataFrame:
+    """Shared implementation for vaso / resp / nippv-hfnc event windows.
+
+    Finds the earliest qualifying event per hospitalization and bounds
+    the window by discharge_dttm (which must already be registered as
+    ``discharge_times`` on *db*).
+    """
+    placeholders = ', '.join(['?'] * len(qualifying_values))
+
+    df = db.query_df(
+        f"""
+        SELECT e.hospitalization_id, e.in_dttm, d.discharge_dttm AS out_dttm
+        FROM (
+            SELECT hospitalization_id,
+                   MIN({datetime_col}::TIMESTAMP) AS in_dttm
+            FROM read_parquet(?)
+            WHERE LOWER(TRIM({category_col})) IN ({placeholders})
+            GROUP BY hospitalization_id
+        ) e
+        INNER JOIN discharge_times d USING (hospitalization_id)
+        """,
+        [file_path] + qualifying_values,
+    )
+
+    print(f"✓ Found {len(df):,} {label} event windows")
+    return df
+
+
+def extract_vaso_event_windows(db: ClifDB) -> pd.DataFrame:
+    """Build time windows anchored to the first vasopressor administration."""
+    meds_path = db.table_path('medication_admin_continuous')
+    print(f"Extracting vasopressor event windows from {meds_path}...")
+    return _extract_event_windows(
+        db, meds_path, 'med_category', 'admin_dttm',
+        VASOACTIVE_MEDS, 'vasopressor',
+    )
+
+
+def extract_advanced_resp_event_windows(db: ClifDB) -> pd.DataFrame:
+    """Build time windows anchored to the first qualifying respiratory device."""
+    resp_path = db.table_path('respiratory_support')
+    print(f"Extracting advanced resp event windows from {resp_path}...")
+    return _extract_event_windows(
+        db, resp_path, 'device_category', 'recorded_dttm',
+        ADVANCED_RESP_DEVICES, 'advanced resp',
+    )
+
+
+def extract_nippv_hfnc_event_windows(db: ClifDB) -> pd.DataFrame:
+    """Build time windows anchored to the first NIPPV/HFNC device."""
+    resp_path = db.table_path('respiratory_support')
+    print(f"Extracting NIPPV/HFNC event windows from {resp_path}...")
+    return _extract_event_windows(
+        db, resp_path, 'device_category', 'recorded_dttm',
+        NIPPV_HFNC_DEVICES, 'NIPPV/HFNC',
+    )
 
 
 # ============================================================================
 # ECDF Computation
 # ============================================================================
 
-def compute_ecdf_compact(values: np.ndarray) -> pl.DataFrame:
+def compute_ecdf_compact(values: np.ndarray) -> pd.DataFrame:
     """
     Compute ECDF and return distinct (value, probability) pairs.
 
@@ -265,36 +427,23 @@ def compute_ecdf_compact(values: np.ndarray) -> pl.DataFrame:
         values: Array of numeric values
 
     Returns:
-        Polars DataFrame with columns:
+        pandas DataFrame with columns:
         - value: float
         - probability: float (0 to 1)
     """
     if len(values) == 0:
-        return pl.DataFrame({
-            'value': [],
-            'probability': []
-        })
+        return pd.DataFrame({'value': pd.array([], dtype='float64'),
+                             'probability': pd.array([], dtype='float64')})
 
-    # Sort values
     sorted_values = np.sort(values)
-
-    # Calculate cumulative probabilities
     n = len(sorted_values)
-    probabilities = np.arange(1, n + 1) / n
 
-    # Create dataframe
-    ecdf_df = pl.DataFrame({
-        'value': sorted_values,
-        'probability': probabilities
-    })
+    # For duplicate values, CDF = cumulative count / n
+    unique_vals, counts = np.unique(sorted_values, return_counts=True)
+    cumulative = np.cumsum(counts)
+    probs = cumulative / n
 
-    # Group by value and keep max probability (prevents zigzag effect)
-    # For duplicate values, we only keep the highest probability (final occurrence)
-    ecdf_df = ecdf_df.group_by('value').agg(
-        pl.col('probability').max()
-    ).sort('value')
-
-    return ecdf_df
+    return pd.DataFrame({'value': unique_vals, 'probability': probs})
 
 
 # ============================================================================
@@ -359,50 +508,84 @@ def create_flat_bins(data: pd.Series, num_bins: int = 10) -> List[Dict[str, Any]
 
 
 # ============================================================================
-# Lab/Vital Data Processing
+# SQL helpers
+# ============================================================================
+
+def _build_unit_filter(unit) -> Tuple[str, List]:
+    """Build a SQL WHERE clause fragment for lab unit matching.
+
+    Returns (sql_fragment, params) where *sql_fragment* is a string like
+    ``"LOWER(TRIM(d.reference_unit)) = ?"`` and *params* are the bind values.
+    """
+    if unit is None:
+        return "TRUE", []
+
+    if isinstance(unit, list):
+        no_units = [u for u in unit if u.lower().strip() == '(no units)']
+        real_units = [u.lower().strip() for u in unit
+                      if u.lower().strip() != '(no units)']
+
+        parts = []
+        params = []
+        if real_units:
+            placeholders = ', '.join(['?'] * len(real_units))
+            parts.append(f"LOWER(TRIM(d.reference_unit)) IN ({placeholders})")
+            params.extend(real_units)
+        if no_units:
+            parts.append(
+                "(d.reference_unit IS NULL "
+                "OR TRIM(d.reference_unit) = '' "
+                "OR LOWER(TRIM(d.reference_unit)) = '(no units)')"
+            )
+        return '(' + ' OR '.join(parts) + ')', params
+
+    unit_l = unit.lower().strip()
+    if unit_l == '(no units)':
+        return (
+            "(d.reference_unit IS NULL "
+            "OR TRIM(d.reference_unit) = '' "
+            "OR LOWER(TRIM(d.reference_unit)) = '(no units)')"
+        ), []
+
+    return "LOWER(TRIM(d.reference_unit)) = ?", [unit_l]
+
+
+# ============================================================================
+# Lab / Vital Processing
 # ============================================================================
 
 def process_category(
     table_type: str,
     category: str,
-    unit: str,
-    icu_windows: pl.DataFrame,
-    tables_path: str,
-    file_type: str,
+    unit,
+    db: ClifDB,
     outlier_range: Dict[str, float],
-    cat_config: Dict[str, Any],
+    cat_config: Dict,
     output_dir: str,
-    extreme_bins_count: int = 5
+    extreme_bins_count: int = 5,
+    suffix: str = '',
+    prefetched_values=None,
 ) -> Dict[str, Any]:
     """
     Process a single lab/vital category:
-    1. Load data filtered to ICU time windows
+    1. Load data filtered to ICU time windows (via DuckDB join)
     2. Remove outliers
     3. Compute ECDF
-    4. Compute bins with auto-extreme-splitting
+    4. Compute quantile bins with auto-extreme-splitting
     5. Save results
 
-    Args:
-        unit: Reference unit (for labs only, pass None for vitals)
-        extreme_bins_count: Number of bins to split extreme bins into (default: 5)
-
-    Returns:
-        Dictionary with processing statistics
+    If prefetched_values is provided, skip the DB fetch (batch optimization).
     """
-    # Determine file path and column names
     if table_type == 'labs':
-        file_path = os.path.join(tables_path, f'clif_labs.{file_type}')
+        file_path = db.table_path('labs')
         category_col = 'lab_category'
         value_col = 'lab_value_numeric'
         datetime_col = 'lab_result_dttm'
     else:  # vitals
-        file_path = os.path.join(tables_path, f'clif_vitals.{file_type}')
+        file_path = db.table_path('vitals')
         category_col = 'vital_category'
         value_col = 'vital_value'
         datetime_col = 'recorded_dttm'
-
-    if not os.path.exists(file_path):
-        raise FileNotFoundError(f"Data file not found: {file_path}")
 
     # Display name includes unit for labs
     if table_type == 'labs' and unit:
@@ -410,73 +593,20 @@ def process_category(
     else:
         display_name = category
 
-    print(f"  Loading {display_name}...")
-
-    # Scan data with Polars (lazy)
-    data_lazy = pl.scan_parquet(file_path)
-
-    # Filter to selected category (and unit for labs)
-    if table_type == 'labs' and unit:
-        if isinstance(unit, list):
-            unit_filter = pl.col('reference_unit').is_in(unit)
-            if '(no units)' in unit:
-                unit_filter = unit_filter | pl.col('reference_unit').is_null()
-        else:
-            unit_filter = pl.col('reference_unit') == unit
-            if '(no units)' in unit:
-                unit_filter = unit_filter | pl.col('reference_unit').is_null()
-        data_category = data_lazy.filter(
-            (pl.col(category_col) == category) &
-            unit_filter
-        ).select([
-            'hospitalization_id',
-            datetime_col,
-            value_col
-        ])
+    if prefetched_values is not None:
+        values = prefetched_values
     else:
-        data_category = data_lazy.filter(
-            pl.col(category_col) == category
-        ).select([
-            'hospitalization_id',
-            datetime_col,
-            value_col
-        ])
-    # if table_type == 'labs' and unit:
-    #     data_category = data_lazy.filter(
-    #         (pl.col(category_col) == category) &
-    #         (pl.col('reference_unit') == unit)
-    #     ).select([
-    #         'hospitalization_id',
-    #         datetime_col,
-    #         value_col
-    #     ])
-    # else:
-    #     data_category = data_lazy.filter(
-    #         pl.col(category_col) == category
-    #     ).select([
-    #         'hospitalization_id',
-    #         datetime_col,
-    #         value_col
-    #     ])
+        print(f"  Loading {display_name}...")
+        values = db.fetch_icu_values(
+            parquet_path=file_path,
+            value_col=value_col,
+            datetime_col=datetime_col,
+            category_col=category_col,
+            category_value=category.lower().strip(),
+            unit=unit if table_type == 'labs' else None,
+        )
 
-    # Join with ICU time windows
-    data_icu = data_category.join(
-        icu_windows.lazy(),
-        on='hospitalization_id',
-        how='inner'
-    )
-
-    # Filter to values during ICU stay only (temporal filtering)
-    # Strip timezone from datetime column for comparison with timezone-naive ICU windows
-    data_filtered = data_icu.filter(
-        (pl.col(datetime_col).dt.replace_time_zone(None) >= pl.col('in_dttm')) &
-        (pl.col(datetime_col).dt.replace_time_zone(None) <= pl.col('out_dttm'))
-    ).select([value_col])
-
-    # Collect with streaming
-    values_df = data_filtered.collect(streaming=True)
-
-    original_count = len(values_df)
+    original_count = len(values)
 
     if original_count == 0:
         print(f"  ⚠️  No data found for {display_name} during ICU stays")
@@ -489,12 +619,9 @@ def process_category(
             'num_bins': 0
         }
 
-    # Remove outliers
-    values_clean = values_df.filter(
-        (pl.col(value_col) >= outlier_range['min']) &
-        (pl.col(value_col) <= outlier_range['max'])
-    )
-
+    # Remove outliers (numpy — fast, zero-copy)
+    mask = (values >= outlier_range['min']) & (values <= outlier_range['max'])
+    values_clean = values[mask]
     clean_count = len(values_clean)
 
     if clean_count == 0:
@@ -508,8 +635,7 @@ def process_category(
             'num_bins': 0
         }
 
-    # Extract values as numpy array
-    values_array = values_clean[value_col].to_numpy()
+    values_array = values_clean
 
     # ========================================================================
     # Compute ECDF
@@ -518,24 +644,23 @@ def process_category(
     ecdf_df = compute_ecdf_compact(values_array)
 
     # Save ECDF
-    ecdf_dir = os.path.join(output_dir, 'ecdf', table_type)
-    os.makedirs(ecdf_dir, exist_ok=True)
+    ecdf_dir_path = os.path.join(output_dir, 'ecdf', table_type)
+    os.makedirs(ecdf_dir_path, exist_ok=True)
 
     if table_type == 'labs' and unit:
         # Handle list of units - use first non-empty unit for filename
         if isinstance(unit, list):
-            # Filter out "(no units)" and empty strings for filename, use first real unit
             real_units = [u for u in unit if u and u != '(no units)']
             unit_for_filename = real_units[0] if real_units else 'no_units'
         else:
-            unit_for_filename = unit if unit != '(no units)' else 'no_units'
-        unit_safe = sanitize_unit_for_filename(unit_for_filename)
-        filename = f'{category}_{unit_safe}.parquet'
+            unit_for_filename = unit
+        safe_unit = sanitize_unit_for_filename(unit_for_filename)
+        filename = f'{category}_{safe_unit}{suffix}.parquet'
     else:
-        filename = f'{category}.parquet'
+        filename = f'{category}{suffix}.parquet'
 
-    ecdf_path = os.path.join(ecdf_dir, filename)
-    ecdf_df.write_parquet(ecdf_path)
+    ecdf_path = os.path.join(ecdf_dir_path, filename)
+    ecdf_df.to_parquet(ecdf_path, index=False)
 
     # ========================================================================
     # Compute Bins with Auto-Extreme-Splitting
@@ -564,25 +689,20 @@ def process_category(
     )
 
     # Add interval notation column
-    # First bin in each segment: [min, max] (closed both sides)
-    # Other bins: (min, max] (left-open, right-closed)
     for bin_info in bins:
         if bin_info['bin_num'] == 1:
-            # First bin is closed on both sides
             interval = f"[{bin_info['bin_min']:.2f}, {bin_info['bin_max']:.2f}]"
         else:
-            # Other bins are left-open, right-closed
             interval = f"({bin_info['bin_min']:.2f}, {bin_info['bin_max']:.2f}]"
         bin_info['interval'] = interval
 
-    # Convert to Polars DataFrame
-    bins_df = pl.DataFrame(bins)
+    bins_df = pd.DataFrame(bins)
 
     # Save bins
-    bins_dir = os.path.join(output_dir, 'bins', table_type)
-    os.makedirs(bins_dir, exist_ok=True)
-    bins_path = os.path.join(bins_dir, filename)
-    bins_df.write_parquet(bins_path)
+    bins_dir_path = os.path.join(output_dir, 'bins', table_type)
+    os.makedirs(bins_dir_path, exist_ok=True)
+    bins_path = os.path.join(bins_dir_path, filename)
+    bins_df.to_parquet(bins_path, index=False)
 
     # Return statistics
     return {
@@ -601,12 +721,11 @@ def process_category(
 
 def process_respiratory_column(
     column_name: str,
-    icu_windows: pl.DataFrame,
-    tables_path: str,
-    file_type: str,
+    db: ClifDB,
     outlier_range: Dict[str, float],
     output_dir: str,
-    num_bins: int = 10
+    num_bins: int = 10,
+    suffix: str = ''
 ) -> Dict[str, Any]:
     """
     Process a single respiratory support column:
@@ -615,54 +734,17 @@ def process_respiratory_column(
     3. Compute ECDF
     4. Compute flat 10 bins (no segmentation)
     5. Save results
-
-    Args:
-        column_name: Column name (e.g., 'fio2_set', 'peep_obs')
-        icu_windows: ICU time windows
-        tables_path: Path to data
-        file_type: File type
-        outlier_range: Dict with 'min' and 'max'
-        output_dir: Output directory
-        num_bins: Number of bins (default: 10)
-
-    Returns:
-        Dictionary with processing statistics
     """
-    file_path = os.path.join(tables_path, f'clif_respiratory_support.{file_type}')
-
-    if not os.path.exists(file_path):
-        raise FileNotFoundError(f"Respiratory support file not found: {file_path}")
+    file_path = db.table_path('respiratory_support')
 
     print(f"  Loading {column_name}...")
 
-    # Scan data with Polars (lazy)
-    data_lazy = pl.scan_parquet(file_path)
-
-    # Select only needed columns
-    data_selected = data_lazy.select([
-        'hospitalization_id',
-        'recorded_dttm',
-        column_name
-    ])
-
-    # Join with ICU time windows
-    data_icu = data_selected.join(
-        icu_windows.lazy(),
-        on='hospitalization_id',
-        how='inner'
+    values = db.fetch_icu_values(
+        parquet_path=file_path,
+        value_col=column_name,
+        datetime_col='recorded_dttm',
     )
-
-    # Filter to values during ICU stay only (temporal filtering)
-    # Strip timezone from datetime column for comparison with timezone-naive ICU windows
-    data_filtered = data_icu.filter(
-        (pl.col('recorded_dttm').dt.replace_time_zone(None) >= pl.col('in_dttm')) &
-        (pl.col('recorded_dttm').dt.replace_time_zone(None) <= pl.col('out_dttm'))
-    ).select([column_name])
-
-    # Collect with streaming
-    values_df = data_filtered.collect(streaming=True)
-
-    original_count = len(values_df)
+    original_count = len(values)
 
     if original_count == 0:
         print(f"  ⚠️  No data found for {column_name} during ICU stays")
@@ -675,11 +757,8 @@ def process_respiratory_column(
         }
 
     # Remove outliers
-    values_clean = values_df.filter(
-        (pl.col(column_name) >= outlier_range['min']) &
-        (pl.col(column_name) <= outlier_range['max'])
-    )
-
+    mask = (values >= outlier_range['min']) & (values <= outlier_range['max'])
+    values_clean = values[mask]
     clean_count = len(values_clean)
 
     if clean_count == 0:
@@ -692,8 +771,7 @@ def process_respiratory_column(
             'num_bins': 0
         }
 
-    # Extract values as numpy array
-    values_array = values_clean[column_name].to_numpy()
+    values_array = values_clean
 
     # ========================================================================
     # Compute ECDF
@@ -702,10 +780,10 @@ def process_respiratory_column(
     ecdf_df = compute_ecdf_compact(values_array)
 
     # Save ECDF
-    ecdf_dir = os.path.join(output_dir, 'ecdf', 'respiratory_support')
-    os.makedirs(ecdf_dir, exist_ok=True)
-    ecdf_path = os.path.join(ecdf_dir, f'{column_name}.parquet')
-    ecdf_df.write_parquet(ecdf_path)
+    ecdf_dir_path = os.path.join(output_dir, 'ecdf', 'respiratory_support')
+    os.makedirs(ecdf_dir_path, exist_ok=True)
+    ecdf_path = os.path.join(ecdf_dir_path, f'{column_name}{suffix}.parquet')
+    ecdf_df.to_parquet(ecdf_path, index=False)
 
     # ========================================================================
     # Compute Flat Bins (15 bins, no segmentation)
@@ -713,14 +791,13 @@ def process_respiratory_column(
 
     bins = create_flat_bins(pd.Series(values_array), num_bins=num_bins)
 
-    # Convert to Polars DataFrame
-    bins_df = pl.DataFrame(bins)
+    bins_df = pd.DataFrame(bins)
 
     # Save bins
-    bins_dir = os.path.join(output_dir, 'bins', 'respiratory_support')
-    os.makedirs(bins_dir, exist_ok=True)
-    bins_path = os.path.join(bins_dir, f'{column_name}.parquet')
-    bins_df.write_parquet(bins_path)
+    bins_dir_path = os.path.join(output_dir, 'bins', 'respiratory_support')
+    os.makedirs(bins_dir_path, exist_ok=True)
+    bins_path = os.path.join(bins_dir_path, f'{column_name}{suffix}.parquet')
+    bins_df.to_parquet(bins_path, index=False)
 
     # Return statistics
     return {
@@ -735,6 +812,310 @@ def process_respiratory_column(
 # ============================================================================
 # Main Processing
 # ============================================================================
+
+def _classify_lab_unit(
+    category: str,
+    unit: str,
+    labs_schema: Dict[str, Any],
+) -> Tuple[str, str | None]:
+    """Classify a (category, unit) pair against the CLIF labs schema.
+
+    The schema (from clifpy) is the authoritative source for which lab
+    categories are legal CLIF vocabulary and which unit spellings are
+    accepted for each category. Separated from the binning-config check
+    so a category that's valid per CLIF but lacks an ECDF bin definition
+    is classified as a coverage gap, not a unit mismatch.
+
+    Returns a tuple (status, canonical):
+        ('not_in_spec', None)       — category is not in CLIF's labs vocab
+        ('unit_mismatch', canonical) — category is valid but unit spelling isn't
+        ('ok', canonical)            — category and unit both accepted
+    """
+    ref_units = labs_schema.get('lab_reference_units', {}) or {}
+    variants = labs_schema.get('allowed_unit_variants', {}) or {}
+    canonical = ref_units.get(category)
+    if canonical is None:
+        return ('not_in_spec', None)
+    allowed = variants.get(canonical) or [canonical]
+    allowed_lower = {str(v).lower().strip() for v in allowed}
+    if (unit or '').lower().strip() not in allowed_lower:
+        return ('unit_mismatch', canonical)
+    return ('ok', canonical)
+
+
+def run_ecdf_pipeline(
+    icu_windows: pd.DataFrame,
+    lab_category_units: pd.DataFrame,
+    db: ClifDB,
+    clif_config: Dict,
+    outlier_config: Dict,
+    lab_vital_config: Dict,
+    labs_schema: Dict[str, Any],
+    output_dir: str,
+    label: str = "overall",
+    suffix: str = ''
+) -> Tuple[List, List, List, List, List]:
+    """
+    Run the full ECDF/bins pipeline for a given set of ICU windows.
+
+    This is the core processing loop extracted from main() so it can be
+    called once for overall and once per encounter-type stratum.
+
+    Returns:
+        (labs_stats, vitals_stats, resp_stats, mismatch_entries, coverage_entries)
+
+    Two log streams are returned separately:
+      * mismatch_entries — data that doesn't comply with the CLIF labs schema
+        (unknown category or unrecognized unit spelling). Written to
+        unit_mismatches.log by the caller.
+      * coverage_entries — valid CLIF categories that the ECDF pipeline
+        skipped because of missing binning/outlier config, plus any runtime
+        errors during bin generation. Written to ecdf_coverage_gaps.log.
+    """
+    # Register the (possibly stratum-filtered) time windows for SQL joins
+    db.register('icu_windows', icu_windows)
+
+    mismatch_entries: List[str] = []
+    coverage_entries: List[str] = []
+
+    # ── Batch pre-fetch: load all ICU-windowed values in one pass ──────
+    # This avoids re-reading parquet metadata + re-joining with icu_windows
+    # for each of the ~90 categories.  ~40-50% speedup on ECDF hot loop.
+    import time as _time
+    _batch_t0 = _time.time()
+    try:
+        _labs_view = db.preload_icu_joined_view(
+            'labs', 'lab_value_numeric', 'lab_result_dttm', 'lab_category')
+        _labs_batch = db.fetch_batch_categories(_labs_view, 'lab_value_numeric', [], 'labs')
+        print(f"  Batch-loaded labs: {len(_labs_batch)} (category, unit) groups "
+              f"in {_time.time() - _batch_t0:.1f}s")
+    except Exception as e:
+        print(f"  ⚠️ Labs batch pre-fetch failed ({e}), falling back to per-category queries")
+        _labs_batch = {}
+
+    _batch_t1 = _time.time()
+    try:
+        _vitals_view = db.preload_icu_joined_view(
+            'vitals', 'vital_value', 'recorded_dttm', 'vital_category')
+        _vitals_batch = db.fetch_batch_categories(_vitals_view, 'vital_value', [], 'vitals')
+        print(f"  Batch-loaded vitals: {len(_vitals_batch)} categories "
+              f"in {_time.time() - _batch_t1:.1f}s")
+    except Exception as e:
+        print(f"  ⚠️ Vitals batch pre-fetch failed ({e}), falling back to per-category queries")
+        _vitals_batch = {}
+    # ───────────────────────────────────────────────────────────────────
+
+    # ========================================================================
+    # Process Labs
+    # ========================================================================
+
+    print("="*80)
+    print(f"Processing Labs [{label}]")
+    print("="*80)
+
+    labs_config = lab_vital_config.get('labs', {})
+    labs_outlier = outlier_config['tables']['labs']['lab_value_numeric']
+
+    labs_stats = []
+    processed_categories = set()
+
+    for row in lab_category_units.itertuples(index=False):
+        category = row.lab_category
+        unit = row.reference_unit
+
+        if category in processed_categories:
+            continue
+
+        # Schema-compliance check first: is this (category, unit) pair legal
+        # CLIF vocabulary? Any failure here is a data-quality issue for the
+        # site, not a coverage gap in this repo's ECDF configs.
+        status, canonical = _classify_lab_unit(category, unit, labs_schema)
+        if status == 'not_in_spec':
+            mismatch_entries.append(f"[NOT IN CLIF SPEC] {category} ({unit})")
+            continue
+        if status == 'unit_mismatch':
+            mismatch_entries.append(
+                f"[UNIT MISMATCH] {category}: found '{unit}' in data, "
+                f"CLIF canonical is '{canonical}'"
+            )
+            continue
+
+        # Data is schema-valid; now check ECDF pipeline coverage.
+        if category not in labs_config:
+            coverage_entries.append(
+                f"[ECDF SKIP] labs.{category} ({unit}): "
+                f"no binning config in lab_vital_config.yaml"
+            )
+            continue
+
+        if category not in labs_outlier:
+            coverage_entries.append(
+                f"[ECDF SKIP] labs.{category} ({unit}): "
+                f"no outlier bounds in outlier_config.yaml"
+            )
+            continue
+
+        config_units = labs_config[category].get('reference_unit', [])
+        if isinstance(config_units, str):
+            config_units = [config_units]
+
+        processed_categories.add(category)
+
+        try:
+            # Look up pre-fetched values from batch
+            _prefetched = None
+            if _labs_batch:
+                import numpy as _np
+                # Match: batch key is (category_lower, unit_lower)
+                # config_units may be a list of acceptable units
+                _cat_lower = category.lower().strip()
+                _matched_arrays = []
+                for (_bc, _bu), _bv in _labs_batch.items():
+                    if _bc == _cat_lower:
+                        if isinstance(config_units, list):
+                            if _bu in [u.lower().strip() for u in config_units]:
+                                _matched_arrays.append(_bv)
+                            elif _bu is None or _bu == '' or _bu == '(no units)':
+                                if any(u.lower().strip() == '(no units)' for u in config_units):
+                                    _matched_arrays.append(_bv)
+                        elif _bu == config_units.lower().strip():
+                            _matched_arrays.append(_bv)
+                if _matched_arrays:
+                    _prefetched = _np.concatenate(_matched_arrays) if len(_matched_arrays) > 1 else _matched_arrays[0]
+
+            stats = process_category(
+                table_type='labs',
+                category=category,
+                unit=config_units,
+                db=db,
+                outlier_range=labs_outlier[category],
+                cat_config=labs_config[category],
+                output_dir=output_dir,
+                extreme_bins_count=5,
+                suffix=suffix,
+                prefetched_values=_prefetched,
+            )
+            labs_stats.append(stats)
+
+            print(f"  ✓ {category} ({config_units}): {stats['clean_count']:,} values → "
+                  f"ECDF: {stats['ecdf_distinct_pairs']:,} pairs, "
+                  f"Bins: {stats['num_bins']}")
+
+        except Exception as e:
+            print(f"  ❌ Error processing {category} ({config_units}): {e}")
+            coverage_entries.append(f"[ERROR] labs.{category} ({config_units}): {str(e)}")
+
+    print()
+
+    # ========================================================================
+    # Process Vitals
+    # ========================================================================
+
+    print("="*80)
+    print(f"Processing Vitals [{label}]")
+    print("="*80)
+
+    vitals_config = lab_vital_config.get('vitals', {})
+    vitals_outlier = outlier_config['tables']['vitals']['vital_value']
+
+    vitals_stats = []
+
+    for category in sorted(vitals_config.keys()):
+        if category not in vitals_outlier:
+            print(f"  ⚠️  Skipping {category} (no outlier config)")
+            coverage_entries.append(
+                f"[ECDF SKIP] vitals.{category}: no outlier bounds in outlier_config.yaml"
+            )
+            continue
+
+        extreme_bins = 5 if category in ['height_cm', 'weight_kg'] else 10
+
+        try:
+            # Look up pre-fetched values from batch
+            _prefetched_v = None
+            if _vitals_batch:
+                _cat_lower = category.lower().strip()
+                _bv = _vitals_batch.get((_cat_lower, None))
+                if _bv is not None and len(_bv) > 0:
+                    _prefetched_v = _bv
+
+            stats = process_category(
+                table_type='vitals',
+                category=category,
+                unit=None,
+                db=db,
+                outlier_range=vitals_outlier[category],
+                cat_config=vitals_config[category],
+                output_dir=output_dir,
+                extreme_bins_count=extreme_bins,
+                prefetched_values=_prefetched_v,
+                suffix=suffix
+            )
+            vitals_stats.append(stats)
+
+            print(f"  ✓ {category}: {stats['clean_count']:,} values → "
+                  f"ECDF: {stats['ecdf_distinct_pairs']:,} pairs, "
+                  f"Bins: {stats['num_bins']}")
+
+        except Exception as e:
+            print(f"  ❌ Error processing {category}: {e}")
+            coverage_entries.append(f"[ERROR] vitals.{category}: {str(e)}")
+
+    print()
+
+    # ========================================================================
+    # Process Respiratory Support
+    # ========================================================================
+
+    print("="*80)
+    print(f"Processing Respiratory Support (17 columns) [{label}]")
+    print("="*80)
+
+    resp_outlier = outlier_config['tables'].get('respiratory_support', {})
+
+    resp_columns = [
+        'fio2_set', 'lpm_set', 'tidal_volume_set', 'resp_rate_set',
+        'pressure_control_set', 'pressure_support_set', 'flow_rate_set',
+        'peak_inspiratory_pressure_set', 'inspiratory_time_set', 'peep_set',
+        'tidal_volume_obs', 'resp_rate_obs', 'plateau_pressure_obs',
+        'peak_inspiratory_pressure_obs', 'peep_obs', 'minute_vent_obs',
+        'mean_airway_pressure_obs'
+    ]
+
+    resp_stats = []
+
+    for column in resp_columns:
+        if column not in resp_outlier:
+            print(f"  ⚠️  Skipping {column} (no outlier config)")
+            coverage_entries.append(
+                f"[ECDF SKIP] respiratory_support.{column}: "
+                f"no outlier bounds in outlier_config.yaml"
+            )
+            continue
+
+        try:
+            stats = process_respiratory_column(
+                column_name=column,
+                db=db,
+                outlier_range=resp_outlier[column],
+                output_dir=output_dir,
+                num_bins=10,
+                suffix=suffix
+            )
+            resp_stats.append(stats)
+
+            print(f"  ✓ {column}: {stats['clean_count']:,} values → "
+                  f"ECDF: {stats['ecdf_distinct_pairs']:,} pairs, "
+                  f"Bins: {stats['num_bins']}")
+
+        except Exception as e:
+            print(f"  ❌ Error processing {column}: {e}")
+            coverage_entries.append(f"[ERROR] respiratory_support.{column}: {str(e)}")
+
+    print()
+
+    return labs_stats, vitals_stats, resp_stats, mismatch_entries, coverage_entries
+
 
 def main():
     """Main processing pipeline."""
@@ -757,26 +1138,54 @@ def main():
     # Setup Output Directory
     # ========================================================================
 
-    output_dir = 'output/final'
-    os.makedirs(output_dir, exist_ok=True)
+    ensure_output_tree()
+
+    output_dir = str(OVERALL)
     print(f"Output directory: {output_dir}\n")
 
-    # Copy configs
-    copy_configs_to_output(output_dir)
+    copy_configs_to_output()
     print()
 
-    # Setup log file
-    log_file = os.path.join(output_dir, 'unit_mismatches.log')
-    log_entries = []
+    mismatches_log_file = str(meta_dir() / 'unit_mismatches.log')
+    coverage_log_file = str(meta_dir() / 'ecdf_coverage_gaps.log')
+
+    # Load the CLIF labs schema — authoritative source for legal lab_category
+    # values and the accepted unit-spelling variants for each.
+    from modules.utils.clif_loader import _load_schema
+    labs_schema = _load_schema('labs') or {}
+
+    # ========================================================================
+    # Initialise shared DuckDB connection
+    # ========================================================================
+
+    db = ClifDB(clif_config['tables_path'], clif_config['file_type'])
 
     # ========================================================================
     # Extract ICU Time Windows
     # ========================================================================
 
-    icu_windows = extract_icu_time_windows(
-        clif_config['tables_path'],
-        clif_config['file_type']
-    )
+    icu_windows = extract_icu_time_windows(db)
+    print()
+
+    # ========================================================================
+    # Compute Event-Based Time Windows for Strata
+    # ========================================================================
+
+    discharge_times = load_discharge_times(db)
+
+    # Register discharge_times so event-window functions can join against it
+    db.register('discharge_times', discharge_times)
+
+    vaso_windows = extract_vaso_event_windows(db)
+    resp_windows = extract_advanced_resp_event_windows(db)
+    nippv_hfnc_windows = extract_nippv_hfnc_event_windows(db)
+
+    all_time_windows = {
+        'icu': icu_windows,
+        'vaso': vaso_windows,
+        'resp': resp_windows,
+        'nippv_hfnc': nippv_hfnc_windows,
+    }
     print()
 
     # ========================================================================
@@ -787,196 +1196,112 @@ def main():
     print("Discovering Lab Category-Unit Combinations")
     print("="*80)
 
-    lab_category_units = discover_lab_category_units(
-        clif_config['tables_path'],
-        clif_config['file_type']
+    lab_category_units = discover_lab_category_units(db)
+
+    # Audit CSV: every (lab_category, reference_unit) pair found in the data,
+    # classified against the CLIF labs schema and sorted by row count. Useful
+    # as a one-glance answer to "what lab vocabulary is in this dataset, and
+    # how much of it complies with CLIF?" — independent of ECDF bin config.
+    lab_cat_units_csv = str(meta_dir() / 'lab_category_units.csv')
+    write_lab_category_units_csv(lab_category_units, labs_schema, lab_cat_units_csv)
+    print(f"✓ Lab category/unit audit: {lab_cat_units_csv}")
+    print()
+
+    # ========================================================================
+    # Run overall ECDF pipeline
+    # ========================================================================
+
+    labs_stats, vitals_stats, resp_stats, mismatch_entries, coverage_entries = run_ecdf_pipeline(
+        icu_windows=icu_windows,
+        lab_category_units=lab_category_units,
+        db=db,
+        clif_config=clif_config,
+        outlier_config=outlier_config,
+        lab_vital_config=lab_vital_config,
+        labs_schema=labs_schema,
+        output_dir=output_dir,
+        label="overall"
     )
-    print()
 
     # ========================================================================
-    # Process Labs
+    # Run stratified ECDF pipelines
     # ========================================================================
 
-    print("="*80)
-    print("Processing Labs")
-    print("="*80)
+    try:
+        from modules.strata import load_strata_hospitalization_ids
+        from modules.utils.output_paths import parse_stratum, cohort_dir
 
-    labs_config = lab_vital_config.get('labs', {})
-    labs_outlier = outlier_config['tables']['labs']['lab_value_numeric']
+        strata_hosp_ids = load_strata_hospitalization_ids()
 
-    labs_stats = []
-    processed_categories = set()  # Track processed categories to avoid duplicates
+        for stratum_name, hosp_ids in strata_hosp_ids.items():
+            # Select the right temporal windows for this stratum
+            window_type = STRATUM_WINDOW_TYPE.get(stratum_name, 'icu')
+            base_windows = all_time_windows[window_type]
 
-    # Iterate through discovered category-unit combinations
-    for row in lab_category_units.iter_rows(named=True):
-        category = row['lab_category']
-        unit = row['reference_unit']
+            filtered_windows = base_windows[
+                base_windows['hospitalization_id'].isin(hosp_ids)
+            ]
+            if len(filtered_windows) == 0:
+                print(f"  ⚠️ Skipping {stratum_name}: no time windows")
+                continue
 
-        # Skip if we already processed this category
-        if category in processed_categories:
-            continue
+            window_label = {'icu': 'ICU', 'vaso': 'vaso-onset→discharge', 'resp': 'resp-onset→discharge', 'nippv_hfnc': 'nippv/hfnc-onset→discharge'}
+            print(f"\n{'='*80}")
+            print(f"STRATIFIED ECDF: {stratum_name} "
+                  f"({len(filtered_windows):,} {window_label[window_type]} windows)")
+            print(f"{'='*80}\n")
 
-        # Check if category exists in config
-        if category not in labs_config:
-            log_entries.append(f"[SKIP] {category} ({unit}): Category not in lab_vital_config.yaml")
-            continue
+            _, stratum_suffix = parse_stratum(stratum_name)
+            stratum_output_dir = str(cohort_dir(stratum_name))
+            os.makedirs(stratum_output_dir, exist_ok=True)
 
-        # Check if category has outlier config
-        if category not in labs_outlier:
-            log_entries.append(f"[SKIP] {category} ({unit}): Category not in outlier_config.yaml")
-            continue
-
-        # Check if unit matches config's reference_unit (config stores as list)
-        config_units = labs_config[category].get('reference_unit', [])
-        # Handle both list and string config formats
-        if isinstance(config_units, str):
-            config_units = [config_units]
-        if unit not in config_units:
-            log_entries.append(
-                f"[UNIT MISMATCH] {category}: Found unit '{unit}' in data, "
-                f"but config expects one of {config_units}"
+            s_labs, s_vitals, s_resp, s_mismatch, s_coverage = run_ecdf_pipeline(
+                icu_windows=filtered_windows,
+                lab_category_units=lab_category_units,
+                db=db,
+                clif_config=clif_config,
+                outlier_config=outlier_config,
+                lab_vital_config=lab_vital_config,
+                labs_schema=labs_schema,
+                output_dir=stratum_output_dir,
+                label=stratum_name,
+                suffix=stratum_suffix
             )
-            continue
+            mismatch_entries.extend(s_mismatch)
+            coverage_entries.extend(s_coverage)
+            print(f"  ✅ {stratum_name}: {len(s_labs)} labs, {len(s_vitals)} vitals, {len(s_resp)} resp")
 
-        # Mark as processed before attempting
-        processed_categories.add(category)
-
-        # Process this category-unit combination
-        # Pass the full config_units list so process_category can match all valid units
-        # (including NULL handling when "(no units)" is in the list)
-        try:
-            stats = process_category(
-                table_type='labs',
-                category=category,
-                unit=config_units,
-                icu_windows=icu_windows,
-                tables_path=clif_config['tables_path'],
-                file_type=clif_config['file_type'],
-                outlier_range=labs_outlier[category],
-                cat_config=labs_config[category],
-                output_dir=output_dir,
-                extreme_bins_count=5  # Labs use 5 extreme bins
-            )
-            labs_stats.append(stats)
-
-            print(f"  ✓ {category} ({config_units}): {stats['clean_count']:,} values → "
-                  f"ECDF: {stats['ecdf_distinct_pairs']:,} pairs, "
-                  f"Bins: {stats['num_bins']}")
-
-        except Exception as e:
-            print(f"  ❌ Error processing {category} ({config_units}): {e}")
-            log_entries.append(f"[ERROR] {category} ({config_units}): {str(e)}")
-
-    print()
-
-    # ========================================================================
-    # Process Vitals
-    # ========================================================================
-
-    print("="*80)
-    print("Processing Vitals")
-    print("="*80)
-
-    vitals_config = lab_vital_config.get('vitals', {})
-    vitals_outlier = outlier_config['tables']['vitals']['vital_value']
-
-    vitals_stats = []
-
-    for category in sorted(vitals_config.keys()):
-        if category not in vitals_outlier:
-            print(f"  ⚠️  Skipping {category} (no outlier config)")
-            log_entries.append(f"[SKIP] {category}: Category not in outlier_config.yaml")
-            continue
-
-        # Determine extreme bins count: 5 for height/weight, 10 for others
-        extreme_bins = 5 if category in ['height_cm', 'weight_kg'] else 10
-
-        try:
-            stats = process_category(
-                table_type='vitals',
-                category=category,
-                unit=None,  # Vitals don't use unit differentiation
-                icu_windows=icu_windows,
-                tables_path=clif_config['tables_path'],
-                file_type=clif_config['file_type'],
-                outlier_range=vitals_outlier[category],
-                cat_config=vitals_config[category],
-                output_dir=output_dir,
-                extreme_bins_count=extreme_bins  # 10 for most vitals, 5 for height/weight
-            )
-            vitals_stats.append(stats)
-
-            print(f"  ✓ {category}: {stats['clean_count']:,} values → "
-                  f"ECDF: {stats['ecdf_distinct_pairs']:,} pairs, "
-                  f"Bins: {stats['num_bins']}")
-
-        except Exception as e:
-            print(f"  ❌ Error processing {category}: {e}")
-            log_entries.append(f"[ERROR] {category}: {str(e)}")
-
-    print()
-
-    # ========================================================================
-    # Process Respiratory Support
-    # ========================================================================
-
-    print("="*80)
-    print("Processing Respiratory Support (17 columns)")
-    print("="*80)
-
-    resp_outlier = outlier_config['tables'].get('respiratory_support', {})
-
-    # List of all 17 numerical columns in respiratory_support
-    resp_columns = [
-        'fio2_set', 'lpm_set', 'tidal_volume_set', 'resp_rate_set',
-        'pressure_control_set', 'pressure_support_set', 'flow_rate_set',
-        'peak_inspiratory_pressure_set', 'inspiratory_time_set', 'peep_set',
-        'tidal_volume_obs', 'resp_rate_obs', 'plateau_pressure_obs',
-        'peak_inspiratory_pressure_obs', 'peep_obs', 'minute_vent_obs',
-        'mean_airway_pressure_obs'
-    ]
-
-    resp_stats = []
-
-    for column in resp_columns:
-        if column not in resp_outlier:
-            print(f"  ⚠️  Skipping {column} (no outlier config)")
-            log_entries.append(f"[SKIP] respiratory_support.{column}: Not in outlier_config.yaml")
-            continue
-
-        try:
-            stats = process_respiratory_column(
-                column_name=column,
-                icu_windows=icu_windows,
-                tables_path=clif_config['tables_path'],
-                file_type=clif_config['file_type'],
-                outlier_range=resp_outlier[column],
-                output_dir=output_dir,
-                num_bins=10
-            )
-            resp_stats.append(stats)
-
-            print(f"  ✓ {column}: {stats['clean_count']:,} values → "
-                  f"ECDF: {stats['ecdf_distinct_pairs']:,} pairs, "
-                  f"Bins: {stats['num_bins']}")
-
-        except Exception as e:
-            print(f"  ❌ Error processing {column}: {e}")
-            log_entries.append(f"[ERROR] respiratory_support.{column}: {str(e)}")
-
-    print()
+    except FileNotFoundError as e:
+        print(f"\n  ⚠️ Skipping stratified ECDF: {e}")
 
     # ========================================================================
     # Write Log File
     # ========================================================================
 
-    if log_entries:
-        with open(log_file, 'w', encoding='utf-8') as f:
-            f.write("Unit Mismatches and Processing Log\n")
-            f.write("="*80 + "\n\n")
-            for entry in log_entries:
+    if mismatch_entries:
+        with open(mismatches_log_file, 'w', encoding='utf-8') as f:
+            f.write("CLIF Schema Unit Mismatches\n")
+            f.write("="*80 + "\n")
+            f.write("Data rows whose lab_category or reference_unit isn't accepted\n")
+            f.write("by the CLIF labs schema (clifpy/schemas/labs_schema.yaml).\n")
+            f.write("These are data-quality issues for the site to investigate.\n\n")
+            for entry in mismatch_entries:
                 f.write(entry + "\n")
-        print(f"✓ Log file written: {log_file} ({len(log_entries)} entries)")
+        print(f"✓ Mismatch log: {mismatches_log_file} ({len(mismatch_entries)} entries)")
+
+    if coverage_entries:
+        with open(coverage_log_file, 'w', encoding='utf-8') as f:
+            f.write("ECDF Coverage Gaps and Processing Issues\n")
+            f.write("="*80 + "\n")
+            f.write("Categories that are valid per the CLIF schema but the ECDF\n")
+            f.write("pipeline skipped because the binning or outlier config\n")
+            f.write("doesn't define them — plus any runtime errors. These are\n")
+            f.write("coverage gaps in this repo's configs, not data issues.\n\n")
+            for entry in coverage_entries:
+                f.write(entry + "\n")
+        print(f"✓ Coverage log: {coverage_log_file} ({len(coverage_entries)} entries)")
+
+    if mismatch_entries or coverage_entries:
         print()
 
     # ========================================================================
@@ -992,43 +1317,19 @@ def main():
     print()
 
     print(f"Labs: {len(labs_stats)} category-unit combinations processed")
-    for stat in labs_stats:
-        if stat['clean_count'] > 0:
-            compression_ratio = stat['clean_count'] / stat['ecdf_distinct_pairs'] if stat['ecdf_distinct_pairs'] > 0 else 0
-            unit_display = f" ({stat['unit']})" if stat['unit'] else ""
-            print(f"  - {stat['category']:20s}{unit_display:15s}: "
-                  f"{stat['clean_count']:>10,} values → "
-                  f"{stat['ecdf_distinct_pairs']:>8,} ECDF pairs "
-                  f"({compression_ratio:.1f}x compression), "
-                  f"{stat['num_bins']:>2} bins")
-
-    print()
     print(f"Vitals: {len(vitals_stats)} categories processed")
-    for stat in vitals_stats:
-        if stat['clean_count'] > 0:
-            compression_ratio = stat['clean_count'] / stat['ecdf_distinct_pairs'] if stat['ecdf_distinct_pairs'] > 0 else 0
-            print(f"  - {stat['category']:20s}: "
-                  f"{stat['clean_count']:>10,} values → "
-                  f"{stat['ecdf_distinct_pairs']:>8,} ECDF pairs "
-                  f"({compression_ratio:.1f}x compression), "
-                  f"{stat['num_bins']:>2} bins")
-
+    print(f"Respiratory Support: {len(resp_stats)} columns processed")
     print()
-    print(f"Total processing time: {duration:.1f} seconds")
-    print()
-    print(f"Output saved to: {output_dir}/")
-    print("  - configs/")
-    print("  - ecdf/labs/*.parquet (with unit in filename)")
-    print("  - ecdf/vitals/*.parquet")
-    print("  - bins/labs/*.parquet (with unit in filename)")
-    print("  - bins/vitals/*.parquet")
-    if log_entries:
-        print(f"  - unit_mismatches.log ({len(log_entries)} entries)")
-    print()
-    print("="*80)
-    print("✅ Done!")
-    print("="*80)
 
+    all_stats = labs_stats + vitals_stats + resp_stats
+    total_original = sum(s.get('original_count', 0) for s in all_stats)
+    total_clean = sum(s.get('clean_count', 0) for s in all_stats)
 
-if __name__ == '__main__':
-    main()
+    if total_original > 0:
+        pct = total_clean / total_original * 100
+        print(f"Data Retention: {total_clean:,} / {total_original:,} ({pct:.1f}%)")
+    print(f"Duration: {duration:.1f}s ({duration/60:.1f}m)")
+    print()
+
+    # Clean up
+    db.close()

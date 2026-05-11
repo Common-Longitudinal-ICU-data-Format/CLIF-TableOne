@@ -16,15 +16,8 @@ class CodeStatusAnalyzer(BaseTableAnalyzer):
         """Return the correct table name with underscore."""
         return 'code_status'
 
-    def load_table(self, sample_filter=None):
-        """
-        Load Code Status table using clifpy.
-
-        Parameters:
-        -----------
-        sample_filter : list, optional
-            List of hospitalization_ids to filter to (uses clifpy filters)
-        """
+    def load_table(self):
+        """Load Code Status table using clifpy."""
         try:
             from clifpy.tables.code_status import CodeStatus
             import os
@@ -45,25 +38,16 @@ class CodeStatusAnalyzer(BaseTableAnalyzer):
                 return
 
             # Clifpy saves files directly to output_directory, so pass the final subdirectory
-            clifpy_output_dir = os.path.join(self.output_dir, "final", "clifpy")
+            from modules.utils.output_paths import validation_json_reports_dir
+            clifpy_output_dir = str(validation_json_reports_dir())
             os.makedirs(clifpy_output_dir, exist_ok=True)
 
-            # Use filters parameter ONLY when sample is provided
-            if sample_filter is not None:
-                self.table = CodeStatus.from_file(
-                    data_directory=self.data_dir,
-                    filetype=self.filetype,
-                    timezone=self.timezone,
-                    output_directory=clifpy_output_dir,
-                    filters={'hospitalization_id': list(sample_filter)}
-                )
-            else:
-                self.table = CodeStatus.from_file(
-                    data_directory=self.data_dir,
-                    filetype=self.filetype,
-                    timezone=self.timezone,
-                    output_directory=clifpy_output_dir
-                )
+            self.table = CodeStatus.from_file(
+                data_directory=self.data_dir,
+                filetype=self.filetype,
+                timezone=self.timezone,
+                output_directory=clifpy_output_dir
+            )
 
             # Move any CSV files that clifpy created in parent directory to final/
             self._move_clifpy_csvs_to_final()
@@ -76,12 +60,14 @@ class CodeStatusAnalyzer(BaseTableAnalyzer):
             self.table = None
 
     def _move_clifpy_csvs_to_final(self):
-        """Move any CSV files created by clifpy from output/ to output/final/"""
+        """Move any CSV files created by clifpy from output/ to output/final/validation/json_reports/."""
         import os
         import shutil
+        from modules.utils.output_paths import validation_json_reports_dir
 
         parent_dir = self.output_dir
-        final_dir = os.path.join(parent_dir, 'final')
+        final_dir = str(validation_json_reports_dir())
+        os.makedirs(final_dir, exist_ok=True)
 
         if not os.path.exists(parent_dir):
             return
@@ -96,7 +82,7 @@ class CodeStatusAnalyzer(BaseTableAnalyzer):
                         dest = os.path.join(final_dir, filename)
                         try:
                             shutil.move(source, dest)
-                            print(f"Moved {filename} to final/")
+                            print(f"Moved {filename} to validation/json_reports/")
                         except Exception as e:
                             print(f"Could not move {filename}: {e}")
                         break
@@ -269,6 +255,24 @@ class CodeStatusAnalyzer(BaseTableAnalyzer):
                 'percentage': round((invalid_mask.sum() / len(df) * 100) if len(df) > 0 else 0, 2),
                 'status': 'pass' if invalid_mask.sum() == 0 else 'error',
                 'invalid_categories': invalid_categories
+            }
+
+        # Check for duplicate code status entries (same patient + timestamp)
+        if all(col in df.columns for col in ['patient_id', 'start_dttm']):
+            duplicates_mask = df.duplicated(subset=['patient_id', 'start_dttm'], keep=False)
+            duplicates = duplicates_mask.sum()
+
+            examples = None
+            if duplicates > 0:
+                example_cols = ['patient_id', 'start_dttm', 'code_status_category']
+                example_cols = [col for col in example_cols if col in df.columns]
+                examples = df[duplicates_mask][example_cols].head(10)
+
+            quality_checks['duplicate_code_status_entries'] = {
+                'count': int(duplicates),
+                'percentage': round((duplicates / len(df) * 100) if len(df) > 0 else 0, 2),
+                'status': 'pass' if duplicates == 0 else 'warning',
+                'examples': examples
             }
 
         return quality_checks

@@ -8,15 +8,17 @@ across sessions and allowing users to start fresh by deleting files.
 
 from typing import Dict, Any, Optional
 from datetime import datetime
-import streamlit as st
+import logging
 import os
 import json
 
+logger = logging.getLogger(__name__)
 
-def _get_output_dir() -> str:
+
+def _get_output_dir(config: dict) -> str:
     """Get the output directory from config."""
-    if 'config' in st.session_state:
-        return os.path.join(st.session_state.config.get('output_dir', 'output'), 'final')
+    if config:
+        return os.path.join(config.get('output_dir', 'output'), 'final')
     return os.path.join('output', 'final')
 
 
@@ -28,43 +30,44 @@ def _get_file_timestamp(filepath: str) -> Optional[str]:
     return None
 
 
-def _file_exists(table_name: str, file_suffix: str) -> bool:
+def _file_exists(table_name: str, file_suffix: str, config: dict) -> bool:
     """Check if a file exists for the given table."""
-    output_dir = _get_output_dir()
+    output_dir = _get_output_dir(config)
     filepath = os.path.join(output_dir, f"{table_name}{file_suffix}")
     return os.path.exists(filepath)
 
 
-def _load_json_file(table_name: str, file_suffix: str) -> Optional[Dict[str, Any]]:
+def _load_json_file(table_name: str, file_suffix: str, config: dict) -> Optional[Dict[str, Any]]:
     """Load a JSON file for the given table."""
-    output_dir = _get_output_dir()
+    output_dir = _get_output_dir(config)
     filepath = os.path.join(output_dir, f"{table_name}{file_suffix}")
 
     if not os.path.exists(filepath):
         return None
 
     try:
-        with open(filepath, 'r') as f:
+        with open(filepath, 'r', encoding='utf-8') as f:
             return json.load(f)
     except Exception as e:
         print(f"Error loading {filepath}: {e}")
         return None
 
 
-def initialize_cache():
+def initialize_cache(store: dict):
     """Initialize the cache in session state if it doesn't exist."""
-    if 'analyzed_tables' not in st.session_state:
-        st.session_state.analyzed_tables = {}
+    if 'analyzed_tables' not in store:
+        store['analyzed_tables'] = {}
 
-    if 'cache_metadata' not in st.session_state:
-        st.session_state.cache_metadata = {
+    if 'cache_metadata' not in store:
+        store['cache_metadata'] = {
             'initialized': datetime.now().isoformat(),
             'last_cleared': None
         }
 
 
 def cache_analysis(table_name: str, analyzer: Any, validation_results: Dict[str, Any],
-                   summary_stats: Dict[str, Any], feedback: Optional[Dict[str, Any]] = None):
+                   summary_stats: Dict[str, Any], feedback: Optional[Dict[str, Any]] = None,
+                   store: dict = None, config: dict = None):
     """
     Cache analysis results for a table.
 
@@ -80,16 +83,25 @@ def cache_analysis(table_name: str, analyzer: Any, validation_results: Dict[str,
         Summary statistics
     feedback : dict, optional
         User feedback on validation errors
+    store : dict
+        Session store dictionary
+    config : dict
+        Configuration dictionary
     """
-    initialize_cache()
+    if store is None:
+        store = {}
+    if config is None:
+        config = {}
 
-    st.session_state.analyzed_tables[table_name] = {
+    initialize_cache(store)
+
+    store['analyzed_tables'][table_name] = {
         'analyzer': analyzer,
         'validation': validation_results,
         'summary': summary_stats,
         'feedback': feedback,
         'timestamp': datetime.now().isoformat(),
-        'config_hash': _get_config_hash(),
+        'config_hash': _get_config_hash(config),
         'validation_complete': validation_results is not None,
         'summary_complete': summary_stats is not None,
         'validation_timestamp': datetime.now().isoformat() if validation_results else None,
@@ -97,7 +109,7 @@ def cache_analysis(table_name: str, analyzer: Any, validation_results: Dict[str,
     }
 
 
-def get_cached_analysis(table_name: str) -> Optional[Dict[str, Any]]:
+def get_cached_analysis(table_name: str, store: dict, config: dict) -> Optional[Dict[str, Any]]:
     """
     Get cached analysis for a table by checking files in output/final.
 
@@ -105,51 +117,80 @@ def get_cached_analysis(table_name: str) -> Optional[Dict[str, Any]]:
     -----------
     table_name : str
         Name of the table
+    store : dict
+        Session store dictionary
+    config : dict
+        Configuration dictionary
 
     Returns:
     --------
     dict or None
         Cached analysis structure or None if not found
     """
-    initialize_cache()
+    initialize_cache(store)
 
-    output_dir = _get_output_dir()
-    results_dir = os.path.join(output_dir, 'results')
+    from modules.utils.output_paths import (
+        validation_json_reports_dir, validation_consolidated_dir, validation_feedback_dir,
+    )
 
-    # Check for validation response file (has feedback and adjusted status) in results subdirectory
+    per_table_dir = str(validation_json_reports_dir())
+    consolidated_dir = str(validation_consolidated_dir())
+    feedback_dir = str(validation_feedback_dir())
+
+    # Check for validation response file (has feedback and adjusted status)
     feedback = None
-    feedback_path = os.path.join(results_dir, f"{table_name}_validation_response.json")
+    feedback_path = os.path.join(feedback_dir, f"{table_name}_validation_response.json")
     if os.path.exists(feedback_path):
         try:
-            with open(feedback_path, 'r') as f:
+            with open(feedback_path, 'r', encoding='utf-8') as f:
                 feedback = json.load(f)
         except Exception as e:
             print(f"Error loading feedback: {e}")
 
-    # Check for raw validation file in results subdirectory
+    # Check for raw validation file in validation/consolidated/, then fallback to validation/json_reports/ DQA file
     validation = None
-    validation_path = os.path.join(results_dir, f"{table_name}_summary_validation.json")
+    validation_path = os.path.join(consolidated_dir, f"{table_name}_summary_validation.json")
     if os.path.exists(validation_path):
         try:
-            with open(validation_path, 'r') as f:
-                validation = json.load(f)
+            with open(validation_path, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+            # Validate it has DQA structure (conformance/completeness/plausibility)
+            if any(k in data for k in ('conformance', 'completeness', 'plausibility')):
+                validation = data
+            else:
+                logger.debug("%s_summary_validation.json has wrong structure, skipping", table_name)
         except Exception as e:
-            print(f"Error loading validation: {e}")
+            print(f"Error loading validation for {table_name}: {e}")
 
-    # Check for summary file in results subdirectory
+    if validation is None:
+        clifpy_path = os.path.join(per_table_dir, f"{table_name}_dqa.json")
+        if os.path.exists(clifpy_path):
+            try:
+                with open(clifpy_path, 'r', encoding='utf-8') as f:
+                    validation = json.load(f)
+                logger.debug(
+                    "Loaded %s DQA from validation/json_reports: keys=%s",
+                    table_name,
+                    list(validation.keys()) if validation else None,
+                )
+            except Exception as e:
+                print(f"Error loading validation/json_reports DQA for {table_name}: {e}")
+        else:
+            logger.debug("No DQA file found for %s at %s", table_name, clifpy_path)
+
+    # Check for summary file in dqa/consolidated/
     summary = None
-    summary_path = os.path.join(results_dir, f"{table_name}_summary_summary.json")
+    summary_path = os.path.join(consolidated_dir, f"{table_name}_summary_summary.json")
     if os.path.exists(summary_path):
         try:
-            with open(summary_path, 'r') as f:
+            with open(summary_path, 'r', encoding='utf-8') as f:
                 summary = json.load(f)
         except Exception as e:
             print(f"Error loading summary: {e}")
 
-    # Check for CSV validation artifacts
-    validation_csv_exists = _file_exists(table_name, '.csv') or \
-                           os.path.exists(os.path.join(output_dir, f'validation_errors_{table_name}.csv'))
-    missing_csv_exists = os.path.exists(os.path.join(output_dir, f'missing_data_stats_{table_name}.csv'))
+    # Check for CSV validation artifacts (now in validation/json_reports/)
+    validation_csv_exists = os.path.exists(os.path.join(per_table_dir, f'validation_errors_{table_name}.csv'))
+    missing_csv_exists = os.path.exists(os.path.join(per_table_dir, f'missing_data_stats_{table_name}.csv'))
 
     # Determine if anything exists
     has_validation = validation is not None or validation_csv_exists
@@ -158,17 +199,26 @@ def get_cached_analysis(table_name: str) -> Optional[Dict[str, Any]]:
     if not has_validation and not has_summary and feedback is None:
         return None
 
-    # Get timestamp from most recent file in results subdirectory
+    # Get timestamp from most recent file
     timestamps = []
-    for suffix in ['_validation_response.json', '_summary_validation.json', '_summary_summary.json']:
-        filepath = os.path.join(results_dir, f"{table_name}{suffix}")
+    for suffix, dirpath in [
+        ('_validation_response.json', feedback_dir),
+        ('_summary_validation.json', consolidated_dir),
+        ('_summary_summary.json', consolidated_dir),
+    ]:
+        filepath = os.path.join(dirpath, f"{table_name}{suffix}")
         ts = _get_file_timestamp(filepath)
         if ts:
             timestamps.append(ts)
 
-    # Add CSV file timestamps
+    # Add validation/json_reports/ DQA file timestamp
+    clifpy_ts = _get_file_timestamp(os.path.join(per_table_dir, f"{table_name}_dqa.json"))
+    if clifpy_ts:
+        timestamps.append(clifpy_ts)
+
+    # Add CSV file timestamps (now in validation/json_reports/)
     for csv_file in [f'validation_errors_{table_name}.csv', f'missing_data_stats_{table_name}.csv']:
-        filepath = os.path.join(output_dir, csv_file)
+        filepath = os.path.join(per_table_dir, csv_file)
         ts = _get_file_timestamp(filepath)
         if ts:
             timestamps.append(ts)
@@ -177,7 +227,7 @@ def get_cached_analysis(table_name: str) -> Optional[Dict[str, Any]]:
 
     # Return cached structure
     return {
-        'analyzer': st.session_state.analyzed_tables.get(table_name, {}).get('analyzer'),  # Keep analyzer in memory
+        'analyzer': store.get('analyzed_tables', {}).get(table_name, {}).get('analyzer'),  # Keep analyzer in memory
         'validation': validation,
         'summary': summary,
         'feedback': feedback,
@@ -189,7 +239,7 @@ def get_cached_analysis(table_name: str) -> Optional[Dict[str, Any]]:
     }
 
 
-def is_table_cached(table_name: str) -> bool:
+def is_table_cached(table_name: str, store: dict, config: dict) -> bool:
     """
     Check if a table has cached analysis.
 
@@ -197,16 +247,20 @@ def is_table_cached(table_name: str) -> bool:
     -----------
     table_name : str
         Name of the table
+    store : dict
+        Session store dictionary
+    config : dict
+        Configuration dictionary
 
     Returns:
     --------
     bool
         True if table is cached, False otherwise
     """
-    return get_cached_analysis(table_name) is not None
+    return get_cached_analysis(table_name, store, config) is not None
 
 
-def clear_table_cache(table_name: str):
+def clear_table_cache(table_name: str, store: dict):
     """
     Clear cache for a specific table.
 
@@ -214,50 +268,59 @@ def clear_table_cache(table_name: str):
     -----------
     table_name : str
         Name of the table
+    store : dict
+        Session store dictionary
     """
-    initialize_cache()
+    initialize_cache(store)
 
-    if table_name in st.session_state.analyzed_tables:
-        del st.session_state.analyzed_tables[table_name]
+    if table_name in store['analyzed_tables']:
+        del store['analyzed_tables'][table_name]
 
 
-def clear_all_cache():
+def clear_all_cache(store: dict):
     """Clear all cached analyses."""
-    st.session_state.analyzed_tables = {}
-    st.session_state.cache_metadata['last_cleared'] = datetime.now().isoformat()
+    store['analyzed_tables'] = {}
+    if 'cache_metadata' not in store:
+        store['cache_metadata'] = {}
+    store['cache_metadata']['last_cleared'] = datetime.now().isoformat()
 
 
-def get_cache_summary() -> Dict[str, Any]:
+def get_cache_summary(store: dict) -> Dict[str, Any]:
     """
     Get summary of cache status.
+
+    Parameters:
+    -----------
+    store : dict
+        Session store dictionary
 
     Returns:
     --------
     dict
         Cache summary with counts and timestamps
     """
-    initialize_cache()
+    initialize_cache(store)
 
-    cached_tables = list(st.session_state.analyzed_tables.keys())
+    cached_tables = list(store['analyzed_tables'].keys())
 
     summary = {
         'total_cached': len(cached_tables),
         'cached_tables': cached_tables,
-        'initialized': st.session_state.cache_metadata.get('initialized'),
-        'last_cleared': st.session_state.cache_metadata.get('last_cleared')
+        'initialized': store['cache_metadata'].get('initialized'),
+        'last_cleared': store['cache_metadata'].get('last_cleared')
     }
 
     # Add timestamps for each cached table
     table_timestamps = {}
     for table_name in cached_tables:
-        table_timestamps[table_name] = st.session_state.analyzed_tables[table_name]['timestamp']
+        table_timestamps[table_name] = store['analyzed_tables'][table_name]['timestamp']
 
     summary['table_timestamps'] = table_timestamps
 
     return summary
 
 
-def update_feedback_in_cache(table_name: str, feedback: Dict[str, Any]):
+def update_feedback_in_cache(table_name: str, feedback: Dict[str, Any], store: dict):
     """
     Update feedback for a cached table.
 
@@ -267,15 +330,17 @@ def update_feedback_in_cache(table_name: str, feedback: Dict[str, Any]):
         Name of the table
     feedback : dict
         Updated feedback structure
+    store : dict
+        Session store dictionary
     """
-    initialize_cache()
+    initialize_cache(store)
 
-    if table_name in st.session_state.analyzed_tables:
-        st.session_state.analyzed_tables[table_name]['feedback'] = feedback
-        st.session_state.analyzed_tables[table_name]['feedback_updated'] = datetime.now().isoformat()
+    if table_name in store['analyzed_tables']:
+        store['analyzed_tables'][table_name]['feedback'] = feedback
+        store['analyzed_tables'][table_name]['feedback_updated'] = datetime.now().isoformat()
 
 
-def get_table_status(table_name: str) -> str:
+def get_table_status(table_name: str, store: dict, config: dict) -> str:
     """
     Get the current status of a table (considering feedback from files).
 
@@ -283,13 +348,17 @@ def get_table_status(table_name: str) -> str:
     -----------
     table_name : str
         Name of the table
+    store : dict
+        Session store dictionary
+    config : dict
+        Configuration dictionary
 
     Returns:
     --------
     str
         Status: 'not_analyzed', 'complete', 'partial', 'incomplete', or adjusted status
     """
-    cached = get_cached_analysis(table_name)
+    cached = get_cached_analysis(table_name, store, config)
 
     if not cached:
         return 'not_analyzed'
@@ -300,12 +369,37 @@ def get_table_status(table_name: str) -> str:
 
     # Check validation results
     if cached.get('validation'):
-        return cached['validation'].get('status', 'unknown')
+        validation = cached['validation']
+        # Legacy format: top-level 'status' key
+        if 'status' in validation:
+            return validation['status']
+
+        # New DQA format: derive status from per-category check results
+        try:
+            from modules.cli.pdf_generator import _collect_dqa_issues
+            category_scores, all_issues = _collect_dqa_issues(validation)
+            total_passed = sum(p for p, _ in category_scores.values())
+            total_checks = sum(t for _, t in category_scores.values())
+            error_count = sum(1 for i in all_issues if i['severity'] == 'error')
+
+            if total_checks == 0:
+                # Check if DQA categories exist but all checks passed/not-applicable
+                has_categories = any(
+                    validation.get(cat) for cat in ('conformance', 'completeness', 'plausibility')
+                )
+                return 'complete' if has_categories else 'unknown'
+            if total_passed == total_checks:
+                return 'complete'
+            if error_count == 0:
+                return 'partial'
+            return 'incomplete'
+        except Exception:
+            return 'unknown'
 
     return 'unknown'
 
 
-def get_completion_status(table_name: str) -> Dict[str, bool]:
+def get_completion_status(table_name: str, store: dict, config: dict) -> Dict[str, bool]:
     """
     Get completion status for validation and summarization separately.
 
@@ -313,13 +407,17 @@ def get_completion_status(table_name: str) -> Dict[str, bool]:
     -----------
     table_name : str
         Name of the table
+    store : dict
+        Session store dictionary
+    config : dict
+        Configuration dictionary
 
     Returns:
     --------
     dict
         Dictionary with 'validation_complete' and 'summary_complete' booleans
     """
-    cached = get_cached_analysis(table_name)
+    cached = get_cached_analysis(table_name, store, config)
 
     if not cached:
         return {
@@ -333,7 +431,7 @@ def get_completion_status(table_name: str) -> Dict[str, bool]:
     }
 
 
-def get_status_display(table_name: str) -> str:
+def get_status_display(table_name: str, store: dict, config: dict) -> str:
     """
     Get formatted status display for sidebar.
 
@@ -341,26 +439,30 @@ def get_status_display(table_name: str) -> str:
     -----------
     table_name : str
         Name of the table
+    store : dict
+        Session store dictionary
+    config : dict
+        Configuration dictionary
 
     Returns:
     --------
     str
         Formatted status string
     """
-    cached = get_cached_analysis(table_name)
+    cached = get_cached_analysis(table_name, store, config)
 
     if not cached:
         return "Not analyzed"
 
-    completion = get_completion_status(table_name)
+    completion = get_completion_status(table_name, store, config)
     val_complete = completion['validation_complete']
     sum_complete = completion['summary_complete']
 
     if val_complete and sum_complete:
-        status = get_table_status(table_name)
+        status = get_table_status(table_name, store, config)
         return f"{status.upper()}"
     elif val_complete:
-        status = get_table_status(table_name)
+        status = get_table_status(table_name, store, config)
         return f"{status.upper()}"
     elif sum_complete:
         return "SUMMARY ONLY"
@@ -402,9 +504,14 @@ def format_cache_timestamp(timestamp_iso: str) -> str:
         return "Unknown"
 
 
-def _get_config_hash() -> str:
+def _get_config_hash(config: dict) -> str:
     """
     Get a hash of the current config to detect changes.
+
+    Parameters:
+    -----------
+    config : dict
+        Configuration dictionary
 
     Returns:
     --------
@@ -414,10 +521,9 @@ def _get_config_hash() -> str:
     import hashlib
     import json
 
-    if 'config' not in st.session_state:
+    if not config:
         return ''
 
-    config = st.session_state.config
     # Create hash of key config values
     config_str = json.dumps({
         'tables_path': config.get('tables_path'),
@@ -428,19 +534,26 @@ def _get_config_hash() -> str:
     return hashlib.md5(config_str.encode()).hexdigest()
 
 
-def get_cache_statistics() -> Dict[str, Any]:
+def get_cache_statistics(store: dict, config: dict) -> Dict[str, Any]:
     """
     Get detailed statistics about the cache.
+
+    Parameters:
+    -----------
+    store : dict
+        Session store dictionary
+    config : dict
+        Configuration dictionary
 
     Returns:
     --------
     dict
         Cache statistics
     """
-    initialize_cache()
+    initialize_cache(store)
 
     stats = {
-        'total_tables': len(st.session_state.analyzed_tables),
+        'total_tables': len(store['analyzed_tables']),
         'tables_with_feedback': 0,
         'tables_with_errors': 0,
         'tables_complete': 0,
@@ -448,24 +561,24 @@ def get_cache_statistics() -> Dict[str, Any]:
         'tables_incomplete': 0
     }
 
-    for table_name, cached in st.session_state.analyzed_tables.items():
+    for table_name, cached in store['analyzed_tables'].items():
         # Count feedback
         if cached.get('feedback'):
             stats['tables_with_feedback'] += 1
 
-        # Count errors
+        # Count errors using DQA issue format
         validation = cached.get('validation', {})
-        errors = validation.get('errors', {})
-        error_count = sum([
-            len(errors.get('schema_errors', [])),
-            len(errors.get('data_quality_issues', [])),
-            len(errors.get('other_errors', []))
-        ])
+        try:
+            from modules.cli.pdf_generator import _collect_dqa_issues
+            _, issues = _collect_dqa_issues(validation)
+            error_count = sum(1 for i in issues if i['severity'] in ('error', 'warning'))
+        except Exception:
+            error_count = 0
         if error_count > 0:
             stats['tables_with_errors'] += 1
 
         # Count by status
-        status = get_table_status(table_name)
+        status = get_table_status(table_name, store, config)
         if status == 'complete':
             stats['tables_complete'] += 1
         elif status == 'partial':

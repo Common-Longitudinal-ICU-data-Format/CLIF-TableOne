@@ -11,20 +11,26 @@ The `run_project.py` script orchestrates the complete analysis pipeline.
 #### Basic Commands
 
 ```bash
-# Full analysis with sampling (recommended)
-uv run python run_project.py --sample --no-summary --get-ecdf
+# Full workflow: validation + CI + ward + ECDF (recommended)
+uv run python run_project.py --no-summary
 
-# Full dataset analysis (45-90 minutes)
-uv run python run_project.py --get-ecdf
+# Skip automatic web app launch
+uv run python run_project.py --no-summary --no-launch-app
 
-# Skip automatic app launch
-uv run python run_project.py --sample --no-summary --get-ecdf --no-launch-app
+# CI table one only (fastest, no validation/ward/ECDF)
+uv run python run_project.py --tableone-only --no-ward --no-ecdf
 
 # Validation only
-uv run python run_project.py --validate-only --sample --no-summary
+uv run python run_project.py --validate-only --no-summary
 
-# Table One only (skip validation)
-uv run python run_project.py --tableone-only
+# Skip ward (CI + ECDF only)
+uv run python run_project.py --no-summary --no-ward
+
+# Skip ECDF (CI + ward only, saves memory)
+uv run python run_project.py --no-summary --no-ecdf
+
+# Ward table one only (runs in an isolated subprocess)
+uv run python run_project.py --ward-only
 
 # ECDF bins computation only
 uv run python run_project.py --get-ecdf-only
@@ -32,6 +38,9 @@ uv run python run_project.py --get-ecdf-only --visualize
 
 # Specific tables validation
 uv run python run_project.py --tables patient adt hospitalization
+
+# Force rebuild filtered CLIF table cache
+uv run python run_project.py --no-summary --force-refresh
 ```
 
 #### All Command Options
@@ -39,17 +48,19 @@ uv run python run_project.py --tables patient adt hospitalization
 ```
 Workflow Control:
   --validate-only          Only run validation step
-  --tableone-only          Only run table one generation step
+  --tableone-only          Only run critical-illness + ward table one (no validation/ECDF)
+  --ward-only              Only run ward table one generation step (isolated subprocess)
+  --no-ward                Skip ward table one generation (default: ON)
   --get-ecdf-only          Only run ECDF bins computation step
-  --get-ecdf               Include ECDF in workflow
-  --visualize              Generate HTML visualizations (for ECDF)
+  --no-ecdf                Skip ECDF generation (default: ON)
+  --visualize              Generate interactive HTML distribution viewers (for ECDF)
+  --force-refresh          Bypass filtered-CLIF-table cache and rebuild from raw source
   --continue-on-error      Continue even if previous step fails
-  --no-launch-app          Skip automatic Streamlit app launch
+  --no-launch-app          Skip automatic web app launch
 
 Validation Options:
   --tables TABLE [TABLE ...]
                           Specific tables to validate
-  --sample                Use 1k ICU sample for faster analysis
   --no-summary            Skip summary statistics generation
   --verbose, -v           Enable verbose output
 
@@ -73,11 +84,11 @@ uv run python run_analysis.py --patient --hospitalization --validate
 # All implemented tables
 uv run python run_analysis.py --all --validate --summary
 
-# Use 1k ICU sample for faster analysis
-uv run python run_analysis.py --labs --validate --summary --sample
-
 # Specify custom config file
 uv run python run_analysis.py --config path/to/config.json --patient --validate
+
+# Override output directory
+uv run python run_analysis.py --all --validate --output-dir custom/output
 
 # Verbose output for debugging
 uv run python run_analysis.py --patient --validate --summary --verbose
@@ -89,25 +100,23 @@ uv run python run_analysis.py --all --validate --summary --quiet
 #### Table Selection Options
 
 ```
---patient                    Patient table
---hospitalization           Hospitalization table
---adt                       ADT table
---code_status               Code status table
---crrt_therapy              CRRT therapy table
---ecmo_mcs                  ECMO/MCS table
---hospital_diagnosis        Hospital diagnosis table
---labs                      Labs table
---medication_admin_continuous    Continuous medications
---medication_admin_intermittent  Intermittent medications
---microbiology_culture      Microbiology culture table
---microbiology_nonculture   Microbiology non-culture table
---microbiology_susceptibility    Susceptibility table
---patient_assessments       Patient assessments table
---patient_procedures        Patient procedures table
---position                  Position table
---respiratory_support       Respiratory support table
---vitals                    Vitals table
---all                       All implemented tables
+--patient                        Patient table
+--hospitalization               Hospitalization table
+--adt                           ADT table
+--code_status                   Code status table
+--crrt_therapy                  CRRT therapy table
+--hospital_diagnosis            Hospital diagnosis table
+--labs                          Labs table
+--medication_admin_continuous   Continuous medications
+--medication_admin_intermittent Intermittent medications
+--microbiology_culture          Microbiology culture table
+--microbiology_susceptibility   Susceptibility table
+--patient_assessments           Patient assessments table
+--patient_procedures            Patient procedures table
+--position                      Position table
+--respiratory_support           Respiratory support table
+--vitals                        Vitals table
+--all                           All implemented tables
 ```
 
 #### Operations
@@ -123,7 +132,7 @@ uv run python run_analysis.py --all --validate --summary --quiet
 --verbose, -v               Enable verbose output
 --quiet, -q                 Minimize output (only errors and final summary)
 --no-pdf                    Disable PDF report generation (JSON only)
---sample                    Use 1k ICU sample for faster analysis
+--output-dir DIR            Override output directory from config
 ```
 
 #### Exit Codes
@@ -133,36 +142,29 @@ uv run python run_analysis.py --all --validate --summary --quiet
 - `2` - Partial success (some tables failed)
 - `130` - Interrupted by user (Ctrl+C)
 
+### Specialized Runners
+
+For targeted reruns of a single pipeline stage:
+
+| Script | Purpose |
+|---|---|
+| `run_tableone.py` | Critical-illness Table One only |
+| `run_tableone_ward.py` | Ward Table One only (isolated subprocess) |
+| `run_tableone_all.py` | Both critical-illness and ward Table Ones |
+| `run_ecdf.py` | ECDF bins computation |
+| `run_sofa.py` | SOFA scoring |
+
+Each writes to the same `output/intermediate/` and `output/final/` tree as `run_project.py`. Use them when iterating on one stage after a full pipeline run.
+
 ## Advanced Workflows
-
-### Performance Optimization with Sampling
-
-The `--sample` flag creates or uses a 1k patient ICU sample for faster processing:
-
-```bash
-# Create sample and run validation
-uv run python run_project.py --sample --validate-only
-
-# Sample behavior:
-# 1. First run creates sample from ADT table
-# 2. Sample saved to output/final/sample_1k_icu_hospitalizations.csv
-# 3. Subsequent runs reuse existing sample
-# 4. Core tables (patient, hospitalization, ADT) always use full data
-# 5. Other tables filter to sample hospitalization IDs
-```
-
-Benefits:
-- Reduces runtime from 30-60 min to 5-10 min for all tables
-- Maintains validation accuracy for data quality checks
-- Ideal for iterative development and testing
 
 ### ECDF Bins Configuration
 
-ECDF (Empirical Cumulative Distribution Function) bins are used for visualizations in the EDA app.
+ECDF (Empirical Cumulative Distribution Function) bins are used for visualizations in the web app.
 
 #### Required Configuration Files
 
-1. **Outlier Configuration** (`get-ecdf_data/ecdf_config/outlier_config.yaml`):
+1. **Outlier Configuration** (`modules/ecdf/config/outlier_config.yaml`):
 ```yaml
 labs:
   albumin_g_dl:
@@ -180,7 +182,7 @@ vitals:
   # ... more vital configurations
 ```
 
-2. **Binning Configuration** (`get-ecdf_data/ecdf_config/lab_vital_config.yaml`):
+2. **Binning Configuration** (`modules/ecdf/config/lab_vital_config.yaml`):
 ```yaml
 labs:
   albumin_g_dl:
@@ -206,19 +208,13 @@ vitals:
     "tables_path": "/path/to/clif/data",
     "filetype": "parquet",
     "timezone": "America/Chicago",
-    "output_dir": "output"  // Optional, defaults to "output"
+    "output_dir": "output"
 }
 ```
 
-### Table One Configuration
+### Cohort Definitions
 
-The Table One generation uses several internal configurations:
-
-- **Cohort Definition**: ICU stays ≥24 hours
-- **MCIDE Collection**: Automated collection of clinically important data elements
-- **Medication Analysis**: Vasoactives, sedatives, paralytics with dose conversions
-- **SOFA Scoring**: Automated calculation with missing data handling
-- **CCI Calculation**: Charlson Comorbidity Index from ICD codes
+The critical-illness and ward cohorts, plus every stratum (`icu`, `advanced_resp`, `nippv_hfnc`, `vaso`, `deaths`, `no_imv`, etc.), are defined in [README.md §8 — Cohort Definitions](README.md#8-cohort-definitions). The single source of truth for the inclusion flags is `modules/strata.py:24-41`.
 
 ### Memory Optimization
 
@@ -228,6 +224,7 @@ The Table One generation includes memory optimization features:
 2. **Selective Loading**: Only required columns loaded for analysis
 3. **Weight Data Pre-loading**: Optimized medication dose conversion
 4. **Garbage Collection**: Aggressive memory cleanup between steps
+5. **Isolated ward subprocess**: The ward cohort runs in a separate process (default ON, skip with `--no-ward`) so peak RAM equals the larger of the two cohorts, not the sum
 
 ## Troubleshooting
 
@@ -235,11 +232,13 @@ The Table One generation includes memory optimization features:
 
 #### Out of Memory Errors
 ```bash
-# Use sampling for initial runs
-uv run python run_project.py --sample --no-summary
+# Run stages separately instead of a single full pipeline
+uv run python run_project.py --validate-only --no-summary
+uv run python run_project.py --tableone-only
+uv run python run_project.py --get-ecdf-only
 
-# Increase system swap if needed
-# Monitor with: watch -n 1 free -h
+# Ward cohort is already isolated via subprocess under --ward / --ward-only
+# Monitor with: watch -n 1 free -h   (Linux)  |  vm_stat 1   (macOS)
 ```
 
 #### Validation Failures
@@ -254,22 +253,27 @@ open output/final/reports/patient_validation_report.pdf
 #### ECDF Generation Errors
 ```bash
 # Check configuration files
-cat get-ecdf_data/ecdf_config/outlier_config.yaml
-cat get-ecdf_data/ecdf_config/lab_vital_config.yaml
+cat modules/ecdf/config/outlier_config.yaml
+cat modules/ecdf/config/lab_vital_config.yaml
 
-# Review unit mismatches
-cat output/final/unit_mismatches.log
+# Review schema-vs-data unit mismatches (site-side data issues)
+cat output/final/meta/unit_mismatches.log
+
+# Review ECDF coverage gaps (schema-valid cats the bin config doesn't know)
+cat output/final/meta/ecdf_coverage_gaps.log
 ```
 
 ### Log Files
 
 - **Validation Logs**: `output/final/results/{table}_summary_validation.json`
 - **Table One Execution**: `output/final/tableone/execution_report.txt`
-- **ECDF Processing**: `output/final/unit_mismatches.log`
+- **ECDF Schema Mismatches**: `output/final/meta/unit_mismatches.log`
+- **ECDF Coverage Gaps**: `output/final/meta/ecdf_coverage_gaps.log`
 
 
 ## Additional Resources
 
-- [TABLEONE_VIEWER_GUIDE.md](TABLEONE_VIEWER_GUIDE.md) - Detailed guide for Table One results viewer
+- [README.md](README.md) - Project overview, quickstart, and cohort definitions
+- [OUTPUT_REFERENCE.md](OUTPUT_REFERENCE.md) - Per-file detail for every output artifact
 - [CLIF Documentation](https://clif-icu.com) - CLIF consortium documentation
 - [clifpy Documentation](https://github.com/Common-Longitudinal-ICU-data-Format/clifpy) - CLIF validation library

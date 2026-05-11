@@ -36,14 +36,9 @@ class MedicationAdminContinuousAnalyzer(BaseTableAnalyzer):
         """Return the table name."""
         return 'medication_admin_continuous'
 
-    def load_table(self, sample_filter=None):
+    def load_table(self):
         """
         Load Medication Admin Continuous table using clifpy.
-
-        Parameters:
-        -----------
-        sample_filter : list, optional
-            List of hospitalization_ids to filter to (uses clifpy filters)
 
         Handles both naming conventions:
         - medication_admin_continuous.parquet
@@ -64,34 +59,17 @@ class MedicationAdminContinuousAnalyzer(BaseTableAnalyzer):
             self.table = None
             return
 
-        # Clifpy saves files directly to output_directory, so pass the final/clifpy subdirectory
-
-
-        clifpy_output_dir = os.path.join(self.output_dir, "final", "clifpy")
-
-
+        from modules.utils.output_paths import validation_json_reports_dir
+        clifpy_output_dir = str(validation_json_reports_dir())
         os.makedirs(clifpy_output_dir, exist_ok=True)
 
-
-
         try:
-            # Use filters parameter ONLY when sample is provided
-            if sample_filter is not None:
-                self.table = MedicationAdminContinuous.from_file(
-                    data_directory=self.data_dir,
-                    filetype=self.filetype,
-                    timezone=self.timezone,
-                    output_directory=clifpy_output_dir,
-                    filters={'hospitalization_id': list(sample_filter)}
-                )
-            else:
-                # Normal load without filters
-                self.table = MedicationAdminContinuous.from_file(
-                    data_directory=self.data_dir,
-                    filetype=self.filetype,
-                    timezone=self.timezone,
-                    output_directory=clifpy_output_dir
-                )
+            self.table = MedicationAdminContinuous.from_file(
+                data_directory=self.data_dir,
+                filetype=self.filetype,
+                timezone=self.timezone,
+                output_directory=clifpy_output_dir
+            )
         except FileNotFoundError:
             print(f"⚠️  medication_admin_continuous table file not found in {self.data_dir}")
             self.table = None
@@ -468,7 +446,8 @@ class MedicationAdminContinuousAnalyzer(BaseTableAnalyzer):
         plt.tight_layout()
 
         # Save the plot
-        final_dir = os.path.join(self.output_dir, 'final', 'results')
+        from modules.utils.output_paths import validation_consolidated_dir
+        final_dir = str(validation_consolidated_dir())
         os.makedirs(final_dir, exist_ok=True)
 
         plot_path = os.path.join(final_dir, 'medication_dose_distributions.png')
@@ -513,7 +492,8 @@ class MedicationAdminContinuousAnalyzer(BaseTableAnalyzer):
             return None
 
         # Save to CSV
-        final_dir = os.path.join(self.output_dir, 'final', 'results')
+        from modules.utils.output_paths import validation_consolidated_dir
+        final_dir = str(validation_consolidated_dir())
         os.makedirs(final_dir, exist_ok=True)
 
         output_path = os.path.join(final_dir, 'medication_name_category_mappings.csv')
@@ -586,7 +566,8 @@ class MedicationAdminContinuousAnalyzer(BaseTableAnalyzer):
         }
 
         # Save to CSV
-        final_dir = os.path.join(self.output_dir, 'final', 'results')
+        from modules.utils.output_paths import validation_consolidated_dir
+        final_dir = str(validation_consolidated_dir())
         os.makedirs(final_dir, exist_ok=True)
 
         output_path = os.path.join(final_dir, 'medication_group_hospitalizations.csv')
@@ -812,5 +793,23 @@ class MedicationAdminContinuousAnalyzer(BaseTableAnalyzer):
         }
 
         conn.close()
+
+        # Check for duplicate medication entries (same hospitalization + admin time + med category + MAR action)
+        if all(col in df.columns for col in ['hospitalization_id', 'admin_dttm', 'med_category', 'mar_action_category']):
+            duplicates_mask = df.duplicated(subset=['hospitalization_id', 'admin_dttm', 'med_category', 'mar_action_category'], keep=False)
+            duplicates = duplicates_mask.sum()
+
+            examples = None
+            if duplicates > 0:
+                example_cols = ['hospitalization_id', 'admin_dttm', 'med_category', 'mar_action_category', 'med_dose', 'med_dose_unit']
+                example_cols = [col for col in example_cols if col in df.columns]
+                examples = df[duplicates_mask][example_cols].head(10)
+
+            quality_checks['duplicate_med_continuous_entries'] = {
+                'count': int(duplicates),
+                'percentage': round((duplicates / len(df) * 100) if len(df) > 0 else 0, 2),
+                'status': 'pass' if duplicates == 0 else 'warning',
+                'examples': examples
+            }
 
         return quality_checks

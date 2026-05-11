@@ -15,15 +15,8 @@ class PositionAnalyzer(BaseTableAnalyzer):
     def get_table_name(self) -> str:
         return 'position'
 
-    def load_table(self, sample_filter=None):
-        """
-        Load Position table using clifpy.
-
-        Parameters:
-        -----------
-        sample_filter : list, optional
-            List of hospitalization_ids to filter to (uses clifpy filters)
-        """
+    def load_table(self):
+        """Load Position table using clifpy."""
         data_path = Path(self.data_dir)
         file_without_clif = data_path / f"position.{self.filetype}"
         file_with_clif = data_path / f"clif_position.{self.filetype}"
@@ -33,34 +26,17 @@ class PositionAnalyzer(BaseTableAnalyzer):
             self.table = None
             return
 
-        # Clifpy saves files directly to output_directory, so pass the final/clifpy subdirectory
-
-
-        clifpy_output_dir = os.path.join(self.output_dir, "final", "clifpy")
-
-
+        from modules.utils.output_paths import validation_json_reports_dir
+        clifpy_output_dir = str(validation_json_reports_dir())
         os.makedirs(clifpy_output_dir, exist_ok=True)
 
-
-
         try:
-            # Use filters parameter ONLY when sample is provided
-            if sample_filter is not None:
-                self.table = Position.from_file(
-                    data_directory=self.data_dir,
-                    filetype=self.filetype,
-                    timezone=self.timezone,
-                    output_directory=clifpy_output_dir,
-                    filters={'hospitalization_id': list(sample_filter)}
-                )
-            else:
-                # Normal load without filters
-                self.table = Position.from_file(
-                    data_directory=self.data_dir,
-                    filetype=self.filetype,
-                    timezone=self.timezone,
-                    output_directory=clifpy_output_dir
-                )
+            self.table = Position.from_file(
+                data_directory=self.data_dir,
+                filetype=self.filetype,
+                timezone=self.timezone,
+                output_directory=clifpy_output_dir
+            )
         except Exception as e:
             print(f"⚠️  Error loading position table: {e}")
             self.table = None
@@ -153,7 +129,29 @@ class PositionAnalyzer(BaseTableAnalyzer):
     def check_data_quality(self) -> Dict[str, Any]:
         if self.table is None or not hasattr(self.table, 'df') or self.table.df is None:
             return {'error': 'No data available'}
-        return {}
+
+        df = self.table.df
+        quality_checks = {}
+
+        # Check for duplicate position entries (same hospitalization + timestamp)
+        if all(col in df.columns for col in ['hospitalization_id', 'recorded_dttm']):
+            duplicates_mask = df.duplicated(subset=['hospitalization_id', 'recorded_dttm'], keep=False)
+            duplicates = duplicates_mask.sum()
+
+            examples = None
+            if duplicates > 0:
+                example_cols = ['hospitalization_id', 'recorded_dttm', 'position_category']
+                example_cols = [col for col in example_cols if col in df.columns]
+                examples = df[duplicates_mask][example_cols].head(10)
+
+            quality_checks['duplicate_position_entries'] = {
+                'count': int(duplicates),
+                'percentage': round((duplicates / len(df) * 100) if len(df) > 0 else 0, 2),
+                'status': 'pass' if duplicates == 0 else 'warning',
+                'examples': examples
+            }
+
+        return quality_checks
 
     def generate_position_summary(self) -> pd.DataFrame:
         """

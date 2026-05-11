@@ -5,14 +5,13 @@ import json
 from typing import Dict, Any, List, Optional
 from modules.tables import (
     PatientAnalyzer, HospitalizationAnalyzer, ADTAnalyzer, CodeStatusAnalyzer,
-    CRRTTherapyAnalyzer, ECMOMCSAnalyzer, HospitalDiagnosisAnalyzer, LabsAnalyzer,
+    CRRTTherapyAnalyzer, HospitalDiagnosisAnalyzer, LabsAnalyzer,
     MedicationAdminContinuousAnalyzer, MedicationAdminIntermittentAnalyzer,
-    MicrobiologyCultureAnalyzer, MicrobiologyNoncultureAnalyzer,
+    MicrobiologyCultureAnalyzer, 
     MicrobiologySusceptibilityAnalyzer, PatientAssessmentsAnalyzer,
     PatientProceduresAnalyzer, PositionAnalyzer, RespiratorySupportAnalyzer,
     VitalsAnalyzer
 )
-from modules.utils import load_sample_list, sample_exists
 from .formatters import ConsoleFormatter
 from .pdf_generator import ValidationPDFGenerator
 
@@ -26,13 +25,11 @@ class CLIAnalysisRunner:
         'adt': ADTAnalyzer,
         'code_status': CodeStatusAnalyzer,
         'crrt_therapy': CRRTTherapyAnalyzer,
-        'ecmo_mcs': ECMOMCSAnalyzer,
         'hospital_diagnosis': HospitalDiagnosisAnalyzer,
         'labs': LabsAnalyzer,
         'medication_admin_continuous': MedicationAdminContinuousAnalyzer,
         'medication_admin_intermittent': MedicationAdminIntermittentAnalyzer,
         'microbiology_culture': MicrobiologyCultureAnalyzer,
-        'microbiology_nonculture': MicrobiologyNoncultureAnalyzer,
         'microbiology_susceptibility': MicrobiologySusceptibilityAnalyzer,
         'patient_assessments': PatientAssessmentsAnalyzer,
         'patient_procedures': PatientProceduresAnalyzer,
@@ -41,28 +38,8 @@ class CLIAnalysisRunner:
         'vitals': VitalsAnalyzer
     }
 
-    # Tables that support hospitalization_id filtering (can use 1k ICU sample)
-    # Excludes: patient (uses patient_id), hospitalization (defines the sample),
-    # adt (used to create the sample), code_status (uses patient_id),
-    # microbiology_susceptibility (only has organism_id, no hospitalization_id)
-    SAMPLE_ELIGIBLE_TABLES = [
-        'labs',
-        'medication_admin_continuous',
-        'medication_admin_intermittent',
-        'microbiology_culture',
-        'microbiology_nonculture',
-        'vitals',
-        'patient_assessments',
-        'respiratory_support',
-        'position',
-        'patient_procedures',
-        'crrt_therapy',
-        'ecmo_mcs',
-        'hospital_diagnosis'
-    ]
-
     def __init__(self, config: Dict[str, Any], verbose: bool = False, quiet: bool = False,
-                 generate_pdf: bool = True, use_sample: bool = False):
+                 generate_pdf: bool = True):
         """
         Initialize the CLI runner.
 
@@ -76,16 +53,16 @@ class CLIAnalysisRunner:
             Minimize output
         generate_pdf : bool
             Generate PDF reports for validation results
-        use_sample : bool
-            Use 1k ICU sample for faster analysis
         """
         self.config = config
         self.verbose = verbose
         self.quiet = quiet
         self.generate_pdf = generate_pdf
-        self.use_sample = use_sample
         self.formatter = ConsoleFormatter()
         self.pdf_generator = ValidationPDFGenerator()
+        self._loaded_tables = {}  # table_name -> BaseTable object (temporary, released after single-table checks)
+        self._cross_table_caches = {}  # table_name -> lightweight cache dict
+        self._hosp_years = None  # cached hosp_years for P.6 temporal context
 
         # Extract config values
         self.data_dir = config.get('tables_path', './data')
@@ -134,29 +111,9 @@ class CLIAnalysisRunner:
                 self.log(self.formatter.error(f"Analyzer not available for {table_name}"))
                 return result
 
-            # Load sample if requested
-            sample_filter = None
-            if self.use_sample:
-                if sample_exists(self.output_dir):
-                    sample_filter = load_sample_list(self.output_dir)
-                    if sample_filter:
-                        self.log(self.formatter.info(f"[STATS] Using 1k ICU sample ({len(sample_filter):,} hospitalizations)"))
-                    else:
-                        self.log(self.formatter.warning("[WARNING] Sample file exists but could not be loaded. Loading full table."))
-                else:
-                    self.log(self.formatter.warning("[WARNING] Sample file not found. Loading full table."))
-                    self.log(self.formatter.info("   Generate sample by running: python run_analysis.py --adt --validate --summary"))
-
             # Load table
-            # Only pass sample_filter to tables that support hospitalization_id filtering
-            if table_name in self.SAMPLE_ELIGIBLE_TABLES and sample_filter:
-                self.log(self.formatter.progress(f"Loading {table_name} table with 1k sample"))
-                analyzer = analyzer_class(self.data_dir, self.filetype, self.timezone, self.output_dir, sample_filter)
-            else:
-                if sample_filter and table_name not in self.SAMPLE_ELIGIBLE_TABLES:
-                    self.log(self.formatter.info(f"Note: {table_name} does not support sampling, loading full dataset"))
-                self.log(self.formatter.progress(f"Loading {table_name} table"))
-                analyzer = analyzer_class(self.data_dir, self.filetype, self.timezone, self.output_dir, None)
+            self.log(self.formatter.progress(f"Loading {table_name} table"))
+            analyzer = analyzer_class(self.data_dir, self.filetype, self.timezone, self.output_dir)
 
             if analyzer.table is None:
                 result['error'] = f"Failed to load {table_name} table"
@@ -164,24 +121,43 @@ class CLIAnalysisRunner:
                 return result
 
             self.log(self.formatter.success(f"Loaded {table_name} table"))
+            self._loaded_tables[table_name] = analyzer.table
 
-            # Run validation
+            # Run validation (single-table only; cross-table checks run in post-processing)
             if run_validation:
                 self.log(self.formatter.progress(f"Running validation for {table_name}"))
-                validation_results = analyzer.validate()
+                validation_results = analyzer.validate(tables=None, hosp_years=self._hosp_years)
+
+                # Inject per-column data profile stats
+                if analyzer.table is not None and hasattr(analyzer.table, 'df') and analyzer.table.df is not None:
+                    from clifpy.utils.report_generator import compute_table_stats
+                    validation_results['total_rows'] = len(analyzer.table.df)
+                    validation_results['table_stats'] = compute_table_stats(
+                        analyzer.table.df, analyzer.table.schema
+                    )
+
                 result['validation'] = validation_results
 
-                # Save validation results
+                # Save validation results as JSON
                 try:
-                    analyzer.save_summary_data(validation_results, '_validation')
+                    analyzer.save_validation_results(validation_results)
                     self.log(self.formatter.success(f"Validation results saved"))
                 except Exception as e:
                     self.log(self.formatter.warning(f"Could not save validation results: {e}"))
 
+                # Save monthly trend CSVs from P.6 temporal consistency
+                try:
+                    trends_dir = analyzer.save_monthly_trend_csvs(validation_results)
+                    if trends_dir:
+                        self.log(self.formatter.success(f"Monthly trends saved to {trends_dir}"))
+                except Exception as e:
+                    self.log(self.formatter.warning(f"Could not save monthly trends: {e}"))
+
                 # Generate PDF report
                 if self.generate_pdf:
                     try:
-                        reports_dir = os.path.join(self.output_dir, 'final', 'reports')
+                        from modules.utils.output_paths import PDF_REPORTS
+                        reports_dir = str(PDF_REPORTS)
                         os.makedirs(reports_dir, exist_ok=True)
 
                         pdf_path = os.path.join(reports_dir, f"{table_name}_validation_report.pdf")
@@ -212,7 +188,8 @@ class CLIAnalysisRunner:
                             import traceback
                             traceback.print_exc()
 
-                # Display validation summary
+                # Display validation summary (condensed always, full in verbose)
+                self.log(self.formatter.format_condensed_validation(validation_results, table_name))
                 if self.verbose:
                     self.log(self.formatter.format_validation_summary(validation_results, table_name))
 
@@ -231,7 +208,8 @@ class CLIAnalysisRunner:
 
                 # Save summary CSVs
                 try:
-                    results_dir = os.path.join(self.output_dir, 'final', 'results')
+                    from modules.utils.output_paths import validation_consolidated_dir
+                    results_dir = str(validation_consolidated_dir())
                     os.makedirs(results_dir, exist_ok=True)
 
                     # Save patient demographics summary
@@ -256,45 +234,22 @@ class CLIAnalysisRunner:
                 if self.verbose:
                     self.log(self.formatter.format_summary_info(summary_stats, table_name))
 
-            # Generate ICU sample after ADT analysis if --sample was requested and sample doesn't exist
-            if table_name == 'adt' and self.use_sample and analyzer.table is not None:
-                from modules.utils.sampling import (
-                    get_icu_hospitalizations_from_adt,
-                    generate_stratified_sample,
-                    save_sample_list
-                )
-
-                # Only generate if sample doesn't already exist
-                if not sample_exists(self.output_dir):
-                    try:
-                        self.log(self.formatter.progress("Generating 1k ICU sample for future analyses"))
-
-                        # Step 1: Get ICU hospitalizations from ADT
-                        icu_hosp_ids = get_icu_hospitalizations_from_adt(analyzer.table.df)
-
-                        if len(icu_hosp_ids) > 0:
-                            # Step 2: Load hospitalization table to get years
-                            hosp_analyzer = HospitalizationAnalyzer(self.data_dir, self.filetype, self.timezone, self.output_dir)
-                            if hosp_analyzer.table is not None:
-                                # Step 3: Generate stratified sample
-                                sample_ids = generate_stratified_sample(
-                                    hosp_analyzer.table.df,
-                                    icu_hosp_ids,
-                                    sample_size=1000
-                                )
-
-                                # Step 4: Save for future use
-                                save_sample_list(sample_ids, self.output_dir)
-                                self.log(self.formatter.success(f"Generated 1k ICU sample (stratified by year) - {len(sample_ids):,} hospitalizations"))
-                            else:
-                                self.log(self.formatter.warning("Could not load hospitalization table for sampling"))
-                        else:
-                            self.log(self.formatter.warning("No ICU hospitalizations found in ADT table"))
-                    except Exception as e:
-                        self.log(self.formatter.warning(f"Could not generate sample: {e}"))
-                        if self.verbose:
-                            import traceback
-                            traceback.print_exc()
+            # Extract lightweight cache for cross-table checks, then release the full DataFrame
+            if run_validation and analyzer.table is not None:
+                try:
+                    import gc as _gc
+                    cache = analyzer.extract_cross_table_cache()
+                    self._cross_table_caches[table_name] = cache
+                    if cache.get('hosp_years'):
+                        self._hosp_years = cache['hosp_years']
+                    # Release full DataFrame to free memory
+                    del self._loaded_tables[table_name]
+                    _gc.collect()
+                except Exception as cache_e:
+                    self.log(self.formatter.warning(f"Could not extract cache for {table_name}: {cache_e}"))
+                    if self.verbose:
+                        import traceback
+                        traceback.print_exc()
 
             result['success'] = True
             self.log(self.formatter.success(f"Completed analysis for {table_name}"))
@@ -326,33 +281,14 @@ class CLIAnalysisRunner:
         dict
             Overall results with per-table details
         """
-        # If using sample mode, ensure ADT is processed early (after patient/hospitalization)
-        # so the sample can be generated before other tables need it
-        if self.use_sample and 'adt' in tables:
-            # Reorder to ensure: patient, hospitalization, adt come first (in that order if present)
-            priority_tables = ['patient', 'hospitalization', 'adt']
-            ordered_tables = []
-
-            # Add priority tables first (in order)
-            for table in priority_tables:
-                if table in tables:
-                    ordered_tables.append(table)
-
-            # Add remaining tables
-            for table in tables:
-                if table not in priority_tables:
-                    ordered_tables.append(table)
-
-            tables = ordered_tables
-
         # Header
         self.log(self.formatter.header("[HOSPITAL] CLIF TABLE ONE ANALYSIS"), force=True)
         self.log(f"{self.formatter.FOLDER} Data Directory: {self.data_dir}", force=True)
-        self.log(f"{self.formatter.FILE} Output Directory: {os.path.join(self.output_dir, 'final', 'reports')} (reports), {os.path.join(self.output_dir, 'final', 'results')} (results)", force=True)
+        from modules.utils.output_paths import PDF_REPORTS as _PDF_REPORTS_DISPLAY, validation_consolidated_dir as _validation_consolidated_display
+        self.log(f"{self.formatter.FILE} Output Directory: {_PDF_REPORTS_DISPLAY} (reports), {_validation_consolidated_display()} (validation consolidated)", force=True)
         self.log(f"[LIST] Tables: {', '.join(tables)}", force=True)
         self.log(f"[SEARCH] Validation: {'[OK]' if run_validation else '[X]'}", force=True)
         self.log(f"[STATS] Summary: {'[OK]' if run_summary else '[X]'}", force=True)
-        self.log(f"[TARGET] Sample Mode: {'[OK] (1k ICU hospitalizations)' if self.use_sample else '[X]'}", force=True)
         self.log("", force=True)
 
         results = {
@@ -376,6 +312,138 @@ class CLIAnalysisRunner:
             else:
                 results['tables_failed'].append(table_name)
                 results['total_failed'] += 1
+
+        # Run cross-table checks from caches (relational + plausibility) — ONCE
+        if run_validation and len(self._cross_table_caches) > 1:
+            self.log(f"\n{self.formatter.section('Cross-Table Checks (from cache)')}")
+            try:
+                from clifpy.utils.validator import (
+                    run_relational_integrity_checks_from_cache,
+                    run_cross_table_completeness_checks_from_cache,
+                    run_cross_table_plausibility_checks_from_cache,
+                )
+
+                # --- Relational integrity (cache-based) ---
+                self.log(self.formatter.progress(
+                    f"Running relational integrity checks across {len(self._cross_table_caches)} tables (from cache)"
+                ))
+                rel_results = run_relational_integrity_checks_from_cache(self._cross_table_caches)
+
+                for tname, rel_checks in rel_results.items():
+                    if not rel_checks:
+                        continue
+                    serialized_rel = {k: v.to_dict() for k, v in rel_checks.items()}
+
+                    # Update in-memory validation results (merge into completeness)
+                    if tname in results['details'] and results['details'][tname].get('validation'):
+                        vr = results['details'][tname]['validation']
+                        vr.setdefault('completeness', {}).update(serialized_rel)
+
+                    # Update saved JSON file (merge into completeness)
+                    from modules.utils.output_paths import validation_json_reports_dir
+                    json_path = str(validation_json_reports_dir() / f'{tname}_dqa.json')
+                    if os.path.exists(json_path):
+                        with open(json_path, 'r', encoding='utf-8') as f:
+                            saved = json.load(f)
+                        saved.setdefault('completeness', {}).update(serialized_rel)
+                        with open(json_path, 'w', encoding='utf-8') as f:
+                            json.dump(saved, f, indent=2, default=str)
+
+                rel_count = sum(len(v) for v in rel_results.values())
+                self.log(self.formatter.success(
+                    f"Relational checks complete: {rel_count} checks across {len(rel_results)} tables"
+                ))
+
+                # --- Cross-table conditional completeness (K.5, cache-based) ---
+                self.log(self.formatter.progress(
+                    f"Running cross-table conditional completeness checks across {len(self._cross_table_caches)} tables (from cache)"
+                ))
+                cond_results = run_cross_table_completeness_checks_from_cache(self._cross_table_caches)
+
+                for tname, cond_checks in cond_results.items():
+                    if not cond_checks:
+                        continue
+                    serialized_cond = {k: v.to_dict() for k, v in cond_checks.items()}
+
+                    # Update in-memory validation results (merge into completeness)
+                    if tname in results['details'] and results['details'][tname].get('validation'):
+                        vr = results['details'][tname]['validation']
+                        vr.setdefault('completeness', {}).update(serialized_cond)
+
+                    # Update saved JSON file (merge into completeness)
+                    from modules.utils.output_paths import validation_json_reports_dir
+                    json_path = str(validation_json_reports_dir() / f'{tname}_dqa.json')
+                    if os.path.exists(json_path):
+                        with open(json_path, 'r', encoding='utf-8') as f:
+                            saved = json.load(f)
+                        saved.setdefault('completeness', {}).update(serialized_cond)
+                        with open(json_path, 'w', encoding='utf-8') as f:
+                            json.dump(saved, f, indent=2, default=str)
+
+                cond_count = sum(len(v) for v in cond_results.values())
+                self.log(self.formatter.success(
+                    f"Cross-table conditional completeness checks complete: {cond_count} checks across {len(cond_results)} tables"
+                ))
+
+                # --- Cross-table plausibility (cache-based) ---
+                self.log(self.formatter.progress(
+                    f"Running cross-table plausibility checks across {len(self._cross_table_caches)} tables (from cache)"
+                ))
+                plaus_results = run_cross_table_plausibility_checks_from_cache(self._cross_table_caches)
+
+                for tname, plaus_checks in plaus_results.items():
+                    if not plaus_checks:
+                        continue
+                    serialized_plaus = {k: v.to_dict() for k, v in plaus_checks.items()}
+
+                    # Update in-memory validation results (merge into plausibility)
+                    if tname in results['details'] and results['details'][tname].get('validation'):
+                        vr = results['details'][tname]['validation']
+                        vr.setdefault('plausibility', {}).update(serialized_plaus)
+
+                    # Update saved JSON file (merge into plausibility)
+                    from modules.utils.output_paths import validation_json_reports_dir
+                    json_path = str(validation_json_reports_dir() / f'{tname}_dqa.json')
+                    if os.path.exists(json_path):
+                        with open(json_path, 'r', encoding='utf-8') as f:
+                            saved = json.load(f)
+                        saved.setdefault('plausibility', {}).update(serialized_plaus)
+                        with open(json_path, 'w', encoding='utf-8') as f:
+                            json.dump(saved, f, indent=2, default=str)
+
+                plaus_count = sum(len(v) for v in plaus_results.values())
+                self.log(self.formatter.success(
+                    f"Cross-table plausibility checks complete: {plaus_count} checks across {len(plaus_results)} tables"
+                ))
+
+                # Regenerate PDFs for all tables affected by cross-table results
+                affected_tables = set(rel_results.keys()) | set(cond_results.keys()) | set(plaus_results.keys())
+                if self.generate_pdf and affected_tables:
+                    from modules.utils.output_paths import PDF_REPORTS as _PDF_REPORTS
+                    reports_dir = str(_PDF_REPORTS)
+                    for tname in affected_tables:
+                        if tname in results['details'] and results['details'][tname].get('validation'):
+                            pdf_path = os.path.join(reports_dir, f"{tname}_validation_report.pdf")
+                            try:
+                                if self.pdf_generator.is_available():
+                                    self.pdf_generator.generate_validation_pdf(
+                                        results['details'][tname]['validation'],
+                                        tname, pdf_path, self.site_name
+                                    )
+                            except Exception as pdf_e:
+                                self.log(self.formatter.warning(
+                                    f"Could not regenerate PDF for {tname}: {pdf_e}"))
+
+                # Clear caches to free memory
+                self._cross_table_caches.clear()
+                import gc as _gc
+                _gc.collect()
+
+            except Exception as e:
+                self.log(self.formatter.warning(f"Could not run cross-table checks: {e}"))
+                if self.verbose:
+                    import traceback
+                    traceback.print_exc()
 
         # Run MCIDE collection if validation was performed and we have successful tables
         if run_validation and results['tables_analyzed']:
@@ -439,9 +507,10 @@ class CLIAnalysisRunner:
 
                 # Report MCIDE results
                 if mcide_success > 0:
+                    from modules.utils.output_paths import mcide_dir as _mcide_dir_display, summary_stats_dir as _ssd_display
                     self.log(self.formatter.success(f"[SUCCESS] MCIDE statistics collected for {mcide_success} table(s)"))
-                    self.log(f"  [LIST] MCIDE files: {os.path.join(self.output_dir, 'final', 'tableone', 'mcide')}")
-                    self.log(f"  [STATS] Stats files: {os.path.join(self.output_dir, 'final', 'tableone', 'summary_stats')}")
+                    self.log(f"  [LIST] MCIDE files: {_mcide_dir_display()}")
+                    self.log(f"  [STATS] Stats files: {_ssd_display()}")
 
                 if mcide_failed:
                     self.log(self.formatter.warning(f"[WARNING] MCIDE collection failed for: {', '.join(mcide_failed)}"))
@@ -467,9 +536,10 @@ class CLIAnalysisRunner:
                 error = results['details'][table].get('error', 'Unknown error')
                 self.log(f"  - {table}: {error}", force=True)
 
+        from modules.utils.output_paths import PDF_REPORTS as _PDF_REPORTS_FINAL, validation_consolidated_dir as _validation_consolidated_final
         self.log(f"\n{self.formatter.FOLDER} Results saved to:", force=True)
-        self.log(f"  [REPORT] Reports: {os.path.join(self.output_dir, 'final', 'reports')}", force=True)
-        self.log(f"  [STATS] Results: {os.path.join(self.output_dir, 'final', 'results')}", force=True)
+        self.log(f"  [REPORT] Reports: {_PDF_REPORTS_FINAL}", force=True)
+        self.log(f"  [STATS] Validation consolidated: {_validation_consolidated_final()}", force=True)
 
         # Generate combined report if multiple tables were analyzed and validation was run
         if len(results['tables_analyzed']) > 1 and run_validation and self.generate_pdf:

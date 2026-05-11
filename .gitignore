@@ -1,3 +1,6 @@
+# Environment
+.env
+
 # macOS
 .DS_Store
 
@@ -62,5 +65,23 @@ Intersections_4.txt
 Venn_4.png
 all_site_data
 # og sofa calculation, replaced with windows optimized version
-modules/sofa/calculator_og.py 
+modules/sofa/calculator_og.py
 consortium_figures.py
+
+# Local-only suppression calibration tool — sites' raw exports + review HTML/CSV
+dev/calibrate_suppression/
+
+
+CLIF-TableOne-2025-all-sites/
+CLIF-TableOne-2026-all-sites/
+dev/
+
+# Deprecated Streamlit app files
+app_streamlit.py
+app.py
+TABLEONE_VIEWER_GUIDE.md
+
+# Legacy code/ directory shadows Python's stdlib 'code' module.
+# Deleted from repo — if it exists locally, remove it: rm -rf code/
+code/
+_archived/

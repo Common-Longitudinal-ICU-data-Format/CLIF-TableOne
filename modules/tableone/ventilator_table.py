@@ -24,11 +24,13 @@ def get_output_path(*parts):
 
 def load_ventilator_data():
     """Load the ventilator settings and counts data."""
-    # Use the get_output_path helper for consistent path handling
-    settings_df = pd.read_csv(get_output_path('final', 'tableone', 'ventilator_settings_by_device_mode.csv'))
-    counts_df = pd.read_csv(get_output_path('final', 'tableone', 'ventilator_settings_counts_by_device_mode.csv'))
+    # Read the CSVs from overall/tableone/
+    from modules.utils.output_paths import tableone_dir
+    t1_dir = tableone_dir()
+    settings_df = pd.read_csv(t1_dir / 'ventilator_settings_by_device_mode.csv')
+    counts_df = pd.read_csv(t1_dir / 'ventilator_settings_counts_by_device_mode.csv')
     # Try to load total observations if available
-    total_obs_file = get_output_path('final', 'tableone', 'ventilator_settings_total_observations.csv')
+    total_obs_file = t1_dir / 'ventilator_settings_total_observations.csv'
 
     # Try to load saved total observations
     total_obs = None
@@ -302,9 +304,10 @@ def plot_ventilator_table(save_path=None, total_observations=None):
     plt.figtext(0.5, 0.01, note_text,
                 ha='center', va='bottom', fontsize=9, style='italic', wrap=True)
 
-    # Determine save path using the helper
+    # Determine save path using the helper (figures live under overall/figures/)
     if save_path is None:
-        save_path = get_output_path('final', 'tableone', 'ventilator_settings_table.png')
+        from modules.utils.output_paths import figures_dir
+        save_path = str(figures_dir() / 'ventilator_settings_table.png')
 
     # Save the figure with tight bbox to remove extra whitespace
     plt.savefig(save_path, dpi=150, bbox_inches='tight', facecolor='white', edgecolor='none')

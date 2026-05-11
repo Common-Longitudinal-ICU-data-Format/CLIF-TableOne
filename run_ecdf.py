@@ -8,7 +8,7 @@ for labs, vitals, and respiratory support measurements.
 
 Usage:
     uv run run_ecdf.py
-    uv run run_ecdf.py --visualize  # Also generate HTML visualizations
+    uv run run_ecdf.py --visualize  # Also generate interactive HTML viewers
 """
 
 import sys
@@ -25,7 +25,7 @@ def main():
     parser.add_argument(
         '--visualize',
         action='store_true',
-        help='Also generate HTML visualizations'
+        help='Generate interactive HTML distribution viewers'
     )
     args = parser.parse_args()
 

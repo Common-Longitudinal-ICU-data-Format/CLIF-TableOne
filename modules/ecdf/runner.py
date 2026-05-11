@@ -8,10 +8,11 @@ progress tracking and output validation.
 import os
 import sys
 import json
-import time
 import traceback
 from pathlib import Path
 from datetime import datetime
+
+from modules.utils.memory_monitor import MemoryMonitor
 
 
 class ECDFRunner:
@@ -20,7 +21,7 @@ class ECDFRunner:
     def __init__(self, config=None):
         """Initialize ECDF runner with configuration."""
         self.config = config or self.load_config()
-        self.start_time = None
+        self.memory_monitor = None
         self.project_root = Path(__file__).parent.parent.parent
 
     def load_config(self):
@@ -30,7 +31,7 @@ class ECDFRunner:
         if not config_path.exists():
             raise FileNotFoundError(f"Configuration file not found at {config_path}")
 
-        with open(config_path, 'r') as f:
+        with open(config_path, 'r', encoding='utf-8') as f:
             return json.load(f)
 
     def validate_config(self):
@@ -102,16 +103,38 @@ class ECDFRunner:
 
     def validate_outputs(self):
         """Validate that expected output files were created."""
+        from modules.utils.output_paths import (
+            CONFIGS, STATS, ecdf_dir, bins_dir, meta_dir, STRATA_NAMES,
+        )
+
         expected_dirs = [
-            self.project_root / 'output/final/configs',
-            self.project_root / 'output/final/ecdf/labs',
-            self.project_root / 'output/final/ecdf/vitals',
-            self.project_root / 'output/final/ecdf/respiratory_support',
-            self.project_root / 'output/final/bins/labs',
-            self.project_root / 'output/final/bins/vitals',
-            self.project_root / 'output/final/bins/respiratory_support',
-            self.project_root / 'output/final/stats',
+            CONFIGS,
+            ecdf_dir(table_type='labs'),
+            ecdf_dir(table_type='vitals'),
+            ecdf_dir(table_type='respiratory_support'),
+            bins_dir(table_type='labs'),
+            bins_dir(table_type='vitals'),
+            bins_dir(table_type='respiratory_support'),
+            STATS,
         ]
+        for stratum in STRATA_NAMES:
+            expected_dirs.extend([
+                ecdf_dir(stratum, 'labs'),
+                ecdf_dir(stratum, 'vitals'),
+                ecdf_dir(stratum, 'respiratory_support'),
+                bins_dir(stratum, 'labs'),
+                bins_dir(stratum, 'vitals'),
+                bins_dir(stratum, 'respiratory_support'),
+            ])
+
+        # Deduplicate: sub-strata now resolve to the same parent directories
+        seen = set()
+        deduped_dirs = []
+        for d in expected_dirs:
+            if d not in seen:
+                seen.add(d)
+                deduped_dirs.append(d)
+        expected_dirs = deduped_dirs
 
         missing_dirs = []
         existing_dirs = []
@@ -134,17 +157,22 @@ class ECDFRunner:
         if existing_dirs:
             print(f"\n✅ Generated directories ({len(existing_dirs)}):")
             for dir_path, file_count in existing_dirs:
-                print(f"   {Path(dir_path).name:30s} ({file_count} files)")
+                # Show last two path parts for clarity (e.g. "overall/labs", "icu/ecdf")
+                short = '/'.join(Path(dir_path).parts[-3:])
+                print(f"   {short:40s} ({file_count} files)")
 
         if missing_dirs:
             print(f"\n⚠️  Missing expected directories ({len(missing_dirs)}):")
             for dir_path in missing_dirs:
-                print(f"   {Path(dir_path).name}")
+                short = '/'.join(Path(dir_path).parts[-3:])
+                print(f"   {short}")
 
-        # Check for log file
-        log_file = self.project_root / 'output/final/unit_mismatches.log'
-        if log_file.exists():
-            print(f"\n📋 Log file: {log_file}")
+        # Check for log files — two streams now: data-vs-schema mismatches
+        # (site issues) and ECDF coverage gaps (config issues).
+        for fname in ('unit_mismatches.log', 'ecdf_coverage_gaps.log'):
+            log_file = meta_dir() / fname
+            if log_file.exists():
+                print(f"\n📋 Log file: {log_file}")
 
         return len(missing_dirs) == 0
 
@@ -178,17 +206,47 @@ class ECDFRunner:
             return False
 
     def execute_visualization(self):
-        """Execute the visualization script to generate HTML plots."""
+        """Generate interactive HTML distribution viewers."""
         print(f"\n{'='*80}")
-        print("GENERATING HTML VISUALIZATIONS")
+        print("GENERATING INTERACTIVE DISTRIBUTION VIEWERS")
         print(f"{'='*80}")
         print(f"Module: modules.ecdf.visualizer")
         print(f"{'='*80}\n")
 
         try:
-            # Import and execute the visualization function
-            from .visualizer import main
-            main()
+            from .visualizer import generate_interactive_html
+            from modules.utils.output_paths import (
+                OVERALL, cohort_dir, figures_dir,
+            )
+
+            # Simple strata: single-panel HTML
+            simple = [
+                (str(OVERALL), str(figures_dir() / 'distributions.html'), 'Overall'),
+                (str(cohort_dir('icu')), str(figures_dir('icu') / 'distributions.html'), 'ICU'),
+                (str(cohort_dir('deaths')), str(figures_dir('deaths') / 'distributions.html'), 'Deaths'),
+            ]
+            for base, out, label in simple:
+                if not os.path.isdir(os.path.join(base, 'bins')):
+                    continue
+                print(f"  Generating {label} viewer → {out}")
+                generate_interactive_html(base, out, f'{label} ECDF Distributions')
+
+            # Complex strata: 3-panel (Overall / ICU / No ICU)
+            complex_strata = [
+                ('advanced_resp', 'Advanced Respiratory Support'),
+                ('vaso', 'Vasopressor Support'),
+            ]
+            for stratum, label in complex_strata:
+                base = str(cohort_dir(stratum))
+                if not os.path.isdir(os.path.join(base, 'bins')):
+                    continue
+                out = str(figures_dir(stratum) / 'distributions.html')
+                print(f"  Generating {label} viewer (3-panel) → {out}")
+                generate_interactive_html(
+                    base, out, f'{label} ECDF Distributions',
+                    sub_strata_suffixes=['_icu', '_no_icu'],
+                    panel_labels=['Overall', 'ICU', 'No ICU'],
+                )
 
             print(f"\n{'='*80}")
             print("✅ VISUALIZATION SUCCESSFUL")
@@ -214,33 +272,50 @@ class ECDFRunner:
         print(f"{'='*80}\n")
 
         try:
-            # Import necessary functions
-            from .generator import load_configs, extract_icu_time_windows, discover_lab_category_units
+            from .generator import (
+                load_configs, extract_icu_time_windows, discover_lab_category_units,
+                load_discharge_times, extract_vaso_event_windows,
+                extract_advanced_resp_event_windows, extract_nippv_hfnc_event_windows,
+                STRATUM_WINDOW_TYPE,
+            )
             from .statistics import compute_collection_statistics
+            from modules.utils.clif_loader import ClifDB
 
             # Load configurations
             clif_config, outlier_config, lab_vital_config = load_configs()
 
+            # Initialise shared DuckDB connection
+            db = ClifDB(clif_config['tables_path'], clif_config['file_type'])
+
             # Extract ICU time windows
-            icu_windows = extract_icu_time_windows(
-                clif_config['tables_path'],
-                clif_config['file_type']
-            )
+            icu_windows = extract_icu_time_windows(db)
+
+            # Compute event-based time windows
+            discharge_times = load_discharge_times(db)
+            db.register('discharge_times', discharge_times)
+
+            vaso_windows = extract_vaso_event_windows(db)
+            resp_windows = extract_advanced_resp_event_windows(db)
+            nippv_hfnc_windows = extract_nippv_hfnc_event_windows(db)
+            all_time_windows = {
+                'icu': icu_windows,
+                'vaso': vaso_windows,
+                'resp': resp_windows,
+                'nippv_hfnc': nippv_hfnc_windows,
+            }
 
             # Discover lab category-unit combinations
-            lab_category_units = discover_lab_category_units(
-                clif_config['tables_path'],
-                clif_config['file_type']
-            )
+            lab_category_units = discover_lab_category_units(db)
+
+            if self.memory_monitor is not None:
+                self.memory_monitor.checkpoint("Time Windows Extracted")
 
             # Compute statistics
-            output_dir = self.project_root / 'output/final'
+            output_dir = self.project_root / 'output' / 'final'
             stats_path = compute_collection_statistics(
                 icu_windows=icu_windows,
-                tables_path=clif_config['tables_path'],
-                file_type=clif_config['file_type'],
+                db=db,
                 lab_category_units=lab_category_units,
-                lab_vital_config=lab_vital_config,
                 output_dir=str(output_dir)
             )
 
@@ -248,12 +323,51 @@ class ECDFRunner:
                 print(f"\n{'='*80}")
                 print("✅ COLLECTION STATISTICS SUCCESSFUL")
                 print(f"{'='*80}")
-                return True
             else:
                 print(f"\n{'='*80}")
                 print("⚠️  COLLECTION STATISTICS GENERATED NO DATA")
                 print(f"{'='*80}")
-                return False
+
+            if self.memory_monitor is not None:
+                self.memory_monitor.checkpoint("Overall Collection Stats Complete")
+
+            # Stratified collection statistics
+            try:
+                from modules.strata import load_strata_hospitalization_ids
+
+                strata_hosp_ids = load_strata_hospitalization_ids()
+
+                for stratum_name, hosp_ids in strata_hosp_ids.items():
+                    window_type = STRATUM_WINDOW_TYPE.get(stratum_name, 'icu')
+                    base_windows = all_time_windows[window_type]
+                    filtered_windows = base_windows[
+                        base_windows['hospitalization_id'].isin(hosp_ids)
+                    ]
+                    if len(filtered_windows) == 0:
+                        print(f"  ⚠️ Skipping collection statistics for {stratum_name}: no time windows")
+                        continue
+
+                    print(f"\n  Computing collection statistics for {stratum_name} "
+                          f"({len(filtered_windows):,} time windows)...")
+                    compute_collection_statistics(
+                        icu_windows=filtered_windows,
+                        db=db,
+                        lab_category_units=lab_category_units,
+                        output_dir=str(output_dir),
+                        suffix=f"_{stratum_name.replace('/', '_')}"
+                    )
+            except FileNotFoundError as e:
+                print(f"\n  ⚠️ Skipping stratified collection statistics: {e}")
+
+            if self.memory_monitor is not None:
+                self.memory_monitor.checkpoint("Stratified Collection Stats Complete")
+
+            db.close()
+
+            if self.memory_monitor is not None:
+                self.memory_monitor.checkpoint("DuckDB Closed")
+
+            return True
 
         except Exception as e:
             print(f"\n{'='*80}")
@@ -264,12 +378,15 @@ class ECDFRunner:
             traceback.print_exc()
             return False
 
-    def generate_report(self, success, validation_passed, total_time):
+    def generate_report(self, success, validation_passed):
         """Generate a summary report."""
-        report_path = self.project_root / 'output/final/ecdf_execution_report.txt'
+        from modules.utils.output_paths import meta_dir
+        report_path = meta_dir() / 'ecdf_execution_report.txt'
         report_path.parent.mkdir(parents=True, exist_ok=True)
 
-        with open(report_path, 'w') as f:
+        summary = self.memory_monitor.get_summary() if self.memory_monitor is not None else None
+
+        with open(report_path, 'w', encoding='utf-8') as f:
             f.write("="*80 + "\n")
             f.write("ECDF/BINS GENERATION EXECUTION REPORT\n")
             f.write("="*80 + "\n\n")
@@ -278,25 +395,46 @@ class ECDFRunner:
             f.write(f"Status: {'✅ SUCCESS' if success else '❌ FAILED'}\n")
             f.write(f"Validation: {'✅ PASSED' if validation_passed else '⚠️  INCOMPLETE'}\n\n")
 
-            f.write(f"Total Time: {total_time:.1f} seconds ({total_time/60:.1f} minutes)\n\n")
+            if summary is not None:
+                f.write("="*80 + "\n")
+                f.write("MEMORY USAGE SUMMARY\n")
+                f.write("="*80 + "\n\n")
+
+                f.write(f"Start Memory:     {summary['start_memory_mb']:.1f} MB\n")
+                f.write(f"End Memory:       {summary['end_memory_mb']:.1f} MB\n")
+                f.write(f"Peak Memory:      {summary['peak_memory_mb']:.1f} MB\n")
+                f.write(f"Memory Increase:  {summary['memory_increase_mb']:.1f} MB\n")
+                f.write(f"Total Time:       {summary['total_time_sec']:.1f} seconds ({summary['total_time_sec']/60:.1f} minutes)\n\n")
+
+                if summary['checkpoints']:
+                    f.write("="*80 + "\n")
+                    f.write("MEMORY CHECKPOINTS\n")
+                    f.write("="*80 + "\n\n")
+
+                    for cp in summary['checkpoints']:
+                        f.write(f"{cp['label']:<40} Memory: {cp['memory_mb']:>8.1f} MB | Peak: {cp['peak_mb']:>8.1f} MB | Time: {cp['elapsed_sec']:>8.1f}s\n")
+                    f.write("\n")
 
             f.write("="*80 + "\n")
             f.write("OUTPUT STRUCTURE\n")
             f.write("="*80 + "\n\n")
 
             f.write("output/final/\n")
-            f.write("├── configs/           # Configuration files\n")
-            f.write("├── ecdf/             # ECDF parquet files\n")
-            f.write("│   ├── labs/\n")
-            f.write("│   ├── vitals/\n")
-            f.write("│   └── respiratory_support/\n")
-            f.write("├── bins/             # Bin parquet files\n")
-            f.write("│   ├── labs/\n")
-            f.write("│   ├── vitals/\n")
-            f.write("│   └── respiratory_support/\n")
-            f.write("├── stats/            # Collection statistics CSV\n")
+            f.write("├── overall/\n")
+            f.write("│   ├── ecdf/{labs,vitals,respiratory_support}/   # Overall ECDF parquets\n")
+            f.write("│   └── bins/{labs,vitals,respiratory_support}/   # Overall bin parquets\n")
+            f.write("├── strata/\n")
+            f.write("│   ├── icu/{ecdf,bins}/...        # Stratified ECDF/bins\n")
+            f.write("│   ├── advanced_resp/{ecdf,bins}/...\n")
+            f.write("│   ├── vaso/{ecdf,bins}/...\n")
+            f.write("│   └── deaths/{ecdf,bins}/...\n")
+            f.write("├── stats/                         # Collection statistics CSV\n")
             f.write("│   └── collection_statistics.csv\n")
-            f.write("└── unit_mismatches.log\n")
+            f.write("└── meta/\n")
+            f.write("    ├── configs/                   # Configuration snapshots\n")
+            f.write("    ├── ecdf_execution_report.txt\n")
+            f.write("    ├── unit_mismatches.log        # data vs CLIF labs schema\n")
+            f.write("    └── ecdf_coverage_gaps.log     # schema-valid cats w/o bin config\n")
 
         print(f"\n📊 Execution report saved: {report_path}")
 
@@ -305,7 +443,7 @@ class ECDFRunner:
         Main execution method.
 
         Args:
-            visualize (bool): Whether to generate HTML visualizations
+            visualize (bool): Whether to generate interactive HTML viewers
 
         Returns:
             bool: True if successful, False otherwise
@@ -314,10 +452,8 @@ class ECDFRunner:
         print("ECDF AND BINS GENERATION")
         print("="*80 + "\n")
 
-        if visualize:
-            print("📊 Visualization mode enabled - will generate HTML plots after ECDF generation\n")
-
-        self.start_time = time.time()
+        self.memory_monitor = MemoryMonitor()
+        self.memory_monitor.checkpoint("Initialization")
 
         # Step 1: Validate configuration
         print(f"{'='*80}")
@@ -328,13 +464,19 @@ class ECDFRunner:
             print("\n❌ Configuration validation failed. Exiting.")
             return False
 
+        self.memory_monitor.checkpoint("Config Validated")
+
         # Step 2: Check dependencies
         if not self.check_dependencies():
             print("\n❌ Dependency check failed. Exiting.")
             return False
 
+        self.memory_monitor.checkpoint("Dependencies Checked")
+
         # Step 3: Run ECDF generation
+        self.memory_monitor.checkpoint("Script Start")
         success = self.execute_ecdf_generation()
+        self.memory_monitor.checkpoint("Overall ECDF/Bins Computed")
 
         # Step 4: Run collection statistics generation
         stats_success = False
@@ -345,7 +487,9 @@ class ECDFRunner:
 
         # Step 5: Run visualization (optional)
         if success and visualize:
+            self.memory_monitor.checkpoint("Starting Visualization")
             viz_success = self.execute_visualization()
+            self.memory_monitor.checkpoint("Visualization Complete")
             if not viz_success:
                 print("\n⚠️  ECDF generation succeeded but visualization failed")
 
@@ -354,10 +498,11 @@ class ECDFRunner:
         if success:
             validation_passed = self.validate_outputs()
 
-        total_time = time.time() - self.start_time
+        self.memory_monitor.checkpoint("ECDF Generation Complete")
+        total_time = self.memory_monitor.get_summary()['total_time_sec']
 
         # Step 6: Generate report
-        self.generate_report(success, validation_passed, total_time)
+        self.generate_report(success, validation_passed)
 
         # Print summary
         print(f"\n{'='*80}")

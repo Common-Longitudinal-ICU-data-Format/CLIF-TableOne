@@ -13,19 +13,8 @@ class MicrobiologySusceptibilityAnalyzer(BaseTableAnalyzer):
     def get_table_name(self) -> str:
         return 'microbiology_susceptibility'
 
-    def load_table(self, sample_filter=None):
-        """
-        Load Microbiology Susceptibility table using clifpy.
-
-        Note: Susceptibility table only has organism_id (no hospitalization_id),
-        so sample_filter is not applicable. The table is loaded in full
-        regardless of sample setting, similar to the patient table.
-
-        Parameters:
-        -----------
-        sample_filter : list, optional
-            List of hospitalization_ids (not applicable to susceptibility table)
-        """
+    def load_table(self):
+        """Load Microbiology Susceptibility table using clifpy."""
         data_path = Path(self.data_dir)
         file_without_clif = data_path / f"microbiology_susceptibility.{self.filetype}"
         file_with_clif = data_path / f"clif_microbiology_susceptibility.{self.filetype}"
@@ -35,7 +24,8 @@ class MicrobiologySusceptibilityAnalyzer(BaseTableAnalyzer):
             self.table = None
             return
 
-        clifpy_output_dir = os.path.join(self.output_dir, "final", "clifpy")
+        from modules.utils.output_paths import validation_json_reports_dir
+        clifpy_output_dir = str(validation_json_reports_dir())
         os.makedirs(clifpy_output_dir, exist_ok=True)
 
         try:
@@ -67,4 +57,26 @@ class MicrobiologySusceptibilityAnalyzer(BaseTableAnalyzer):
     def check_data_quality(self) -> Dict[str, Any]:
         if self.table is None or not hasattr(self.table, 'df') or self.table.df is None:
             return {'error': 'No data available'}
-        return {}
+
+        df = self.table.df
+        quality_checks = {}
+
+        # Check for duplicate susceptibility entries (same organism + antimicrobial)
+        if all(col in df.columns for col in ['organism_id', 'antimicrobial_category']):
+            duplicates_mask = df.duplicated(subset=['organism_id', 'antimicrobial_category'], keep=False)
+            duplicates = duplicates_mask.sum()
+
+            examples = None
+            if duplicates > 0:
+                example_cols = ['organism_id', 'antimicrobial_category', 'susceptibility_category']
+                example_cols = [col for col in example_cols if col in df.columns]
+                examples = df[duplicates_mask][example_cols].head(10)
+
+            quality_checks['duplicate_susceptibility_entries'] = {
+                'count': int(duplicates),
+                'percentage': round((duplicates / len(df) * 100) if len(df) > 0 else 0, 2),
+                'status': 'pass' if duplicates == 0 else 'warning',
+                'examples': examples
+            }
+
+        return quality_checks
