@@ -73,18 +73,18 @@ The `uv run` command above works on Windows as-is. The wrappers below are an opt
 **Using Batch files:**
 
 ```batch
-run_project_windows.bat --no-summary --get-ecdf --ward
+run_project_windows.bat --no-summary
 ```
 
 **Using PowerShell:**
 
 ```powershell
-.\run_project_windows.ps1 --no-summary --get-ecdf --ward
+.\run_project_windows.ps1 --no-summary
 ```
 
 If you encounter Unicode/emoji display issues, see the [Windows Unicode Troubleshooting](#windows-unicode-troubleshooting) section below.
 
-Companion `run_analysis_windows.bat` / `.ps1` wrap `run_analysis.py` the same way.
+Companion `run_analysis_windows.bat` / `.ps1` wrap `run_analysis.py` the same way. Ward and ECDF are now included by default — use `--no-ward` or `--no-ecdf` to skip them.
 
 ### 5. Ward Table One 
 

@@ -11,26 +11,26 @@ The `run_project.py` script orchestrates the complete analysis pipeline.
 #### Basic Commands
 
 ```bash
-# Full analysis (validation + critical-illness table one)
+# Full workflow: validation + CI + ward + ECDF (recommended)
 uv run python run_project.py --no-summary
 
-# Full workflow + ward table one + ECDF bins (recommended)
-uv run python run_project.py --no-summary --get-ecdf --ward
-
 # Skip automatic web app launch
-uv run python run_project.py --no-summary --get-ecdf --no-launch-app
+uv run python run_project.py --no-summary --no-launch-app
+
+# CI table one only (fastest, no validation/ward/ECDF)
+uv run python run_project.py --tableone-only --no-ward --no-ecdf
 
 # Validation only
 uv run python run_project.py --validate-only --no-summary
 
-# Critical-illness table one only
-uv run python run_project.py --tableone-only
+# Skip ward (CI + ECDF only)
+uv run python run_project.py --no-summary --no-ward
+
+# Skip ECDF (CI + ward only, saves memory)
+uv run python run_project.py --no-summary --no-ecdf
 
 # Ward table one only (runs in an isolated subprocess)
 uv run python run_project.py --ward-only
-
-# Both critical-illness and ward table ones
-uv run python run_project.py --tableone-only --ward
 
 # ECDF bins computation only
 uv run python run_project.py --get-ecdf-only
@@ -38,6 +38,9 @@ uv run python run_project.py --get-ecdf-only --visualize
 
 # Specific tables validation
 uv run python run_project.py --tables patient adt hospitalization
+
+# Force rebuild filtered CLIF table cache
+uv run python run_project.py --no-summary --force-refresh
 ```
 
 #### All Command Options
@@ -45,14 +48,13 @@ uv run python run_project.py --tables patient adt hospitalization
 ```
 Workflow Control:
   --validate-only          Only run validation step
-  --tableone-only          Only run critical-illness table one generation step
+  --tableone-only          Only run critical-illness + ward table one (no validation/ECDF)
   --ward-only              Only run ward table one generation step (isolated subprocess)
-  --ward                   Include ward table one in workflow (runs after critical-illness
-                           in an isolated subprocess so peak RAM equals max of the two
-                           cohorts, not the sum)
+  --no-ward                Skip ward table one generation (default: ON)
   --get-ecdf-only          Only run ECDF bins computation step
-  --get-ecdf               Include ECDF bins in workflow
+  --no-ecdf                Skip ECDF generation (default: ON)
   --visualize              Generate interactive HTML distribution viewers (for ECDF)
+  --force-refresh          Bypass filtered-CLIF-table cache and rebuild from raw source
   --continue-on-error      Continue even if previous step fails
   --no-launch-app          Skip automatic web app launch
 
@@ -222,7 +224,7 @@ The Table One generation includes memory optimization features:
 2. **Selective Loading**: Only required columns loaded for analysis
 3. **Weight Data Pre-loading**: Optimized medication dose conversion
 4. **Garbage Collection**: Aggressive memory cleanup between steps
-5. **Isolated ward subprocess**: `--ward` runs the ward cohort in a separate process so peak RAM equals the larger of the two cohorts, not the sum
+5. **Isolated ward subprocess**: The ward cohort runs in a separate process (default ON, skip with `--no-ward`) so peak RAM equals the larger of the two cohorts, not the sum
 
 ## Troubleshooting
 
