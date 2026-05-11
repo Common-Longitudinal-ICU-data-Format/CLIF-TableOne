@@ -5499,6 +5499,20 @@ def main(memory_monitor=None, cohort_mode='critical_illness', force_refresh=Fals
         # Process each admission_year independently so only one year's
         # heavy CLIF tables are in memory at a time.
         # ────────────────────────────────────────────────────────────────
+        # Drop years with < 10 encounters — too few for meaningful analysis
+        # and likely to crash on empty tables (e.g., partial 2025 data with
+        # no respiratory support). These encounters are excluded from
+        # everything: year loop, overall table, strobe counts.
+        MIN_YEAR_ENCOUNTERS = 10
+        _year_counts = final_tableone_df.groupby('admission_year')['encounter_block'].nunique()
+        _small_years = _year_counts[_year_counts < MIN_YEAR_ENCOUNTERS].index.tolist()
+        if _small_years:
+            _n_dropped = final_tableone_df[final_tableone_df['admission_year'].isin(_small_years)]['encounter_block'].nunique()
+            final_tableone_df = final_tableone_df[~final_tableone_df['admission_year'].isin(_small_years)]
+            final_hosp_ids = final_tableone_df['hospitalization_id'].unique().tolist()
+            print(f"\n  ⚠️ Dropped {len(_small_years)} year(s) with <{MIN_YEAR_ENCOUNTERS} encounters: "
+                  f"{[int(y) for y in _small_years]} ({_n_dropped} encounters excluded)")
+
         _full_tableone_df = final_tableone_df.copy()
         _full_hosp_ids = list(final_hosp_ids)
         _resp_support_backup = clif.respiratory_support.df.copy()
