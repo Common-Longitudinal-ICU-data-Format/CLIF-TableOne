@@ -4384,7 +4384,7 @@ def main(memory_monitor=None, cohort_mode='critical_illness', force_refresh=Fals
     # Results are cached to intermediate_dir so only the first cohort
     # run pays the full DuckDB cost; the second reuses the cache.
     print(f"\nComputing Adult Sepsis Events (ASE)...")
-    ASE_BATCH_SIZE = 50_000
+    ASE_BATCH_SIZE = 20_000
     _ase_cache_path = intermediate_dir / 'ase_cache.parquet'
     strobe_counts.setdefault('sepsis_encounters', 0)
     strobe_counts.setdefault('sepsis_incidence_pct', 0)
@@ -4683,37 +4683,62 @@ def main(memory_monitor=None, cohort_mode='critical_illness', force_refresh=Fals
         sofa_cohort_df['start_dttm'] = sofa_cohort_df['first_icu_in_dttm']
         sofa_cohort_df['end_dttm'] = sofa_cohort_df['start_dttm'] + pd.Timedelta(hours=24)
         sofa_cohort_df = sofa_cohort_df[['hospitalization_id', 'encounter_block', 'start_dttm', 'end_dttm']]
-        sofa_cohort_ids = cohort_df['hospitalization_id'].astype(str).unique().tolist()
 
-        # Convert to Polars
-        sofa_cohort_pl = pl.from_pandas(sofa_cohort_df)
+        print(f"SOFA cohort: {len(sofa_cohort_df):,} ICU encounters")
 
-        print(f"Cohort shape: {sofa_cohort_pl.shape}")
-        print(f"Cohort columns: {sofa_cohort_pl.columns}")
+        # Batch SOFA computation to avoid OOM on large cohorts.
+        # Each batch loads labs/vitals internally — batching keeps peak memory bounded.
+        SOFA_BATCH_SIZE = 20_000
+        try:
+            if len(sofa_cohort_df) > SOFA_BATCH_SIZE:
+                _sofa_batches = [
+                    sofa_cohort_df.iloc[i:i + SOFA_BATCH_SIZE]
+                    for i in range(0, len(sofa_cohort_df), SOFA_BATCH_SIZE)
+                ]
+                print(f"   Processing {len(sofa_cohort_df):,} encounters in {len(_sofa_batches)} batches of ≤{SOFA_BATCH_SIZE:,}")
+                _sofa_parts = []
+                for _idx, _batch in enumerate(_sofa_batches, 1):
+                    print(f"   SOFA batch {_idx}/{len(_sofa_batches)} ({len(_batch):,} encounters)...")
+                    _batch_pl = pl.from_pandas(_batch)
+                    _part = compute_sofa_polars(
+                        data_directory=config['tables_path'],
+                        cohort_df=_batch_pl,
+                        filetype=config['file_type'],
+                        id_name='encounter_block',
+                        extremal_type='worst',
+                        fill_na_scores_with_zero=True,
+                        remove_outliers=True,
+                        timezone=config['timezone']
+                    ).to_pandas()
+                    _sofa_parts.append(_part)
+                    del _batch_pl, _part
+                    gc.collect()
+                sofa_scores = pd.concat(_sofa_parts, ignore_index=True)
+                del _sofa_parts
+                gc.collect()
+                print(f"   All SOFA batches complete — {len(sofa_scores):,} rows")
+            else:
+                sofa_cohort_pl = pl.from_pandas(sofa_cohort_df)
+                sofa_scores_pl = compute_sofa_polars(
+                    data_directory=config['tables_path'],
+                    cohort_df=sofa_cohort_pl,
+                    filetype=config['file_type'],
+                    id_name='encounter_block',
+                    extremal_type='worst',
+                    fill_na_scores_with_zero=True,
+                    remove_outliers=True,
+                    timezone=config['timezone']
+                )
+                sofa_scores = sofa_scores_pl.to_pandas()
+                del sofa_cohort_pl, sofa_scores_pl
 
-        # Compute SOFA scores using Polars
-        print("\n" + "="*60)
-        print("Computing SOFA scores with Polars...")
-        print("="*60 + "\n")
-
-        sofa_scores_pl = compute_sofa_polars(
-            data_directory=config['tables_path'],
-            cohort_df=sofa_cohort_pl,
-            filetype=config['file_type'],
-            id_name='encounter_block',
-            extremal_type='worst',
-            fill_na_scores_with_zero=True,
-            remove_outliers=True,
-            timezone=config['timezone']
-        )
-
-        # Convert back to Pandas for compatibility with rest of code
-        sofa_scores = sofa_scores_pl.to_pandas()
-
-        print(f"\n✅ SOFA computation complete!")
-        print(f"Result shape: {sofa_scores.shape}")
-        print(f"\nFirst few rows:")
-        print(sofa_scores.head())
+            print(f"\n✅ SOFA computation complete!")
+            print(f"Result shape: {sofa_scores.shape}")
+        except Exception as e:
+            print(f"\n⚠️ SOFA computation failed: {e}")
+            traceback.print_exc()
+            print("Proceeding without SOFA scores.")
+            sofa_scores = pd.DataFrame(columns=['encounter_block', 'sofa_total'])
 
         # Note: death_enc will come from final_tableone_df when we merge later
         # For now, get death_enc temporarily for mortality calculations
@@ -4874,8 +4899,11 @@ def main(memory_monitor=None, cohort_mode='critical_illness', force_refresh=Fals
         print("Clearing SOFA computation data from memory...")
 
         # Delete SOFA computation variables
-        del sofa_scores, sofa_mortality, sofa_export, sofa_cohort_df, sofa_cohort_ids, sofa_cohort_pl, sofa_scores_pl
-        del ci_data
+        del sofa_scores, sofa_mortality, sofa_export, sofa_cohort_df
+        try:
+            del ci_data, sofa_scores_with_death
+        except NameError:
+            pass
 
         # Force garbage collection
         gc.collect()
@@ -5376,7 +5404,7 @@ def main(memory_monitor=None, cohort_mode='critical_illness', force_refresh=Fals
                 ase_df = ase_df[ase_df['hospitalization_id'].isin(final_hosp_ids)]
                 print(f"   ✅ ASE cache hit — {len(ase_df):,} rows for ward cohort")
             else:
-                ASE_BATCH_SIZE = 50_000
+                ASE_BATCH_SIZE = 20_000
                 if len(final_hosp_ids) > ASE_BATCH_SIZE:
                     batches = [
                         final_hosp_ids[i:i + ASE_BATCH_SIZE]
@@ -5454,7 +5482,7 @@ def main(memory_monitor=None, cohort_mode='critical_illness', force_refresh=Fals
 
         if not _ase_cache_valid:
             print(f"\nPre-computing ASE for full cohort ({len(final_hosp_ids):,} IDs) before year loop...")
-            ASE_BATCH_SIZE = 50_000
+            ASE_BATCH_SIZE = 20_000
             try:
                 if len(final_hosp_ids) > ASE_BATCH_SIZE:
                     batches = [
