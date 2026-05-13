@@ -1189,6 +1189,14 @@ class ProjectRunner:
             print("Review validation report: output/final/validation/pdf_reports/combined_validation_report.pdf")
             print("\nUse --continue-on-error flag to bypass this check (not recommended)\n")
 
+        # Zip output/final for easy upload to Box
+        import shutil
+        _final_dir = Path(self.config_path).resolve().parent.parent / 'output' / 'final'
+        if _final_dir.exists():
+            _zip_path = _final_dir.parent / 'final'
+            shutil.make_archive(str(_zip_path), 'zip', str(_final_dir.parent), 'final')
+            print(f"\n📦 Zipped results: output/final.zip (upload this to Box)")
+
         return overall_success
 
 
