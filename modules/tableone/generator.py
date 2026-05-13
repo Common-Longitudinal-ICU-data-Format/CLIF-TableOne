@@ -4686,8 +4686,49 @@ def main(memory_monitor=None, cohort_mode='critical_illness', force_refresh=Fals
 
         print(f"SOFA cohort: {len(sofa_cohort_df):,} ICU encounters")
 
-        # Batch SOFA computation to avoid OOM on large cohorts.
-        # Each batch loads labs/vitals internally — batching keeps peak memory bounded.
+        # Pre-load SOFA-relevant data ONCE, then pass to each batch.
+        # This avoids re-scanning massive parquet files per batch.
+        _sofa_hosp_ids = sofa_cohort_df['hospitalization_id'].unique().tolist()
+        _sofa_required_labs = ['creatinine', 'platelet_count', 'po2_arterial', 'bilirubin_total']
+        _sofa_required_vitals = ['map', 'spo2', 'weight_kg']
+
+        print("   Pre-loading SOFA data (labs, vitals)...")
+        try:
+            _sofa_labs = (
+                pl.scan_parquet(os.path.join(config['tables_path'], f"clif_labs.{config['file_type']}"))
+                .select(['hospitalization_id', 'lab_result_dttm', 'lab_category', 'lab_value', 'lab_value_numeric'])
+                .with_columns(pl.col('hospitalization_id').cast(pl.Utf8))
+                .with_columns(pl.col('lab_category').str.to_lowercase())
+                .filter(
+                    pl.col('lab_category').is_in(_sofa_required_labs) &
+                    pl.col('hospitalization_id').is_in(_sofa_hosp_ids)
+                )
+                .collect()
+            )
+            print(f"   ✅ Labs pre-loaded: {len(_sofa_labs):,} rows")
+            _sofa_labs_lazy = _sofa_labs.lazy()
+        except Exception as e:
+            print(f"   ⚠️ Labs pre-load failed ({e}), will load per-batch")
+            _sofa_labs_lazy = None
+
+        try:
+            _sofa_vitals = (
+                pl.scan_parquet(os.path.join(config['tables_path'], f"clif_vitals.{config['file_type']}"))
+                .select(['hospitalization_id', 'recorded_dttm', 'vital_category', 'vital_value'])
+                .with_columns(pl.col('hospitalization_id').cast(pl.Utf8))
+                .with_columns(pl.col('vital_category').str.to_lowercase())
+                .filter(
+                    pl.col('vital_category').is_in(_sofa_required_vitals) &
+                    pl.col('hospitalization_id').is_in(_sofa_hosp_ids)
+                )
+                .collect()
+            )
+            print(f"   ✅ Vitals pre-loaded: {len(_sofa_vitals):,} rows")
+            _sofa_vitals_lazy = _sofa_vitals.lazy()
+        except Exception as e:
+            print(f"   ⚠️ Vitals pre-load failed ({e}), will load per-batch")
+            _sofa_vitals_lazy = None
+
         SOFA_BATCH_SIZE = 20_000
         try:
             if len(sofa_cohort_df) > SOFA_BATCH_SIZE:
@@ -4708,7 +4749,9 @@ def main(memory_monitor=None, cohort_mode='critical_illness', force_refresh=Fals
                         extremal_type='worst',
                         fill_na_scores_with_zero=True,
                         remove_outliers=True,
-                        timezone=config['timezone']
+                        timezone=config['timezone'],
+                        preloaded_labs=_sofa_labs_lazy,
+                        preloaded_vitals=_sofa_vitals_lazy,
                     ).to_pandas()
                     _sofa_parts.append(_part)
                     del _batch_pl, _part
@@ -4724,6 +4767,8 @@ def main(memory_monitor=None, cohort_mode='critical_illness', force_refresh=Fals
                     cohort_df=sofa_cohort_pl,
                     filetype=config['file_type'],
                     id_name='encounter_block',
+                    preloaded_labs=_sofa_labs_lazy,
+                    preloaded_vitals=_sofa_vitals_lazy,
                     extremal_type='worst',
                     fill_na_scores_with_zero=True,
                     remove_outliers=True,
@@ -4739,6 +4784,14 @@ def main(memory_monitor=None, cohort_mode='critical_illness', force_refresh=Fals
             traceback.print_exc()
             print("Proceeding without SOFA scores.")
             sofa_scores = pd.DataFrame(columns=['encounter_block', 'sofa_total'])
+
+        # Free preloaded SOFA data
+        for _v in ('_sofa_labs', '_sofa_vitals', '_sofa_labs_lazy', '_sofa_vitals_lazy'):
+            try:
+                del locals()[_v]
+            except (KeyError, NameError):
+                pass
+        gc.collect()
 
         # Note: death_enc will come from final_tableone_df when we merge later
         # For now, get death_enc temporarily for mortality calculations

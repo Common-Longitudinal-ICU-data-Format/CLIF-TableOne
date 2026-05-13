@@ -1230,7 +1230,12 @@ def compute_sofa_polars(
     fill_na_scores_with_zero: bool = True,
     remove_outliers: bool = True,
     timezone: Optional[str] = None,
-    time_unit: str = 'us'
+    time_unit: str = 'us',
+    preloaded_labs: Optional[pl.LazyFrame] = None,
+    preloaded_vitals: Optional[pl.LazyFrame] = None,
+    preloaded_assessments: Optional[pl.LazyFrame] = None,
+    preloaded_resp: Optional[pl.LazyFrame] = None,
+    preloaded_meds: Optional[pl.LazyFrame] = None,
 ) -> pl.DataFrame:
     """
     Compute SOFA scores using optimized Polars operations.
@@ -1324,21 +1329,42 @@ def compute_sofa_polars(
     hospitalization_ids = cohort_df_local['hospitalization_id'].unique().to_list()
     logger.info(f"Loading data for {len(hospitalization_ids)} unique hospitalization(s)")
 
-    # Load all required tables (using local timezone cohort for consistent filtering)
-    logger.info("Loading labs data...")
-    labs_df = _load_labs(data_directory, filetype, hospitalization_ids, cohort_df_local, timezone)
+    # Load all required tables — use preloaded data if provided (avoids
+    # re-scanning massive parquet files on every batch/call).
+    if preloaded_labs is not None:
+        logger.info("Using preloaded labs data")
+        labs_df = preloaded_labs.filter(pl.col('hospitalization_id').is_in(hospitalization_ids))
+    else:
+        logger.info("Loading labs data...")
+        labs_df = _load_labs(data_directory, filetype, hospitalization_ids, cohort_df_local, timezone)
 
-    logger.info("Loading vitals data...")
-    vitals_df = _load_vitals(data_directory, filetype, hospitalization_ids, cohort_df_local, timezone)
+    if preloaded_vitals is not None:
+        logger.info("Using preloaded vitals data")
+        vitals_df = preloaded_vitals.filter(pl.col('hospitalization_id').is_in(hospitalization_ids))
+    else:
+        logger.info("Loading vitals data...")
+        vitals_df = _load_vitals(data_directory, filetype, hospitalization_ids, cohort_df_local, timezone)
 
-    logger.info("Loading patient assessments data...")
-    assessments_df = _load_patient_assessments(data_directory, filetype, hospitalization_ids, cohort_df_local, timezone)
+    if preloaded_assessments is not None:
+        logger.info("Using preloaded assessments data")
+        assessments_df = preloaded_assessments.filter(pl.col('hospitalization_id').is_in(hospitalization_ids))
+    else:
+        logger.info("Loading patient assessments data...")
+        assessments_df = _load_patient_assessments(data_directory, filetype, hospitalization_ids, cohort_df_local, timezone)
 
-    logger.info("Loading respiratory support data...")
-    resp_df = _load_respiratory_support(data_directory, filetype, hospitalization_ids, cohort_df_local, lookback_hours=24, timezone=timezone)
+    if preloaded_resp is not None:
+        logger.info("Using preloaded respiratory data")
+        resp_df = preloaded_resp.filter(pl.col('hospitalization_id').is_in(hospitalization_ids))
+    else:
+        logger.info("Loading respiratory support data...")
+        resp_df = _load_respiratory_support(data_directory, filetype, hospitalization_ids, cohort_df_local, lookback_hours=24, timezone=timezone)
 
-    logger.info("Loading and converting medication data...")
-    meds_df = _load_and_convert_medications(data_directory, filetype, hospitalization_ids, cohort_df_local, vitals_df, timezone, time_unit)
+    if preloaded_meds is not None:
+        logger.info("Using preloaded medication data")
+        meds_df = preloaded_meds.filter(pl.col('hospitalization_id').is_in(hospitalization_ids))
+    else:
+        logger.info("Loading and converting medication data...")
+        meds_df = _load_and_convert_medications(data_directory, filetype, hospitalization_ids, cohort_df_local, vitals_df, timezone, time_unit)
 
     # ==================================================================================
     # CRITICAL: Collect each data source BEFORE combining to avoid Windows crash
