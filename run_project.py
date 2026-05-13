@@ -1126,6 +1126,14 @@ class ProjectRunner:
         h, m = divmod(m, 60)
         print(f"\n⏱️  Total workflow time: {h:02d}:{m:02d}:{s:02d} (HH:MM:SS) — {total_sec:,.0f}s")
 
+        # Zip output/final for easy upload to Box
+        import shutil
+        _final_dir = Path(self.config_path).resolve().parent.parent / 'output' / 'final'
+        if _final_dir.exists():
+            _zip_path = _final_dir.parent / 'final'
+            shutil.make_archive(str(_zip_path), 'zip', str(_final_dir.parent), 'final')
+            print(f"\n📦 Zipped results: output/final.zip (upload this to Box)")
+
         # App launch logic - launch unless critical tables failed
         # Allow override with --continue-on-error
         should_launch = overall_success or kwargs.get('continue_on_error', False)
@@ -1188,14 +1196,6 @@ class ProjectRunner:
             print("\nCritical tables validation failed. Cannot launch app.")
             print("Review validation report: output/final/validation/pdf_reports/combined_validation_report.pdf")
             print("\nUse --continue-on-error flag to bypass this check (not recommended)\n")
-
-        # Zip output/final for easy upload to Box
-        import shutil
-        _final_dir = Path(self.config_path).resolve().parent.parent / 'output' / 'final'
-        if _final_dir.exists():
-            _zip_path = _final_dir.parent / 'final'
-            shutil.make_archive(str(_zip_path), 'zip', str(_final_dir.parent), 'final')
-            print(f"\n📦 Zipped results: output/final.zip (upload this to Box)")
 
         return overall_success
 

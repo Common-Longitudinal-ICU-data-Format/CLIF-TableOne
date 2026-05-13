@@ -64,6 +64,12 @@ def _join_events_to_location(
     adt_for_join: pl.DataFrame,
 ) -> pl.DataFrame:
     """Backward asof-join events onto ADT intervals, flagging gaps."""
+    # Normalize datetime precision (μs vs ns) to prevent join failures
+    events = events.cast({ts_col: pl.Datetime("us", time_zone=events[ts_col].dtype.time_zone)})
+    adt_for_join = adt_for_join.cast({
+        "in_dttm": pl.Datetime("us", time_zone=adt_for_join["in_dttm"].dtype.time_zone),
+        "out_dttm": pl.Datetime("us", time_zone=adt_for_join["out_dttm"].dtype.time_zone),
+    })
     joined = events.join_asof(
         adt_for_join,
         left_on=ts_col,
