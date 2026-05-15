@@ -3560,24 +3560,42 @@ def main(memory_monitor=None, cohort_mode='critical_illness', force_refresh=Fals
 
     print(f"Converting {len(preferred_units)} vasopressors to mcg/kg/min...")
 
-    # Pre-load only weight_kg vitals using Polars for efficiency
+    # Pre-load only weight_kg vitals using Polars for efficiency.
+    # Use a dedicated weight-only cache to avoid scanning the full vitals
+    # parquet (can be 200M+ rows at large sites like JHU).
     print("Pre-loading weight data for medication conversion...")
+    _weight_cache_path = intermediate_dir / 'clif_filtered' / 'vitals_weight_only.parquet'
     _vitals_filtered_path = intermediate_dir / 'clif_filtered' / 'vitals_cohort.parquet'
-    if _vitals_filtered_path.exists():
-        vitals_path = str(_vitals_filtered_path)
-        print(f"   Using filtered vitals cache: {vitals_path}")
-    else:
-        vitals_path = os.path.join(clif.data_directory, 'clif_vitals.parquet')
 
-    # Use Polars to load only what we need
-    weight_df_pl = (
-        pl.scan_parquet(vitals_path)
-        .filter(
-            (pl.col('hospitalization_id').is_in(final_hosp_ids)) &
-            (pl.col('vital_category') == 'weight_kg')
+    if _weight_cache_path.exists():
+        print(f"   Using weight-only cache: {_weight_cache_path.name}")
+        weight_df_pl = (
+            pl.scan_parquet(str(_weight_cache_path))
+            .filter(pl.col('hospitalization_id').is_in(final_hosp_ids))
+            .collect()
         )
-        .collect()
-    )
+    else:
+        # Build weight-only cache from best available source
+        if _vitals_filtered_path.exists():
+            vitals_path = str(_vitals_filtered_path)
+            print(f"   Scanning filtered vitals cache for weight_kg...")
+        else:
+            vitals_path = os.path.join(clif.data_directory, 'clif_vitals.parquet')
+            print(f"   Scanning raw vitals parquet for weight_kg...")
+
+        weight_df_pl = (
+            pl.scan_parquet(vitals_path)
+            .filter(
+                (pl.col('hospitalization_id').is_in(final_hosp_ids)) &
+                (pl.col('vital_category') == 'weight_kg')
+            )
+            .collect()
+        )
+
+        # Cache for subsequent year passes and ward run
+        _weight_cache_path.parent.mkdir(parents=True, exist_ok=True)
+        weight_df_pl.write_parquet(str(_weight_cache_path))
+        print(f"   Cached {len(weight_df_pl):,} weight rows → {_weight_cache_path.name}")
 
     # Detect medication timestamp format to match it
     # Access CLIFpy's loaded medication data to get timezone and time precision
