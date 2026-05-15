@@ -3612,24 +3612,15 @@ def main(memory_monitor=None, cohort_mode='critical_illness', force_refresh=Fals
 
     print(f"Detected medication timestamp format: timezone={med_timezone}, time_unit={med_time_unit}")
 
-    # Apply unified timezone and time unit standardization
-    weight_df_pl = standardize_datetime_columns(
-        weight_df_pl,
-        target_timezone=med_timezone,
-        target_time_unit=med_time_unit,
-        datetime_columns=['recorded_dttm']
-    )
-
-    # Convert to Pandas for CLIF compatibility
+    # Convert to Pandas and handle timezone there (faster than Polars
+    # replace_time_zone on sites with non-native datetime parquets)
     weight_vitals_df = weight_df_pl.to_pandas()
-
-    # Add timezone information to match medication data (prevents DuckDB type mismatch)
-    # Handle DST transitions using clifpy's standard approach
-    if 'recorded_dttm' in weight_vitals_df.columns and weight_vitals_df['recorded_dttm'].dt.tz is None:
+    weight_vitals_df['recorded_dttm'] = pd.to_datetime(weight_vitals_df['recorded_dttm'], utc=True, errors='coerce')
+    try:
+        weight_vitals_df['recorded_dttm'] = weight_vitals_df['recorded_dttm'].dt.tz_convert(med_timezone)
+    except TypeError:
         weight_vitals_df['recorded_dttm'] = weight_vitals_df['recorded_dttm'].dt.tz_localize(
-            config['timezone'],
-            ambiguous=True,              # Assume DST for ambiguous times (fall back)
-            nonexistent='shift_forward'  # Shift forward nonexistent times (spring forward)
+            med_timezone, ambiguous=True, nonexistent='shift_forward'
         )
 
     print(f"Loaded {len(weight_vitals_df):,} weight measurements for {weight_df_pl['hospitalization_id'].n_unique()} hospitalizations")
