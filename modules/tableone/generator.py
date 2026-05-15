@@ -3625,14 +3625,38 @@ def main(memory_monitor=None, cohort_mode='critical_illness', force_refresh=Fals
 
     print(f"Loaded {len(weight_vitals_df):,} weight measurements for {weight_df_pl['hospitalization_id'].n_unique()} hospitalizations")
 
-    # Convert units (uses clifpy orchestrator)
-    clif.convert_dose_units_for_continuous_meds(
-        preferred_units=preferred_units,
-        vitals_df=weight_vitals_df,  # Pass pre-loaded weight data
-        override=True,
-        save_to_table=True,
-        hospitalization_ids=final_hosp_ids
+    # ── Local dose conversion (faster than clifpy for large sites) ────
+    # Pre-deduplicate weights to one per hospitalization (most recent)
+    # then simple LEFT JOIN instead of expensive ASOF JOIN on millions of rows.
+    print("   Pre-deduplicating weights (one per hospitalization)...")
+    _weights_deduped = (
+        weight_vitals_df
+        .sort_values(['hospitalization_id', 'recorded_dttm'])
+        .groupby('hospitalization_id')['vital_value']
+        .last()
+        .reset_index()
+        .rename(columns={'vital_value': 'weight_kg'})
     )
+    print(f"   {len(weight_vitals_df):,} weight rows → {len(_weights_deduped):,} unique hospitalizations")
+
+    # Merge weight onto meds
+    meds_raw = clif.medication_admin_continuous.df.copy()
+    if 'weight_kg' in meds_raw.columns:
+        meds_raw = meds_raw.drop(columns='weight_kg')
+    meds_raw = meds_raw.merge(_weights_deduped, on='hospitalization_id', how='left')
+    del _weights_deduped
+
+    # Run clifpy's unit conversion with weight already attached (skips the slow ASOF JOIN)
+    from clifpy.utils.unit_converter import convert_dose_units_by_med_category
+    print("   Running dose unit conversion...")
+    _converted_df, _counts_df = convert_dose_units_by_med_category(
+        meds_raw,
+        preferred_units=preferred_units,
+        override=True,
+    )
+    clif.medication_admin_continuous.df_converted = _converted_df
+    clif.medication_admin_continuous.conversion_counts = _counts_df.to_df() if hasattr(_counts_df, 'to_df') else _counts_df
+    del meds_raw
 
     # Get converted data
     meds_converted = clif.medication_admin_continuous.df_converted.copy()
