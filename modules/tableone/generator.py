@@ -1730,11 +1730,11 @@ def main(memory_monitor=None, cohort_mode='critical_illness', force_refresh=Fals
     strobe_counts_df.to_csv(os.path.join(output_dir, 'strobe_counts.csv'), index=False)
     # Calculate mortality rates
     mortality_rates = {
-        'ICU Hospitalizations': final_cohort.loc[final_cohort['icu_enc'] == 1, 'death_enc'].mean() * 100,
-        'Advanced Respiratory Support': final_cohort.loc[final_cohort['high_support_enc'] == 1, 'death_enc'].mean() * 100,
-        'Vasoactive Hospitalizations': final_cohort.loc[final_cohort['vaso_support_enc'] == 1, 'death_enc'].mean() * 100,
-        'Other Critically Ill': final_cohort.loc[final_cohort['other_critically_ill'] == 1, 'death_enc'].mean() * 100,
-        'All Critically Ill Adults': final_cohort['death_enc'].mean() * 100,
+        'ICU Hospitalizations': final_cohort.loc[final_cohort['icu_enc'] == 1, 'death_enc'].mean() * 100 if (final_cohort['icu_enc'] == 1).any() else 0.0,
+        'Advanced Respiratory Support': final_cohort.loc[final_cohort['high_support_enc'] == 1, 'death_enc'].mean() * 100 if (final_cohort['high_support_enc'] == 1).any() else 0.0,
+        'Vasoactive Hospitalizations': final_cohort.loc[final_cohort['vaso_support_enc'] == 1, 'death_enc'].mean() * 100 if (final_cohort['vaso_support_enc'] == 1).any() else 0.0,
+        'Other Critically Ill': final_cohort.loc[final_cohort['other_critically_ill'] == 1, 'death_enc'].mean() * 100 if (final_cohort['other_critically_ill'] == 1).any() else 0.0,
+        'All Critically Ill Adults': final_cohort['death_enc'].mean() * 100 if len(final_cohort) > 0 else 0.0,
     }
     if cohort_mode == 'ward':
         # CONSORT diagram in ward mode reports the ward cohort total mortality under
@@ -2041,56 +2041,61 @@ def main(memory_monitor=None, cohort_mode='critical_illness', force_refresh=Fals
     # )
     # 
     icu_blocks_all = final_tableone_df[final_tableone_df['icu_enc'] == 1]['encounter_block'].tolist()
-    fig1, df1 = create_sankey_diagram(
-        adt_cohort=adt_cohort,
-        encounter_blocks=icu_blocks_all,
-        outcome_df=outcome_df,
-        max_locations=7,
-        title="ICU Patient Flow and Outcomes",
-        output_file=f"{figures_dir}/sankey_matplotlib_icu.png",
-        figsize=(16, 8)
-    )
+    if len(icu_blocks_all) > 0:
+        fig1, df1 = create_sankey_diagram(
+            adt_cohort=adt_cohort,
+            encounter_blocks=icu_blocks_all,
+            outcome_df=outcome_df,
+            max_locations=7,
+            title="ICU Patient Flow and Outcomes",
+            output_file=f"{figures_dir}/sankey_matplotlib_icu.png",
+            figsize=(16, 8)
+        )
 
 
     # other critically ill
     other_enc = final_tableone_df[final_tableone_df['other_critically_ill'] == 1]['encounter_block'].tolist()
 
     print(f"\n Other critically ill  (N={len(other_enc)})")
-    fig1, df1 = create_sankey_diagram(
-        adt_cohort=adt_cohort,
-        encounter_blocks=other_enc,
-        outcome_df=outcome_df,
-        max_locations=8,
-        title="Other critically ill patients Patient Flow and Outcomes",
-        output_file=f"{figures_dir}/sankey_matplotlib_others.png",
-        figsize=(16, 8)
-    )
+    if len(other_enc) > 0:
+        fig1, df1 = create_sankey_diagram(
+            adt_cohort=adt_cohort,
+            encounter_blocks=other_enc,
+            outcome_df=outcome_df,
+            max_locations=8,
+            title="Other critically ill patients Patient Flow and Outcomes",
+            output_file=f"{figures_dir}/sankey_matplotlib_others.png",
+            figsize=(16, 8)
+        )
+    else:
+        print("  Skipping Sankey diagram (no encounters in this group)")
 
 
-    # other critically ill
+    # advanced O2 support
     adv_o2_sup = final_tableone_df[final_tableone_df['high_support_enc'] == 1]['encounter_block'].tolist()
-    fig1, df1 = create_sankey_diagram(
-        adt_cohort=adt_cohort,
-        encounter_blocks=adv_o2_sup,
-        outcome_df=outcome_df,
-        max_locations=8,
-        title="Patients receiving advanced o2 support",
-        output_file=f"{figures_dir}/sankey_matplotlib_high_o2_support.png",
-        figsize=(16, 8)
-    )
+    if len(adv_o2_sup) > 0:
+        fig1, df1 = create_sankey_diagram(
+            adt_cohort=adt_cohort,
+            encounter_blocks=adv_o2_sup,
+            outcome_df=outcome_df,
+            max_locations=8,
+            title="Patients receiving advanced o2 support",
+            output_file=f"{figures_dir}/sankey_matplotlib_high_o2_support.png",
+            figsize=(16, 8)
+        )
 
-
-    # other critically ill
+    # vasoactive support
     vaso_sup = final_tableone_df[final_tableone_df['vaso_support_enc'] == 1]['encounter_block'].tolist()
-    fig1, df1 = create_sankey_diagram(
-        adt_cohort=adt_cohort,
-        encounter_blocks=vaso_sup,
-        outcome_df=outcome_df,
-        max_locations=8,
-        title="Patients receiving Vasoactives",
-        output_file=f"{figures_dir}/sankey_matplotlib_vaso_support.png",
-        figsize=(16, 8)
-    )
+    if len(vaso_sup) > 0:
+        fig1, df1 = create_sankey_diagram(
+            adt_cohort=adt_cohort,
+            encounter_blocks=vaso_sup,
+            outcome_df=outcome_df,
+            max_locations=8,
+            title="Patients receiving Vasoactives",
+            output_file=f"{figures_dir}/sankey_matplotlib_vaso_support.png",
+            figsize=(16, 8)
+        )
 
 
     # ==============================================================================

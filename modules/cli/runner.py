@@ -130,7 +130,7 @@ class CLIAnalysisRunner:
 
                 # Inject per-column data profile stats
                 if analyzer.table is not None and hasattr(analyzer.table, 'df') and analyzer.table.df is not None:
-                    from clifpy.utils.report_generator import compute_table_stats
+                    from modules.cli.pdf_generator import compute_table_stats
                     validation_results['total_rows'] = len(analyzer.table.df)
                     validation_results['table_stats'] = compute_table_stats(
                         analyzer.table.df, analyzer.table.schema
