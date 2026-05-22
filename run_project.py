@@ -375,47 +375,57 @@ class ProjectRunner:
 
         # Import and use the new TableOneRunner module
         from modules.tableone.runner import TableOneRunner
-        from io import StringIO
 
         self.logger.info("Running Table One generation with memory monitoring...")
 
-        # Create a Tee class to write to both console and capture buffer
+        # Tee stdout to (a) the real terminal, and (b) the workflow logger
+        # in real time. Forwarding to the logger as each line is written
+        # (not after the runner returns) is essential — if the runner is
+        # killed mid-run (OOM, SIGKILL), the post-run dump never executes
+        # and every print() is lost.
         class TeeOutput:
-            """Write to multiple outputs simultaneously."""
-            def __init__(self, *outputs):
+            """Write to multiple outputs simultaneously and forward complete lines to a logger."""
+            def __init__(self, *outputs, logger_obj=None):
                 self.outputs = outputs
+                self.logger_obj = logger_obj
+                self._buf = ""
 
             def write(self, data):
                 for output in self.outputs:
                     output.write(data)
-                    output.flush()  # Ensure immediate output
+                    output.flush()
+                if self.logger_obj is not None:
+                    self._buf += data
+                    while '\n' in self._buf:
+                        line, self._buf = self._buf.split('\n', 1)
+                        if line.strip():
+                            self.logger_obj.info(line)
 
             def flush(self):
                 for output in self.outputs:
                     output.flush()
+                if self.logger_obj is not None and self._buf.strip():
+                    self.logger_obj.info(self._buf)
+                    self._buf = ""
 
         try:
-            # Capture stdout during execution
-            stdout_capture = StringIO()
             old_stdout = sys.stdout
 
             try:
-                # Redirect stdout to both console and capture buffer
-                sys.stdout = TeeOutput(old_stdout, stdout_capture)
+                # Forward stdout to terminal + log file in real time
+                sys.stdout = TeeOutput(old_stdout, logger_obj=self.logger)
 
                 # Use the new TableOneRunner directly
                 runner = TableOneRunner(self.config, force_refresh=self.force_refresh)
                 success = runner.run(profile_mode=False)
 
             finally:
-                # Restore original stdout
+                # Flush any trailing partial line before restoring stdout
+                try:
+                    sys.stdout.flush()
+                except Exception:
+                    pass
                 sys.stdout = old_stdout
-
-                # Log all captured output to file
-                captured_output = stdout_capture.getvalue()
-                for line in captured_output.split('\n'):
-                    if line.strip():  # Skip empty lines
-                        self.logger.info(line)
 
             if success:
                 self.logger.info("✅ Table One generation completed successfully")
@@ -551,48 +561,53 @@ class ProjectRunner:
 
         # Import and use the new ECDFRunner module
         from modules.ecdf.runner import ECDFRunner
-        from io import StringIO
 
         self.logger.info("Running ECDF generation...")
         self.logger.info(f"Visualize: {'[OK]' if visualize else '[X]'}")
 
-        # Create a Tee class to write to both console and capture buffer
+        # Tee stdout to terminal + workflow logger in real time
+        # (see comment on TeeOutput in run_tableone — same reasoning).
         class TeeOutput:
-            """Write to multiple outputs simultaneously."""
-            def __init__(self, *outputs):
+            """Write to multiple outputs simultaneously and forward complete lines to a logger."""
+            def __init__(self, *outputs, logger_obj=None):
                 self.outputs = outputs
+                self.logger_obj = logger_obj
+                self._buf = ""
 
             def write(self, data):
                 for output in self.outputs:
                     output.write(data)
-                    output.flush()  # Ensure immediate output
+                    output.flush()
+                if self.logger_obj is not None:
+                    self._buf += data
+                    while '\n' in self._buf:
+                        line, self._buf = self._buf.split('\n', 1)
+                        if line.strip():
+                            self.logger_obj.info(line)
 
             def flush(self):
                 for output in self.outputs:
                     output.flush()
+                if self.logger_obj is not None and self._buf.strip():
+                    self.logger_obj.info(self._buf)
+                    self._buf = ""
 
         try:
-            # Capture stdout during execution
-            stdout_capture = StringIO()
             old_stdout = sys.stdout
 
             try:
-                # Redirect stdout to both console and capture buffer
-                sys.stdout = TeeOutput(old_stdout, stdout_capture)
+                sys.stdout = TeeOutput(old_stdout, logger_obj=self.logger)
 
                 # Use the new ECDFRunner directly
                 runner = ECDFRunner(self.config)
                 success = runner.run(visualize=visualize)
 
             finally:
-                # Restore original stdout
+                try:
+                    sys.stdout.flush()
+                except Exception:
+                    pass
                 sys.stdout = old_stdout
-
-                # Log all captured output to file
-                captured_output = stdout_capture.getvalue()
-                for line in captured_output.split('\n'):
-                    if line.strip():  # Skip empty lines
-                        self.logger.info(line)
 
             if success:
                 self.logger.info("[SUCCESS] ECDF generation completed successfully")
@@ -626,6 +641,114 @@ class ProjectRunner:
         self.results[step_key]['start_time'] = start_time
         self.results[step_key]['end_time'] = end_time
         self.results[step_key]['duration_sec'] = (end_time - start_time).total_seconds()
+
+    def _log_environment_diagnostics(self):
+        """Log environment info that helps triage silent kills/hangs.
+
+        Captures (best-effort, never raises):
+        - OS + RAM totals
+        - Recent OOM-killer hits from dmesg/journalctl
+        - Source `clif_vitals` file size
+        - Presence/size of intermediate vitals caches used by the
+          medication-conversion step (a missing cache forces a full scan
+          of clif_vitals, which is where JHU runs were dying)
+        """
+        import platform
+        import shutil
+        import subprocess
+        from pathlib import Path
+
+        log = self.logger
+        try:
+            log.info("--- Environment diagnostics ---")
+            log.info(f"Platform: {platform.system()} {platform.release()} ({platform.machine()})")
+            log.info(f"Python: {platform.python_version()}")
+
+            # RAM / cgroup limit (Linux only)
+            try:
+                with open('/proc/meminfo') as f:
+                    mem = dict(line.split(':', 1) for line in f if ':' in line)
+                log.info(f"MemTotal: {mem.get('MemTotal', '?').strip()}")
+                log.info(f"MemAvailable: {mem.get('MemAvailable', '?').strip()}")
+            except Exception:
+                pass
+            for cg_path in ('/sys/fs/cgroup/memory.max',
+                            '/sys/fs/cgroup/memory/memory.limit_in_bytes'):
+                try:
+                    val = Path(cg_path).read_text().strip()
+                    log.info(f"cgroup {cg_path}: {val}")
+                    break
+                except Exception:
+                    continue
+
+            # OOM-killer hits
+            oom_found = False
+            if shutil.which('dmesg'):
+                try:
+                    res = subprocess.run(
+                        ['dmesg', '-T'],
+                        capture_output=True, text=True, timeout=10,
+                        errors='replace',
+                    )
+                    hits = [
+                        ln for ln in (res.stdout or '').splitlines()
+                        if any(k in ln.lower() for k in
+                               ('out of memory', 'killed process', 'oom-kill', 'oom_reaper'))
+                    ]
+                    if hits:
+                        oom_found = True
+                        log.warning(f"OOM-killer hits in dmesg ({len(hits)}):")
+                        for ln in hits[-10:]:
+                            log.warning(f"  {ln}")
+                    elif res.returncode != 0:
+                        log.info(f"dmesg unavailable (rc={res.returncode}); may need sudo")
+                except Exception as e:
+                    log.info(f"dmesg check skipped: {e}")
+            if not oom_found and shutil.which('journalctl'):
+                try:
+                    res = subprocess.run(
+                        ['journalctl', '-k', '--since', '24 hours ago', '--no-pager'],
+                        capture_output=True, text=True, timeout=15,
+                        errors='replace',
+                    )
+                    hits = [
+                        ln for ln in (res.stdout or '').splitlines()
+                        if any(k in ln.lower() for k in
+                               ('out of memory', 'killed process', 'oom-kill', 'oom_reaper'))
+                    ]
+                    if hits:
+                        log.warning(f"OOM-killer hits in journalctl ({len(hits)}):")
+                        for ln in hits[-10:]:
+                            log.warning(f"  {ln}")
+                    elif res.returncode != 0:
+                        log.info(f"journalctl unavailable (rc={res.returncode}); may need sudo")
+                except Exception as e:
+                    log.info(f"journalctl check skipped: {e}")
+
+            # Source vitals file size
+            tables_path = self.config.get('tables_path')
+            filetype = self.config.get('file_type', 'parquet')
+            if tables_path:
+                vitals_src = Path(tables_path) / f"clif_vitals.{filetype}"
+                if vitals_src.exists():
+                    size_gb = vitals_src.stat().st_size / (1024 ** 3)
+                    log.info(f"Source vitals: {vitals_src} ({size_gb:.2f} GiB)")
+                else:
+                    log.warning(f"Source vitals not found: {vitals_src}")
+
+            # Intermediate caches that the med-conversion step relies on
+            cache_dir = Path('output/intermediate/clif_filtered')
+            for fname in ('vitals_cohort.parquet', 'vitals_weight_only.parquet'):
+                fpath = cache_dir / fname
+                if fpath.exists():
+                    size_mb = fpath.stat().st_size / (1024 ** 2)
+                    log.info(f"Cache present: {fpath} ({size_mb:.1f} MiB)")
+                else:
+                    log.info(f"Cache MISSING: {fpath} (will be built on first med-conversion pass)")
+
+            log.info("--- End environment diagnostics ---")
+        except Exception as e:
+            log.warning(f"Environment diagnostics failed: {e}")
 
     def _parse_peak_rss(self, report_path):
         """Extract 'Peak Memory: NNNN.N MB' from a step execution report. Returns float MB or None."""
@@ -1060,6 +1183,11 @@ class ProjectRunner:
         self.logger.info(f"  2b. Table One (Ward): {'[OK]' if ward_tableone else '[X]'}")
         self.logger.info(f"  3. Get ECDF:          {'[OK]' if get_ecdf else '[X]'}")
         self.logger.info("="*80)
+
+        # Environment diagnostics — capture once per run so the log carries
+        # the info needed to triage hangs/kills on remote sites without a
+        # second round-trip. Best-effort; never raises.
+        self._log_environment_diagnostics()
 
         # Step 1: Validation
         if validate:

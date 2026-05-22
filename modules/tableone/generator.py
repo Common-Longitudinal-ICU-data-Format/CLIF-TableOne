@@ -68,6 +68,46 @@ import re
 from modules.sofa.calculator import compute_sofa_polars
 from modules.utils.datetime_utils import standardize_datetime_columns
 
+# ---------------------------------------------------------------------------
+# Diagnostic checkpoint helper.
+# Emits a print() on enter and exit with elapsed time and RSS delta. Print is
+# used (rather than logging) because callers in this file use print throughout;
+# run_project.py forwards stdout to the workflow logger line-by-line so these
+# land in workflow_execution_*.log even if the process is killed mid-run.
+# Set CLIF_DEBUG_CHKPT=0 to silence.
+import contextlib as _contextlib
+import time as _time
+
+
+@_contextlib.contextmanager
+def _chkpt(label: str):
+    if _os.environ.get('CLIF_DEBUG_CHKPT', '1') == '0':
+        yield
+        return
+    try:
+        import psutil as _psutil
+        _proc = _psutil.Process()
+        rss_in = _proc.memory_info().rss / (1024 ** 2)
+    except Exception:
+        _proc = None
+        rss_in = None
+    rss_str = f" rss={rss_in:,.0f}MiB" if rss_in is not None else ""
+    print(f"[CHKPT {label}] start{rss_str}", flush=True)
+    t0 = _time.perf_counter()
+    try:
+        yield
+    finally:
+        elapsed = _time.perf_counter() - t0
+        if _proc is not None:
+            try:
+                rss_out = _proc.memory_info().rss / (1024 ** 2)
+                delta = rss_out - rss_in if rss_in is not None else 0.0
+                print(f"[CHKPT {label}] done in {elapsed:.1f}s rss={rss_out:,.0f}MiB (Δ{delta:+,.0f})", flush=True)
+                return
+            except Exception:
+                pass
+        print(f"[CHKPT {label}] done in {elapsed:.1f}s", flush=True)
+
 from clifpy.clif_orchestrator import ClifOrchestrator
 from clifpy.utils import apply_outlier_handling
 from clifpy.utils.ase import compute_ase
@@ -3560,100 +3600,137 @@ def main(memory_monitor=None, cohort_mode='critical_illness', force_refresh=Fals
 
     print(f"Converting {len(preferred_units)} vasopressors to mcg/kg/min...")
 
-    # Pre-load only weight_kg vitals using Polars for efficiency.
-    # Use a dedicated weight-only cache to avoid scanning the full vitals
-    # parquet (can be 200M+ rows at large sites like JHU).
-    print("Pre-loading weight data for medication conversion...")
-    _weight_cache_path = intermediate_dir / 'clif_filtered' / 'vitals_weight_only.parquet'
-    _vitals_filtered_path = intermediate_dir / 'clif_filtered' / 'vitals_cohort.parquet'
+    # ── Optional diagnostic: bypass vitals entirely with a fixed weight ──
+    # Set CLIF_DEBUG_FIXED_WEIGHT=70 (or any float) to skip the vitals scan
+    # and assign every hospitalization the same weight. Use ONLY for triaging
+    # hangs at large sites — the resulting dose-per-kg values are not
+    # clinically meaningful. The table-one output should be discarded when
+    # this is on.
+    _fixed_weight_env = _os.environ.get('CLIF_DEBUG_FIXED_WEIGHT')
+    _fixed_weight = None
+    if _fixed_weight_env:
+        try:
+            _fixed_weight = float(_fixed_weight_env)
+            print(f"\n{'!'*72}")
+            print(f"!! CLIF_DEBUG_FIXED_WEIGHT={_fixed_weight}kg — bypassing vitals weight scan.")
+            print(f"!! Dose-per-kg values will be synthetic; DISCARD this run's output.")
+            print(f"{'!'*72}\n")
+        except ValueError:
+            print(f"⚠️ CLIF_DEBUG_FIXED_WEIGHT={_fixed_weight_env!r} not parseable as float; ignoring")
+            _fixed_weight = None
 
-    if _weight_cache_path.exists():
-        print(f"   Using weight-only cache: {_weight_cache_path.name}")
-        weight_df_pl = (
-            pl.scan_parquet(str(_weight_cache_path))
-            .filter(pl.col('hospitalization_id').is_in(final_hosp_ids))
-            .collect()
-        )
-    else:
-        # Build weight-only cache from best available source
-        if _vitals_filtered_path.exists():
-            vitals_path = str(_vitals_filtered_path)
-            print(f"   Scanning filtered vitals cache for weight_kg...")
-        else:
-            vitals_path = os.path.join(clif.data_directory, 'clif_vitals.parquet')
-            print(f"   Scanning raw vitals parquet for weight_kg...")
-
-        weight_df_pl = (
-            pl.scan_parquet(vitals_path)
-            .filter(
-                (pl.col('hospitalization_id').is_in(final_hosp_ids)) &
-                (pl.col('vital_category') == 'weight_kg')
-            )
-            .collect()
-        )
-
-        # Cache for subsequent year passes and ward run
-        _weight_cache_path.parent.mkdir(parents=True, exist_ok=True)
-        weight_df_pl.write_parquet(str(_weight_cache_path))
-        print(f"   Cached {len(weight_df_pl):,} weight rows → {_weight_cache_path.name}")
-
-    # Detect medication timestamp format to match it
-    # Access CLIFpy's loaded medication data to get timezone and time precision
+    # Detect medication timestamp format (used by both paths)
     med_df_sample = pl.from_pandas(clif.medication_admin_continuous.df.head(1))
     admin_dttm_dtype = str(med_df_sample['admin_dttm'].dtype)
-
-    # Extract timezone from dtype string (e.g., "Datetime(time_unit='us', time_zone='America/Chicago')")
     timezone_match = re.search(r"time_zone=['\"]([^'\"]+)['\"]", admin_dttm_dtype)
     med_timezone = timezone_match.group(1) if timezone_match else config['timezone']
-
-    # Extract time unit from dtype string (e.g., 'us', 'ns', 'ms')
     time_unit_match = re.search(r"time_unit=['\"]([^'\"]+)['\"]", admin_dttm_dtype)
     med_time_unit = time_unit_match.group(1) if time_unit_match else 'us'
-
     print(f"Detected medication timestamp format: timezone={med_timezone}, time_unit={med_time_unit}")
 
-    # Convert to Pandas and handle timezone there (faster than Polars
-    # replace_time_zone on sites with non-native datetime parquets)
-    weight_vitals_df = weight_df_pl.to_pandas()
-    weight_vitals_df['recorded_dttm'] = pd.to_datetime(weight_vitals_df['recorded_dttm'], utc=True, errors='coerce')
-    try:
-        weight_vitals_df['recorded_dttm'] = weight_vitals_df['recorded_dttm'].dt.tz_convert(med_timezone)
-    except TypeError:
-        weight_vitals_df['recorded_dttm'] = weight_vitals_df['recorded_dttm'].dt.tz_localize(
-            med_timezone, ambiguous=True, nonexistent='shift_forward'
-        )
+    if _fixed_weight is not None:
+        # Build a synthetic one-row-per-encounter weight table; skip all vitals I/O.
+        with _chkpt("weight-fixed-bypass"):
+            _weights_deduped = pd.DataFrame({
+                'hospitalization_id': list(final_hosp_ids),
+                'weight_kg': _fixed_weight,
+            })
+            print(f"   Synthetic weights: {len(_weights_deduped):,} hospitalizations @ {_fixed_weight}kg")
+    else:
+        # Pre-load only weight_kg vitals using Polars for efficiency.
+        # Use a dedicated weight-only cache to avoid scanning the full vitals
+        # parquet (can be 200M+ rows at large sites like JHU).
+        print("Pre-loading weight data for medication conversion...")
+        _weight_cache_path = intermediate_dir / 'clif_filtered' / 'vitals_weight_only.parquet'
+        _vitals_filtered_path = intermediate_dir / 'clif_filtered' / 'vitals_cohort.parquet'
 
-    print(f"Loaded {len(weight_vitals_df):,} weight measurements for {weight_df_pl['hospitalization_id'].n_unique()} hospitalizations")
+        if _weight_cache_path.exists():
+            print(f"   Using weight-only cache: {_weight_cache_path.name}")
+            with _chkpt("weight-scan-from-cache"):
+                weight_df_pl = (
+                    pl.scan_parquet(str(_weight_cache_path))
+                    .filter(pl.col('hospitalization_id').is_in(final_hosp_ids))
+                    .collect()
+                )
+                print(f"   Loaded {len(weight_df_pl):,} weight rows from cache")
+        else:
+            # Build weight-only cache from best available source
+            if _vitals_filtered_path.exists():
+                vitals_path = str(_vitals_filtered_path)
+                print(f"   Scanning filtered vitals cache for weight_kg...")
+            else:
+                vitals_path = os.path.join(clif.data_directory, 'clif_vitals.parquet')
+                print(f"   Scanning raw vitals parquet for weight_kg...")
 
-    # ── Local dose conversion (faster than clifpy for large sites) ────
-    # Pre-deduplicate weights to one per hospitalization (most recent)
-    # then simple LEFT JOIN instead of expensive ASOF JOIN on millions of rows.
-    print("   Pre-deduplicating weights (one per hospitalization)...")
-    _weights_deduped = (
-        weight_vitals_df
-        .sort_values(['hospitalization_id', 'recorded_dttm'])
-        .groupby('hospitalization_id')['vital_value']
-        .last()
-        .reset_index()
-        .rename(columns={'vital_value': 'weight_kg'})
-    )
-    print(f"   {len(weight_vitals_df):,} weight rows → {len(_weights_deduped):,} unique hospitalizations")
+            with _chkpt(f"weight-scan-from-source ({_os.path.basename(vitals_path)})"):
+                weight_df_pl = (
+                    pl.scan_parquet(vitals_path)
+                    .filter(
+                        (pl.col('hospitalization_id').is_in(final_hosp_ids)) &
+                        (pl.col('vital_category') == 'weight_kg')
+                    )
+                    .collect()
+                )
+                print(f"   Collected {len(weight_df_pl):,} weight rows")
+
+            # Cache for subsequent year passes and ward run
+            with _chkpt("weight-cache-write"):
+                _weight_cache_path.parent.mkdir(parents=True, exist_ok=True)
+                weight_df_pl.write_parquet(str(_weight_cache_path))
+                print(f"   Cached → {_weight_cache_path.name}")
+
+        # Convert to Pandas and handle timezone there (faster than Polars
+        # replace_time_zone on sites with non-native datetime parquets)
+        with _chkpt("weight-pandas-tz-convert"):
+            weight_vitals_df = weight_df_pl.to_pandas()
+            weight_vitals_df['recorded_dttm'] = pd.to_datetime(weight_vitals_df['recorded_dttm'], utc=True, errors='coerce')
+            try:
+                weight_vitals_df['recorded_dttm'] = weight_vitals_df['recorded_dttm'].dt.tz_convert(med_timezone)
+            except TypeError:
+                weight_vitals_df['recorded_dttm'] = weight_vitals_df['recorded_dttm'].dt.tz_localize(
+                    med_timezone, ambiguous=True, nonexistent='shift_forward'
+                )
+
+        print(f"Loaded {len(weight_vitals_df):,} weight measurements for {weight_df_pl['hospitalization_id'].n_unique()} hospitalizations")
+
+        # ── Local dose conversion (faster than clifpy for large sites) ────
+        # Pre-deduplicate weights to one per hospitalization (most recent)
+        # then simple LEFT JOIN instead of expensive ASOF JOIN on millions of rows.
+        with _chkpt("weight-dedupe"):
+            print("   Pre-deduplicating weights (one per hospitalization)...")
+            _weights_deduped = (
+                weight_vitals_df
+                .sort_values(['hospitalization_id', 'recorded_dttm'])
+                .groupby('hospitalization_id')['vital_value']
+                .last()
+                .reset_index()
+                .rename(columns={'vital_value': 'weight_kg'})
+            )
+            print(f"   {len(weight_vitals_df):,} weight rows → {len(_weights_deduped):,} unique hospitalizations")
+        del weight_df_pl, weight_vitals_df
 
     # Merge weight onto meds
-    meds_raw = clif.medication_admin_continuous.df.copy()
-    if 'weight_kg' in meds_raw.columns:
-        meds_raw = meds_raw.drop(columns='weight_kg')
-    meds_raw = meds_raw.merge(_weights_deduped, on='hospitalization_id', how='left')
-    del _weights_deduped
+    with _chkpt("meds-merge-weight"):
+        meds_raw = clif.medication_admin_continuous.df.copy()
+        print(f"   meds rows: {len(meds_raw):,}")
+        if 'weight_kg' in meds_raw.columns:
+            meds_raw = meds_raw.drop(columns='weight_kg')
+        meds_raw = meds_raw.merge(_weights_deduped, on='hospitalization_id', how='left')
+        _missing_weight = meds_raw['weight_kg'].isna().sum()
+        if _missing_weight:
+            print(f"   ⚠️ {_missing_weight:,} med rows have no matching weight")
+        del _weights_deduped
 
     # Run clifpy's unit conversion with weight already attached (skips the slow ASOF JOIN)
     from clifpy.utils.unit_converter import convert_dose_units_by_med_category
-    print("   Running dose unit conversion...")
-    _converted_df, _counts_df = convert_dose_units_by_med_category(
-        meds_raw,
-        preferred_units=preferred_units,
-        override=True,
-    )
+    with _chkpt("clifpy-dose-convert"):
+        print(f"   Running dose unit conversion on {len(meds_raw):,} rows...")
+        _converted_df, _counts_df = convert_dose_units_by_med_category(
+            meds_raw,
+            preferred_units=preferred_units,
+            override=True,
+        )
+        print(f"   Conversion returned {len(_converted_df):,} rows")
     clif.medication_admin_continuous.df_converted = _converted_df
     clif.medication_admin_continuous.conversion_counts = _counts_df.to_df() if hasattr(_counts_df, 'to_df') else _counts_df
     del meds_raw
@@ -4731,41 +4808,43 @@ def main(memory_monitor=None, cohort_mode='critical_illness', force_refresh=Fals
         _sofa_required_vitals = ['map', 'spo2', 'weight_kg']
 
         print("   Pre-loading SOFA data (labs, vitals)...")
-        try:
-            _sofa_labs = (
-                pl.scan_parquet(os.path.join(config['tables_path'], f"clif_labs.{config['file_type']}"))
-                .select(['hospitalization_id', 'lab_result_dttm', 'lab_category', 'lab_value', 'lab_value_numeric'])
-                .with_columns(pl.col('hospitalization_id').cast(pl.Utf8))
-                .with_columns(pl.col('lab_category').str.to_lowercase())
-                .filter(
-                    pl.col('lab_category').is_in(_sofa_required_labs) &
-                    pl.col('hospitalization_id').is_in(_sofa_hosp_ids)
+        with _chkpt("sofa-preload-labs"):
+            try:
+                _sofa_labs = (
+                    pl.scan_parquet(os.path.join(config['tables_path'], f"clif_labs.{config['file_type']}"))
+                    .select(['hospitalization_id', 'lab_result_dttm', 'lab_category', 'lab_value', 'lab_value_numeric'])
+                    .with_columns(pl.col('hospitalization_id').cast(pl.Utf8))
+                    .with_columns(pl.col('lab_category').str.to_lowercase())
+                    .filter(
+                        pl.col('lab_category').is_in(_sofa_required_labs) &
+                        pl.col('hospitalization_id').is_in(_sofa_hosp_ids)
+                    )
+                    .collect()
                 )
-                .collect()
-            )
-            print(f"   ✅ Labs pre-loaded: {len(_sofa_labs):,} rows")
-            _sofa_labs_lazy = _sofa_labs.lazy()
-        except Exception as e:
-            print(f"   ⚠️ Labs pre-load failed ({e}), will load per-batch")
-            _sofa_labs_lazy = None
+                print(f"   ✅ Labs pre-loaded: {len(_sofa_labs):,} rows")
+                _sofa_labs_lazy = _sofa_labs.lazy()
+            except Exception as e:
+                print(f"   ⚠️ Labs pre-load failed ({e}), will load per-batch")
+                _sofa_labs_lazy = None
 
-        try:
-            _sofa_vitals = (
-                pl.scan_parquet(os.path.join(config['tables_path'], f"clif_vitals.{config['file_type']}"))
-                .select(['hospitalization_id', 'recorded_dttm', 'vital_category', 'vital_value'])
-                .with_columns(pl.col('hospitalization_id').cast(pl.Utf8))
-                .with_columns(pl.col('vital_category').str.to_lowercase())
-                .filter(
-                    pl.col('vital_category').is_in(_sofa_required_vitals) &
-                    pl.col('hospitalization_id').is_in(_sofa_hosp_ids)
+        with _chkpt("sofa-preload-vitals"):
+            try:
+                _sofa_vitals = (
+                    pl.scan_parquet(os.path.join(config['tables_path'], f"clif_vitals.{config['file_type']}"))
+                    .select(['hospitalization_id', 'recorded_dttm', 'vital_category', 'vital_value'])
+                    .with_columns(pl.col('hospitalization_id').cast(pl.Utf8))
+                    .with_columns(pl.col('vital_category').str.to_lowercase())
+                    .filter(
+                        pl.col('vital_category').is_in(_sofa_required_vitals) &
+                        pl.col('hospitalization_id').is_in(_sofa_hosp_ids)
+                    )
+                    .collect()
                 )
-                .collect()
-            )
-            print(f"   ✅ Vitals pre-loaded: {len(_sofa_vitals):,} rows")
-            _sofa_vitals_lazy = _sofa_vitals.lazy()
-        except Exception as e:
-            print(f"   ⚠️ Vitals pre-load failed ({e}), will load per-batch")
-            _sofa_vitals_lazy = None
+                print(f"   ✅ Vitals pre-loaded: {len(_sofa_vitals):,} rows")
+                _sofa_vitals_lazy = _sofa_vitals.lazy()
+            except Exception as e:
+                print(f"   ⚠️ Vitals pre-load failed ({e}), will load per-batch")
+                _sofa_vitals_lazy = None
 
         SOFA_BATCH_SIZE = 20_000
         try:
