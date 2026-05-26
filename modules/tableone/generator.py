@@ -110,7 +110,8 @@ def _chkpt(label: str):
         print(f"[CHKPT {label}] done in {elapsed:.1f}s", flush=True)
 
 from clifpy.clif_orchestrator import ClifOrchestrator
-from clifpy.utils import apply_outlier_handling
+from clifpy.utils import apply_outlier_handling  # noqa: F401 — kept for any future per-table use
+from modules.utils.outlier_handling import apply_outlier_ranges
 from clifpy.utils.ase import compute_ase
 from clifpy.utils.comorbidity import calculate_cci
 from clifpy.utils.stitching_encounters import stitch_encounters
@@ -1362,7 +1363,17 @@ def main(memory_monitor=None, cohort_mode='critical_illness', force_refresh=Fals
         clif.respiratory_support.df = clif.respiratory_support.df.sort_values(
             ['hospitalization_id', 'recorded_dttm']
         )
-        apply_outlier_handling(clif.respiratory_support)
+        # Use the local pandas-based outlier function instead of clifpy's
+        # apply_outlier_handling. clifpy builds a chained pl.when().then()
+        # expression per outlier column and runs it on the full pandas →
+        # polars round-tripped frame, which OOMs on JHU-scale resp_support
+        # (~50M+ rows after pre-filter). The local function applies the same
+        # config (config/outlier_config.yaml :: tables.respiratory_support)
+        # column-by-column with pandas masks — no chained polars buffers.
+        clif.respiratory_support.df, _resp_outlier_stats = apply_outlier_ranges(
+            clif.respiratory_support.df, 'respiratory_support'
+        )
+        del _resp_outlier_stats
 
         # Run waterfall (parallel by default, sequential fallback)
         print(f"\nApplying waterfall to respiratory support ({len(clif.respiratory_support.df):,} rows)...")
