@@ -1331,9 +1331,31 @@ def compute_sofa_polars(
 
     # Load all required tables — use preloaded data if provided (avoids
     # re-scanning massive parquet files on every batch/call).
+    # Cohort id columns (excluding the time window columns) — used to align
+    # both preloaded and non-preloaded paths to the same output shape.
+    _cohort_id_cols = [c for c in cohort_df_local.columns if c not in ('start_dttm', 'end_dttm')]
+
     if preloaded_labs is not None:
         logger.info("Using preloaded labs data")
         labs_df = preloaded_labs.filter(pl.col('hospitalization_id').is_in(hospitalization_ids))
+        # Match _load_labs's downstream steps (tz/time_unit standardization +
+        # cohort join + time-window filter + column projection) so the
+        # preloaded path returns the same shape as the non-preloaded path.
+        # Without this, sites with non-UTC config tz hit a tz-mismatch at the
+        # downstream pl.concat, and id columns like encounter_block are missing.
+        if timezone:
+            labs_df = standardize_datetime_columns(
+                labs_df,
+                target_timezone=timezone,
+                target_time_unit='ns',
+                datetime_columns=['lab_result_dttm']
+            )
+        labs_df = labs_df.join(
+            cohort_df_local.lazy(), on='hospitalization_id', how='inner'
+        ).filter(
+            (pl.col('lab_result_dttm') >= pl.col('start_dttm')) &
+            (pl.col('lab_result_dttm') <= pl.col('end_dttm'))
+        ).select([*_cohort_id_cols, 'lab_result_dttm', 'lab_category', 'lab_value_numeric'])
     else:
         logger.info("Loading labs data...")
         labs_df = _load_labs(data_directory, filetype, hospitalization_ids, cohort_df_local, timezone)
@@ -1341,6 +1363,19 @@ def compute_sofa_polars(
     if preloaded_vitals is not None:
         logger.info("Using preloaded vitals data")
         vitals_df = preloaded_vitals.filter(pl.col('hospitalization_id').is_in(hospitalization_ids))
+        if timezone:
+            vitals_df = standardize_datetime_columns(
+                vitals_df,
+                target_timezone=timezone,
+                target_time_unit='ns',
+                datetime_columns=['recorded_dttm']
+            )
+        vitals_df = vitals_df.join(
+            cohort_df_local.lazy(), on='hospitalization_id', how='inner'
+        ).filter(
+            (pl.col('recorded_dttm') >= pl.col('start_dttm')) &
+            (pl.col('recorded_dttm') <= pl.col('end_dttm'))
+        ).select([*_cohort_id_cols, 'recorded_dttm', 'vital_category', 'vital_value'])
     else:
         logger.info("Loading vitals data...")
         vitals_df = _load_vitals(data_directory, filetype, hospitalization_ids, cohort_df_local, timezone)
