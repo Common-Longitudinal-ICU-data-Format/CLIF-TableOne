@@ -66,6 +66,7 @@ import matplotlib.patheffects
 import polars as pl
 import re
 from modules.sofa.calculator import compute_sofa_polars
+from modules.utils.clif_loader import load_filtered_clif_table
 from modules.utils.datetime_utils import standardize_datetime_columns
 
 # ---------------------------------------------------------------------------
@@ -3644,13 +3645,17 @@ def main(memory_monitor=None, cohort_mode='critical_illness', force_refresh=Fals
         _weight_cache_path = intermediate_dir / 'clif_filtered' / 'vitals_weight_only.parquet'
         _vitals_filtered_path = intermediate_dir / 'clif_filtered' / 'vitals_cohort.parquet'
 
+        # DuckDB-backed helper to avoid the Polars-on-Windows access-violation
+        # that hits scan_parquet + is_in(big_list) + collect on multi-row-group
+        # parquets at large sites (JHU).
+        _weight_cols = ['hospitalization_id', 'recorded_dttm', 'vital_category', 'vital_value']
         if _weight_cache_path.exists():
             print(f"   Using weight-only cache: {_weight_cache_path.name}")
             with _chkpt("weight-scan-from-cache"):
-                weight_df_pl = (
-                    pl.scan_parquet(str(_weight_cache_path))
-                    .filter(pl.col('hospitalization_id').is_in(final_hosp_ids))
-                    .collect()
+                weight_df_pl = load_filtered_clif_table(
+                    str(_weight_cache_path),
+                    columns=_weight_cols,
+                    hosp_ids=final_hosp_ids,
                 )
                 print(f"   Loaded {len(weight_df_pl):,} weight rows from cache")
         else:
@@ -3663,13 +3668,12 @@ def main(memory_monitor=None, cohort_mode='critical_illness', force_refresh=Fals
                 print(f"   Scanning raw vitals parquet for weight_kg...")
 
             with _chkpt(f"weight-scan-from-source ({_os.path.basename(vitals_path)})"):
-                weight_df_pl = (
-                    pl.scan_parquet(vitals_path)
-                    .filter(
-                        (pl.col('hospitalization_id').is_in(final_hosp_ids)) &
-                        (pl.col('vital_category') == 'weight_kg')
-                    )
-                    .collect()
+                weight_df_pl = load_filtered_clif_table(
+                    vitals_path,
+                    columns=_weight_cols,
+                    hosp_ids=final_hosp_ids,
+                    category_column='vital_category',
+                    category_values=['weight_kg'],
                 )
                 print(f"   Collected {len(weight_df_pl):,} weight rows")
 
@@ -4810,16 +4814,12 @@ def main(memory_monitor=None, cohort_mode='critical_illness', force_refresh=Fals
         print("   Pre-loading SOFA data (labs, vitals)...")
         with _chkpt("sofa-preload-labs"):
             try:
-                _sofa_labs = (
-                    pl.scan_parquet(os.path.join(config['tables_path'], f"clif_labs.{config['file_type']}"))
-                    .select(['hospitalization_id', 'lab_result_dttm', 'lab_category', 'lab_value', 'lab_value_numeric'])
-                    .with_columns(pl.col('hospitalization_id').cast(pl.Utf8))
-                    .with_columns(pl.col('lab_category').str.to_lowercase())
-                    .filter(
-                        pl.col('lab_category').is_in(_sofa_required_labs) &
-                        pl.col('hospitalization_id').is_in(_sofa_hosp_ids)
-                    )
-                    .collect()
+                _sofa_labs = load_filtered_clif_table(
+                    os.path.join(config['tables_path'], f"clif_labs.{config['file_type']}"),
+                    columns=['hospitalization_id', 'lab_result_dttm', 'lab_category', 'lab_value', 'lab_value_numeric'],
+                    hosp_ids=_sofa_hosp_ids,
+                    category_column='lab_category',
+                    category_values=_sofa_required_labs,
                 )
                 print(f"   ✅ Labs pre-loaded: {len(_sofa_labs):,} rows")
                 _sofa_labs_lazy = _sofa_labs.lazy()
@@ -4829,16 +4829,12 @@ def main(memory_monitor=None, cohort_mode='critical_illness', force_refresh=Fals
 
         with _chkpt("sofa-preload-vitals"):
             try:
-                _sofa_vitals = (
-                    pl.scan_parquet(os.path.join(config['tables_path'], f"clif_vitals.{config['file_type']}"))
-                    .select(['hospitalization_id', 'recorded_dttm', 'vital_category', 'vital_value'])
-                    .with_columns(pl.col('hospitalization_id').cast(pl.Utf8))
-                    .with_columns(pl.col('vital_category').str.to_lowercase())
-                    .filter(
-                        pl.col('vital_category').is_in(_sofa_required_vitals) &
-                        pl.col('hospitalization_id').is_in(_sofa_hosp_ids)
-                    )
-                    .collect()
+                _sofa_vitals = load_filtered_clif_table(
+                    os.path.join(config['tables_path'], f"clif_vitals.{config['file_type']}"),
+                    columns=['hospitalization_id', 'recorded_dttm', 'vital_category', 'vital_value'],
+                    hosp_ids=_sofa_hosp_ids,
+                    category_column='vital_category',
+                    category_values=_sofa_required_vitals,
                 )
                 print(f"   ✅ Vitals pre-loaded: {len(_sofa_vitals):,} rows")
                 _sofa_vitals_lazy = _sofa_vitals.lazy()

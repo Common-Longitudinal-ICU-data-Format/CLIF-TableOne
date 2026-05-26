@@ -628,3 +628,116 @@ def load_clif_table(
         output_directory=out_dir,
         errors=[],
     )
+
+
+def load_filtered_clif_table(
+    parquet_path,
+    columns,
+    hosp_ids=None,
+    category_column=None,
+    category_values=None,
+    *,
+    return_as='polars',
+    duckdb_memory_limit='8GB',
+):
+    """DuckDB-backed scan + project + filter for large CLIF parquet files.
+
+    Replaces the ``pl.scan_parquet(...).filter(is_in(big_list)).collect()``
+    shape that crashes with ``Windows fatal exception: access violation`` on
+    multi-row-group parquets at large sites (the Polars streaming-engine
+    cache-lifecycle bug, hit at JHU on clif_labs/clif_vitals/clif_med* with
+    45k+ hospitalization_ids).
+
+    The DuckDB workaround was first established in commit 8be2fa3 for the
+    medication-weight load; this helper generalizes it.
+
+    Parameters
+    ----------
+    parquet_path : str | Path
+        Path to the CLIF parquet file.
+    columns : list[str]
+        Columns to project. ``hospitalization_id`` (if present) is always cast
+        to VARCHAR. If ``category_column`` is set, its output is LOWER()'d.
+    hosp_ids : list[str] | None
+        If provided, filter rows whose hospitalization_id (cast to VARCHAR)
+        appears in this list. Implemented as an INNER JOIN against a
+        registered DataFrame (faster and limit-free vs. SQL IN-list).
+    category_column : str | None
+        Column whose lowercased value is filtered (e.g. 'lab_category',
+        'vital_category'). The output column is also LOWER()'d so downstream
+        comparisons stay case-insensitive.
+    category_values : list[str] | None
+        Lowercased category values to keep. Required if ``category_column`` is
+        set.
+    return_as : {'polars', 'pandas'}
+        Return type. Default 'polars' so callers can chain ``.lazy()`` for
+        downstream Polars consumers (e.g. compute_sofa_polars).
+    duckdb_memory_limit : str
+        DuckDB session memory cap. Default '8GB'.
+
+    Returns
+    -------
+    pl.DataFrame or pd.DataFrame
+        The filtered table. Empty result is returned with the requested
+        schema (not None) so callers can chain unconditionally.
+    """
+    import duckdb
+    import pandas as pd
+
+    if category_column is not None and not category_values:
+        raise ValueError("category_values is required when category_column is set")
+    if return_as not in ('polars', 'pandas'):
+        raise ValueError(f"return_as must be 'polars' or 'pandas', got {return_as!r}")
+
+    parquet_path_str = Path(parquet_path).as_posix()
+
+    select_clauses = []
+    for col in columns:
+        if col == 'hospitalization_id':
+            select_clauses.append('CAST(d."hospitalization_id" AS VARCHAR) AS "hospitalization_id"')
+        elif col == category_column:
+            select_clauses.append(f'LOWER(d."{col}") AS "{col}"')
+        else:
+            select_clauses.append(f'd."{col}"')
+    select_sql = ', '.join(select_clauses)
+
+    where_clauses = []
+    if category_column is not None:
+        cat_in = ', '.join(f"'{v}'" for v in category_values)
+        where_clauses.append(f'LOWER(d."{category_column}") IN ({cat_in})')
+    where_sql = f"WHERE {' AND '.join(where_clauses)}" if where_clauses else ''
+
+    con = duckdb.connect()
+    try:
+        con.execute(f"SET memory_limit='{duckdb_memory_limit}'")
+        con.execute("SET timezone='UTC'")
+
+        if hosp_ids is not None:
+            # Dedup to preserve is_in semantics (an INNER JOIN against a list
+            # with duplicates would multiply rows).
+            hosp_df = pd.DataFrame({'hospitalization_id': sorted({str(h) for h in hosp_ids})})
+            con.register('_clif_hosp_ids', hosp_df)
+            sql = (
+                f"SELECT {select_sql} "
+                f"FROM read_parquet('{parquet_path_str}') AS d "
+                f"INNER JOIN _clif_hosp_ids AS h "
+                f"  ON CAST(d.\"hospitalization_id\" AS VARCHAR) = h.\"hospitalization_id\" "
+                f"{where_sql}"
+            )
+        else:
+            sql = (
+                f"SELECT {select_sql} "
+                f"FROM read_parquet('{parquet_path_str}') AS d "
+                f"{where_sql}"
+            )
+
+        logger.info("load_filtered_clif_table: %s", parquet_path_str)
+        arrow_tbl = con.sql(sql).fetch_arrow_table()
+    finally:
+        con.close()
+
+    if return_as == 'pandas':
+        return arrow_tbl.to_pandas(types_mapper=pd.ArrowDtype)
+
+    import polars as pl
+    return pl.from_arrow(arrow_tbl)
