@@ -299,3 +299,43 @@ def standardize_datetime_for_comparison(
     # This is a simplified version - for lazy operations,
     # we convert to target timezone for comparisons
     return col.dt.convert_time_zone(target_timezone)
+
+
+def canonical_tz_from_frame(
+    reference: Union[pl.DataFrame, pl.LazyFrame],
+) -> Optional[str]:
+    """Return the IANA tz string from the first tz-aware Datetime column in a
+    reference frame, or None if no such column exists.
+
+    Useful when ``config['timezone']`` is a legacy alias (e.g. ``"US/Central"``)
+    that polars treats as a different dtype than its canonical IANA name
+    (``"America/Chicago"``). Two frames that are logically in the same tz can
+    fail to join if their dtype strings differ. Detecting from an
+    already-loaded column gives you the exact string polars accepts for
+    matching.
+
+    Parameters
+    ----------
+    reference : pl.DataFrame | pl.LazyFrame
+        A frame whose schema is inspected for tz-aware Datetime columns.
+
+    Returns
+    -------
+    str | None
+        The tz string from the first matching column, or ``None`` if no
+        tz-aware Datetime columns are present.
+
+    Examples
+    --------
+    >>> # After loading data via DuckDB (returns UTC):
+    >>> site_tz = canonical_tz_from_frame(cohort_df)
+    >>> if site_tz is not None:
+    ...     loaded = loaded.with_columns(
+    ...         pl.col('recorded_dttm').dt.convert_time_zone(site_tz)
+    ...     )
+    """
+    schema = reference.collect_schema() if isinstance(reference, pl.LazyFrame) else reference.schema
+    for _name, dtype in schema.items():
+        if isinstance(dtype, pl.Datetime) and dtype.time_zone is not None:
+            return dtype.time_zone
+    return None
