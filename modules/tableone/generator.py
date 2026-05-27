@@ -3778,8 +3778,9 @@ def main(memory_monitor=None, cohort_mode='critical_illness', force_refresh=Fals
         n_failed_rows = int(failed_conversions['count'].sum())
         print(f"\n⚠️ Med-unit conversion issues: {len(failed_conversions)} (med_category, unit) combinations / {n_failed_rows:,} affected rows. See conversion_counts CSV for breakdown.")
 
-    # Clean up weight data to free memory
-    del weight_vitals_df, weight_df_pl
+    # Weight frames were already del'd inside the weight-loading branch above
+    # (after the dedupe checkpoint, or skipped entirely under the fixed-weight
+    # bypass). Just release any lingering references.
     gc.collect()
     print("✓ Cleaned up weight data from memory")
 
