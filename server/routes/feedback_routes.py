@@ -17,6 +17,7 @@ from modules.utils.feedback import (
     get_feedback_summary,
     create_error_id,
     ensure_mcide_subdecisions,
+    prune_orphan_decisions,
 )
 
 router = APIRouter(prefix="/api", tags=["feedback"])
@@ -81,6 +82,11 @@ def _resolve_feedback(name: str, config: dict):
         issues = _load_error_issues(name)
         if issues:
             ensure_mcide_subdecisions(feedback, issues)
+            # Drop decisions left over from a prior validation run whose
+            # message (and thus error_id) no longer matches any current
+            # issue — these are never rendered but still counted, showing up
+            # as a phantom, unclearable "pending" atom.
+            prune_orphan_decisions(feedback, issues)
         return feedback
 
     # 3. Try creating from validation cache

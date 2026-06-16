@@ -230,6 +230,36 @@ def ensure_mcide_subdecisions(feedback: Dict[str, Any],
     return feedback
 
 
+def prune_orphan_decisions(feedback: Dict[str, Any],
+                           issues: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """Drop ``user_decisions`` entries that no longer match a current error.
+
+    ``error_id`` hashes the issue *message* (see :func:`create_error_id`), so
+    when validation re-runs and a message text changes, the previously-saved
+    decision becomes orphaned: it is never rendered (the UI only draws current
+    issues) yet is still tallied by :func:`_recompute_counts`. That produces a
+    phantom ``pending`` atom the user can never clear — e.g. a permanent
+    "+1 pending" against an otherwise fully-reviewed table.
+
+    Removes any decision whose key is absent from the current error set, then
+    recomputes counts. No-op when ``issues`` is empty (we can't tell orphans
+    from a transiently-unavailable validation result, so we keep everything).
+    """
+    if not feedback or 'user_decisions' not in feedback:
+        return feedback
+    error_issues = [i for i in (issues or []) if i.get('severity') == 'error']
+    if not error_issues:
+        return feedback
+    valid_ids = {create_error_id(i) for i in error_issues}
+    decisions = feedback['user_decisions']
+    orphans = [eid for eid in decisions if eid not in valid_ids]
+    if orphans:
+        for eid in orphans:
+            del decisions[eid]
+        _recompute_counts(feedback)
+    return feedback
+
+
 def update_user_decision(feedback: Dict[str, Any], error_id: str,
                         decision: str, reason: str = '',
                         value_key: Optional[str] = None) -> Dict[str, Any]:
