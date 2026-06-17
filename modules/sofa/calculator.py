@@ -681,9 +681,17 @@ def _load_and_convert_medications(
     cohort_df: pl.DataFrame,
     vitals_df: pl.DataFrame,
     timezone: Optional[str] = None,
-    time_unit: str = 'ns'
+    time_unit: str = 'ns',
+    preloaded_weights: Optional[pl.LazyFrame] = None,
 ) -> pl.LazyFrame:
-    """Load medication data using pandas for Windows stability."""
+    """Load medication data using pandas for Windows stability.
+
+    ``preloaded_weights`` (optional): a LazyFrame with columns
+    ``[hospitalization_id, recorded_dttm, weight_kg]`` already filtered to a
+    superset of ``hospitalization_ids``. When provided, replaces the full
+    ``clif_vitals.parquet`` re-read that this function otherwise does per
+    batch — the bottleneck that hangs JHU once it gets past SOFA preload.
+    """
     
     import pandas as pd
     
@@ -756,46 +764,48 @@ def _load_and_convert_medications(
         _clean_dose_unit(pl.col('med_dose_unit')).alias('dose_unit_clean')
     ])
     
-    # Load weight data with pandas
-    logger.info("Loading weight data with pandas...")
-    weight_file = Path(data_directory) / f"clif_vitals.{filetype}"
-    if weight_file.exists():
-        if filetype == 'parquet':
-            weight_pd = pd.read_parquet(weight_file)
+    # Load weight data — prefer the preloaded cache, fall back to a streaming
+    # DuckDB scan of clif_vitals.parquet. The old pd.read_parquet(clif_vitals)
+    # path read the entire vitals file (all categories, all hospitalizations)
+    # into pandas per SOFA batch — multi-GB at large sites (JHU). Both branches
+    # below avoid that full materialization.
+    if preloaded_weights is not None:
+        logger.info("Using preloaded weight data")
+        weight_data = (
+            preloaded_weights
+            .filter(pl.col('hospitalization_id').is_in(hospitalization_ids))
+            .collect()
+        )
+        logger.info(f"✓ Loaded {len(weight_data)} weight records (preloaded)")
+    else:
+        weight_file = Path(data_directory) / f"clif_vitals.{filetype}"
+        if weight_file.exists():
+            from modules.utils.clif_loader import load_filtered_clif_table
+            logger.info("Loading weight data via DuckDB scan...")
+            weight_data = load_filtered_clif_table(
+                weight_file,
+                columns=['hospitalization_id', 'recorded_dttm', 'vital_category', 'vital_value'],
+                hosp_ids=hospitalization_ids,
+                category_column='vital_category',
+                category_values=['weight_kg'],
+            ).rename({'vital_value': 'weight_kg'}).drop('vital_category')
+            logger.info(f"✓ Loaded {len(weight_data)} weight records")
         else:
-            weight_pd = pd.read_csv(weight_file)
-        
-        weight_pd['hospitalization_id'] = weight_pd['hospitalization_id'].astype(str)
-        weight_pd = weight_pd[
-            weight_pd['hospitalization_id'].isin(hospitalization_ids) &
-            (weight_pd['vital_category'] == 'weight_kg')
-        ][['hospitalization_id', 'recorded_dttm', 'vital_value']].copy()
-        
-        weight_pd.rename(columns={'vital_value': 'weight_kg'}, inplace=True)
-        weight_pd['recorded_dttm'] = pd.to_datetime(weight_pd['recorded_dttm'])
-        
-        if timezone:
-            if weight_pd['recorded_dttm'].dt.tz is None:
-                weight_pd['recorded_dttm'] = weight_pd['recorded_dttm'].dt.tz_localize('UTC')
-            weight_pd['recorded_dttm'] = weight_pd['recorded_dttm'].dt.tz_convert(timezone)
-        
-        logger.info(f"✓ Loaded {len(weight_pd)} weight records")
-        weight_data = pl.from_pandas(weight_pd)
+            logger.warning(f"Weight data file not found: {weight_file}")
+            weight_data = pl.DataFrame({
+                'hospitalization_id': [],
+                'recorded_dttm': [],
+                'weight_kg': []
+            })
 
-        # ADD THIS: Standardize weight_data datetime columns
+    # Standardize weight_data datetime columns to match the meds frame
+    if 'recorded_dttm' in weight_data.columns and weight_data.height > 0 and timezone:
         weight_data = standardize_datetime_columns(
             weight_data,
             target_timezone=timezone,
-            target_time_unit='ns',  # Match meds time unit
+            target_time_unit='ns',
             datetime_columns=['recorded_dttm']
         )
-    else:
-        logger.warning(f"Weight data file not found: {weight_file}")
-        weight_data = pl.DataFrame({
-            'hospitalization_id': [],
-            'recorded_dttm': [],
-            'weight_kg': []
-        })
     
     # Sort for join_asof
     meds = meds.sort(['hospitalization_id', 'admin_dttm'])
@@ -1236,6 +1246,7 @@ def compute_sofa_polars(
     preloaded_assessments: Optional[pl.LazyFrame] = None,
     preloaded_resp: Optional[pl.LazyFrame] = None,
     preloaded_meds: Optional[pl.LazyFrame] = None,
+    preloaded_weights: Optional[pl.LazyFrame] = None,
 ) -> pl.DataFrame:
     """
     Compute SOFA scores using optimized Polars operations.
@@ -1399,7 +1410,11 @@ def compute_sofa_polars(
         meds_df = preloaded_meds.filter(pl.col('hospitalization_id').is_in(hospitalization_ids))
     else:
         logger.info("Loading and converting medication data...")
-        meds_df = _load_and_convert_medications(data_directory, filetype, hospitalization_ids, cohort_df_local, vitals_df, timezone, time_unit)
+        meds_df = _load_and_convert_medications(
+            data_directory, filetype, hospitalization_ids, cohort_df_local,
+            vitals_df, timezone, time_unit,
+            preloaded_weights=preloaded_weights,
+        )
 
     # ==================================================================================
     # CRITICAL: Collect each data source BEFORE combining to avoid Windows crash

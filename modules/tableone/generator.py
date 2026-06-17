@@ -4854,6 +4854,31 @@ def main(memory_monitor=None, cohort_mode='critical_illness', force_refresh=Fals
                 print(f"   ⚠️ Vitals pre-load failed ({e}), will load per-batch")
                 _sofa_vitals_lazy = None
 
+        # Reuse the weight-only cache we built earlier for vasopressor dose
+        # conversion. compute_sofa_polars' internal med dose conversion needs
+        # weights too; without this it re-reads the full clif_vitals.parquet
+        # per batch (JHU hangs there). The cache is tiny — load and pass it
+        # through as preloaded_weights.
+        with _chkpt("sofa-preload-weights"):
+            try:
+                if _weight_cache_path.exists():
+                    _sofa_weights = (
+                        load_filtered_clif_table(
+                            str(_weight_cache_path),
+                            columns=['hospitalization_id', 'recorded_dttm', 'vital_value'],
+                            hosp_ids=_sofa_hosp_ids,
+                        )
+                        .rename({'vital_value': 'weight_kg'})
+                    )
+                    print(f"   ✅ Weights pre-loaded: {len(_sofa_weights):,} rows (from {_weight_cache_path.name})")
+                    _sofa_weights_lazy = _sofa_weights.lazy()
+                else:
+                    print(f"   ⚠️ Weight cache not found at {_weight_cache_path} — SOFA will read clif_vitals per batch")
+                    _sofa_weights_lazy = None
+            except Exception as e:
+                print(f"   ⚠️ Weights pre-load failed ({e}), will load per-batch")
+                _sofa_weights_lazy = None
+
         SOFA_BATCH_SIZE = 20_000
         try:
             if len(sofa_cohort_df) > SOFA_BATCH_SIZE:
@@ -4877,6 +4902,7 @@ def main(memory_monitor=None, cohort_mode='critical_illness', force_refresh=Fals
                         timezone=config['timezone'],
                         preloaded_labs=_sofa_labs_lazy,
                         preloaded_vitals=_sofa_vitals_lazy,
+                        preloaded_weights=_sofa_weights_lazy,
                     ).to_pandas()
                     _sofa_parts.append(_part)
                     del _batch_pl, _part
@@ -4894,6 +4920,7 @@ def main(memory_monitor=None, cohort_mode='critical_illness', force_refresh=Fals
                     id_name='encounter_block',
                     preloaded_labs=_sofa_labs_lazy,
                     preloaded_vitals=_sofa_vitals_lazy,
+                    preloaded_weights=_sofa_weights_lazy,
                     extremal_type='worst',
                     fill_na_scores_with_zero=True,
                     remove_outliers=True,
@@ -4911,7 +4938,7 @@ def main(memory_monitor=None, cohort_mode='critical_illness', force_refresh=Fals
             sofa_scores = pd.DataFrame(columns=['encounter_block', 'sofa_total'])
 
         # Free preloaded SOFA data
-        for _v in ('_sofa_labs', '_sofa_vitals', '_sofa_labs_lazy', '_sofa_vitals_lazy'):
+        for _v in ('_sofa_labs', '_sofa_vitals', '_sofa_weights', '_sofa_labs_lazy', '_sofa_vitals_lazy', '_sofa_weights_lazy'):
             try:
                 del locals()[_v]
             except (KeyError, NameError):
