@@ -1380,7 +1380,13 @@ def main(memory_monitor=None, cohort_mode='critical_illness', force_refresh=Fals
         try:
             from concurrent.futures import ProcessPoolExecutor
             _enc_blocks = clif.respiratory_support.df['encounter_block'].unique()
-            _n_workers = min(os.cpu_count() or 4, max(1, len(_enc_blocks) // 10))
+            # Cap workers at 16. On large servers (JHU has 112 cores) the
+            # bare min(cpu_count, encounters // 10) picks dozens of workers,
+            # each of which has to receive a ~250k-row chunk via pickle + IPC.
+            # Per-worker startup + serialization dominates the actual waterfall
+            # work and the pool hangs forever if any worker dies. 16 is well
+            # past the point where parallelism speeds up this work shape.
+            _n_workers = min(os.cpu_count() or 4, max(1, len(_enc_blocks) // 10), 16)
             if _n_workers > 1:
                 _chunks = np.array_split(_enc_blocks, _n_workers)
                 _df_chunks = [
