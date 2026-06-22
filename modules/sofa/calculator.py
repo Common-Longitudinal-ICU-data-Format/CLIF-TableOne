@@ -445,28 +445,34 @@ def _load_patient_assessments(
         })
 
     # Define columns to load
-    load_columns = ['hospitalization_id', 'recorded_dttm', 'assessment_category', 
+    load_columns = ['hospitalization_id', 'recorded_dttm', 'assessment_category',
                     'numerical_value', 'categorical_value']
 
-    logger.info("Loading patient assessments with pandas...")
-    
-    # Load with pandas instead of polars
+    # Stream the parquet via DuckDB with cohort + category filter applied at
+    # scan time. The prior pd.read_parquet path loaded the full table (8M+
+    # rows at large sites) into pandas before filtering, repeated per SOFA
+    # batch. load_filtered_clif_table pushes both filters into the scan and
+    # casts hospitalization_id to VARCHAR (replaces the .astype(str) below).
     if filetype == 'parquet':
-        assessments_pd = pd.read_parquet(file_path, columns=load_columns)
+        from modules.utils.clif_loader import load_filtered_clif_table
+        logger.info("Loading patient assessments via DuckDB scan...")
+        assessments_pd = load_filtered_clif_table(
+            file_path,
+            columns=load_columns,
+            hosp_ids=hospitalization_ids,
+            category_column='assessment_category',
+            category_values=REQUIRED_ASSESSMENTS,
+            return_as='pandas',
+        )
     else:
+        logger.info("Loading patient assessments with pandas (CSV)...")
         assessments_pd = pd.read_csv(file_path, usecols=load_columns)
-    
-    logger.info(f"✓ Loaded {len(assessments_pd)} assessment rows with pandas")
-    
-    # Convert hospitalization_id to string
-    assessments_pd['hospitalization_id'] = assessments_pd['hospitalization_id'].astype(str)
-    
-    # Filter for required categories and hospitalization_ids
-    assessments_pd = assessments_pd[
-        assessments_pd['assessment_category'].isin(REQUIRED_ASSESSMENTS) &
-        assessments_pd['hospitalization_id'].isin(hospitalization_ids)
-    ]
-    logger.info(f"✓ Filtered to {len(assessments_pd)} rows for target hospitalizations")
+        assessments_pd['hospitalization_id'] = assessments_pd['hospitalization_id'].astype(str)
+        assessments_pd = assessments_pd[
+            assessments_pd['assessment_category'].isin(REQUIRED_ASSESSMENTS) &
+            assessments_pd['hospitalization_id'].isin(hospitalization_ids)
+        ]
+    logger.info(f"✓ Loaded {len(assessments_pd)} assessment rows for target hospitalizations")
     
     # Convert datetime and timezone with pandas
     if timezone:
@@ -551,22 +557,25 @@ def _load_respiratory_support(
     load_columns = ['hospitalization_id', 'recorded_dttm', 'device_category', 'mode_category',
                     'fio2_set', 'lpm_set', 'tidal_volume_set', 'resp_rate_set']
 
-    logger.info("Loading respiratory support with pandas...")
-    
-    # Load with pandas instead of polars
+    # Stream the parquet via DuckDB with the cohort filter applied at scan
+    # time. The prior pd.read_parquet path loaded the full table (77M rows at
+    # JHU) into pandas per SOFA batch. load_filtered_clif_table reads only
+    # matching rows and casts hospitalization_id to VARCHAR.
     if filetype == 'parquet':
-        resp_pd = pd.read_parquet(file_path, columns=load_columns)
+        from modules.utils.clif_loader import load_filtered_clif_table
+        logger.info("Loading respiratory support via DuckDB scan...")
+        resp_pd = load_filtered_clif_table(
+            file_path,
+            columns=load_columns,
+            hosp_ids=hospitalization_ids,
+            return_as='pandas',
+        )
     else:
+        logger.info("Loading respiratory support with pandas (CSV)...")
         resp_pd = pd.read_csv(file_path, usecols=load_columns)
-    
-    logger.info(f"✓ Loaded {len(resp_pd)} rows with pandas")
-    
-    # Convert hospitalization_id to string
-    resp_pd['hospitalization_id'] = resp_pd['hospitalization_id'].astype(str)
-    
-    # Filter for hospitalization_ids
-    resp_pd = resp_pd[resp_pd['hospitalization_id'].isin(hospitalization_ids)]
-    logger.info(f"✓ Filtered to {len(resp_pd)} rows for target hospitalizations")
+        resp_pd['hospitalization_id'] = resp_pd['hospitalization_id'].astype(str)
+        resp_pd = resp_pd[resp_pd['hospitalization_id'].isin(hospitalization_ids)]
+    logger.info(f"✓ Loaded {len(resp_pd)} rows for target hospitalizations")
     
     # Convert datetime
     if timezone:
@@ -709,25 +718,30 @@ def _load_and_convert_medications(
     # Define columns to load
     load_columns = ['hospitalization_id', 'admin_dttm', 'med_category', 'med_dose', 'med_dose_unit']
 
-    logger.info("Loading medications with pandas...")
-    
-    # Load with pandas
+    # Stream the parquet via DuckDB with cohort + med-category filter applied
+    # at scan time. The prior pd.read_parquet path loaded the full meds table
+    # (15M+ rows at JHU) into pandas per SOFA batch — wasted work since only
+    # REQUIRED_MEDS for the batch's hospitalization_ids are kept.
     if filetype == 'parquet':
-        meds_pd = pd.read_parquet(file_path, columns=load_columns)
+        from modules.utils.clif_loader import load_filtered_clif_table
+        logger.info("Loading medications via DuckDB scan...")
+        meds_pd = load_filtered_clif_table(
+            file_path,
+            columns=load_columns,
+            hosp_ids=hospitalization_ids,
+            category_column='med_category',
+            category_values=REQUIRED_MEDS,
+            return_as='pandas',
+        )
     else:
+        logger.info("Loading medications with pandas (CSV)...")
         meds_pd = pd.read_csv(file_path, usecols=load_columns)
-    
-    logger.info(f"✓ Loaded {len(meds_pd)} medication rows")
-    
-    # Convert types
-    meds_pd['hospitalization_id'] = meds_pd['hospitalization_id'].astype(str)
-    
-    # Filter for required meds and hospitalizations
-    meds_pd = meds_pd[
-        meds_pd['med_category'].isin(REQUIRED_MEDS) &
-        meds_pd['hospitalization_id'].isin(hospitalization_ids)
-    ]
-    logger.info(f"✓ Filtered to {len(meds_pd)} rows")
+        meds_pd['hospitalization_id'] = meds_pd['hospitalization_id'].astype(str)
+        meds_pd = meds_pd[
+            meds_pd['med_category'].isin(REQUIRED_MEDS) &
+            meds_pd['hospitalization_id'].isin(hospitalization_ids)
+        ]
+    logger.info(f"✓ Loaded {len(meds_pd)} medication rows for target hospitalizations")
     
     # Convert datetime and timezone
     if timezone:

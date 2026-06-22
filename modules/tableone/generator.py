@@ -3558,14 +3558,18 @@ def main(memory_monitor=None, cohort_mode='critical_illness', force_refresh=Fals
     # ==============================================================================
 
     print(f"\nLoading medication_admin_continuous table...")
-    clif.load_table(
-        'medication_admin_continuous',
+    # Stream via DuckDB with final_hosp_ids filter applied at scan time
+    # (replaces the earlier adult-cohort load and is restricted to the final
+    # critical-illness cohort, ~50k IDs vs ~1.2M at JHU).
+    _meds_post_df = load_filtered_clif_table(
+        os.path.join(config['tables_path'], f"clif_medication_admin_continuous.{config['file_type']}"),
         columns=meds_required_columns,
-        filters={
-            'hospitalization_id': final_hosp_ids
-        }
+        hosp_ids=list(final_hosp_ids),
+        return_as='pandas',
     )
-    clif.medication_admin_continuous.df= pd.merge(clif.medication_admin_continuous.df, encounter_mapping, 
+    clif.medication_admin_continuous = _types.SimpleNamespace(df=_meds_post_df)
+    del _meds_post_df
+    clif.medication_admin_continuous.df = pd.merge(clif.medication_admin_continuous.df, encounter_mapping,
                                             on='hospitalization_id', how='left')
 
 
@@ -4362,15 +4366,20 @@ def main(memory_monitor=None, cohort_mode='critical_illness', force_refresh=Fals
     # # Comorbidity Index
     # ==============================================================================
 
-    print(f"\nLoading vitals table...")
-    clif.load_table(
-        'hospital_diagnosis',
-        filters={
-            'hospitalization_id': final_hosp_ids
-        }
+    print(f"\nLoading hospital_diagnosis table...")
+    # Stream via DuckDB with final_hosp_ids filter. calculate_cci accepts
+    # any object with a .df attribute (duck-typed HospitalDiagnosis), so a
+    # SimpleNamespace shell is enough.
+    _hosp_dx_df = load_filtered_clif_table(
+        os.path.join(config['tables_path'], f"clif_hospital_diagnosis.{config['file_type']}"),
+        columns=['hospitalization_id', 'diagnosis_code', 'diagnosis_code_format'],
+        hosp_ids=list(final_hosp_ids),
+        return_as='pandas',
     )
+    clif.hospital_diagnosis = _types.SimpleNamespace(df=_hosp_dx_df)
+    del _hosp_dx_df
 
-    cci_results = calculate_cci( clif.hospital_diagnosis, hierarchy=True)
+    cci_results = calculate_cci(clif.hospital_diagnosis, hierarchy=True)
 
     cci_results = (
         cci_results.merge(encounter_mapping[['hospitalization_id', 'encounter_block']], on="hospitalization_id")
