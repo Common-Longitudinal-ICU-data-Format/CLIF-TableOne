@@ -279,32 +279,43 @@ def run_adt_location_coverage(
     _vitals_path = os.path.join(
         clif.data_directory, f"clif_vitals.{clif.filetype}"
     )
+    # load_filtered_clif_table returns datetimes in UTC (DuckDB session tz).
+    # ADT comes through clifpy.load_table which converts to the site tz on
+    # load, so the labs/vitals dtmms need to be converted to the same site tz
+    # before the join_asof in _join_events_to_location — otherwise polars
+    # rejects the join with "datatypes of join keys don't match" comparing
+    # datetime[μs, UTC] vs datetime[μs, US/Eastern].
+    _site_tz = getattr(clif, 'timezone', None)
 
     print("Loading labs for coverage analysis...")
-    labs_pl = (
-        load_filtered_clif_table(
-            _labs_path,
-            columns=["hospitalization_id", "lab_collect_dttm", "lab_category"],
-            hosp_ids=list(hospitalization_ids),
+    labs_pl = load_filtered_clif_table(
+        _labs_path,
+        columns=["hospitalization_id", "lab_collect_dttm", "lab_category"],
+        hosp_ids=list(hospitalization_ids),
+    ).drop_nulls(["lab_collect_dttm"])
+    if _site_tz:
+        labs_pl = labs_pl.with_columns(
+            pl.col("lab_collect_dttm").dt.convert_time_zone(_site_tz)
         )
-        .drop_nulls(["lab_collect_dttm"])
-        .sort(["hospitalization_id", "lab_collect_dttm"])
-    )
+    labs_pl = labs_pl.sort(["hospitalization_id", "lab_collect_dttm"])
     print(f"  Labs rows: {labs_pl.height:,}")
 
     print("Loading vitals for coverage analysis...")
-    vitals_pl = (
-        load_filtered_clif_table(
-            _vitals_path,
-            columns=["hospitalization_id", "recorded_dttm", "vital_category"],
-            hosp_ids=list(hospitalization_ids),
+    vitals_pl = load_filtered_clif_table(
+        _vitals_path,
+        columns=["hospitalization_id", "recorded_dttm", "vital_category"],
+        hosp_ids=list(hospitalization_ids),
+    ).drop_nulls(["recorded_dttm"])
+    if _site_tz:
+        vitals_pl = vitals_pl.with_columns(
+            pl.col("recorded_dttm").dt.convert_time_zone(_site_tz)
         )
-        .drop_nulls(["recorded_dttm"])
-        .sort(["hospitalization_id", "recorded_dttm"])
-    )
+    vitals_pl = vitals_pl.sort(["hospitalization_id", "recorded_dttm"])
     print(f"  Vitals rows: {vitals_pl.height:,}")
 
-    # Respiratory support — already loaded + cohort-filtered in generator
+    # Respiratory support — already loaded + cohort-filtered in generator.
+    # Its recorded_dttm may be UTC (if generator's load_filtered_clif_table
+    # path produced it) — convert to site tz to match adt_for_join.
     resp_pl = (
         pl.from_pandas(
             clif.respiratory_support.df[
@@ -312,8 +323,17 @@ def run_adt_location_coverage(
             ][["hospitalization_id", "recorded_dttm", "device_category"]]
         )
         .drop_nulls(["recorded_dttm"])
-        .sort(["hospitalization_id", "recorded_dttm"])
     )
+    # Only convert if the column is tz-aware. The cached waterfall file's
+    # tz state depends on whichever code wrote it (could be UTC from the
+    # helper or site tz from older clifpy paths or naive).
+    if _site_tz:
+        _resp_dtype = resp_pl.schema.get("recorded_dttm")
+        if _resp_dtype is not None and getattr(_resp_dtype, "time_zone", None) is not None:
+            resp_pl = resp_pl.with_columns(
+                pl.col("recorded_dttm").dt.convert_time_zone(_site_tz)
+            )
+    resp_pl = resp_pl.sort(["hospitalization_id", "recorded_dttm"])
     print(f"  Respiratory support rows: {resp_pl.height:,}")
 
     # ── 3. Join events to ADT locations ─────────────────────────────────────
