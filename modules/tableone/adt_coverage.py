@@ -18,6 +18,8 @@ import plotly.graph_objects as go
 import polars as pl
 from plotly.subplots import make_subplots
 
+from modules.utils.clif_loader import load_filtered_clif_table
+
 NO_MATCH = "__no_adt_match__"
 
 
@@ -265,29 +267,38 @@ def run_adt_location_coverage(
     )
 
     # ── 2. Load event tables ────────────────────────────────────────────────
-    # Labs — not loaded in the generator, load via clifpy
-    print("Loading labs for coverage analysis...")
-    clif.load_table(
-        "labs",
-        columns=["hospitalization_id", "lab_collect_dttm", "lab_category"],
-        filters={"hospitalization_id": list(hospitalization_ids)},
+    # Labs and vitals are loaded via the DuckDB-backed helper instead of
+    # clif.load_table. clifpy's load_table reads the full parquet into pandas
+    # then filters — at large sites (JHU: 108M labs rows, 75M+ vitals rows)
+    # that materializes 30+ GB of pandas per table and OOM-kills inside a
+    # constrained SLURM cgroup. load_filtered_clif_table pushes the cohort
+    # filter into the parquet scan so only matching rows are read.
+    _labs_path = os.path.join(
+        clif.data_directory, f"clif_labs.{clif.filetype}"
     )
+    _vitals_path = os.path.join(
+        clif.data_directory, f"clif_vitals.{clif.filetype}"
+    )
+
+    print("Loading labs for coverage analysis...")
     labs_pl = (
-        pl.from_pandas(clif.labs.df)
+        load_filtered_clif_table(
+            _labs_path,
+            columns=["hospitalization_id", "lab_collect_dttm", "lab_category"],
+            hosp_ids=list(hospitalization_ids),
+        )
         .drop_nulls(["lab_collect_dttm"])
         .sort(["hospitalization_id", "lab_collect_dttm"])
     )
     print(f"  Labs rows: {labs_pl.height:,}")
 
-    # Vitals — not loaded in the generator, load via clifpy
     print("Loading vitals for coverage analysis...")
-    clif.load_table(
-        "vitals",
-        columns=["hospitalization_id", "recorded_dttm", "vital_category"],
-        filters={"hospitalization_id": list(hospitalization_ids)},
-    )
     vitals_pl = (
-        pl.from_pandas(clif.vitals.df)
+        load_filtered_clif_table(
+            _vitals_path,
+            columns=["hospitalization_id", "recorded_dttm", "vital_category"],
+            hosp_ids=list(hospitalization_ids),
+        )
         .drop_nulls(["recorded_dttm"])
         .sort(["hospitalization_id", "recorded_dttm"])
     )

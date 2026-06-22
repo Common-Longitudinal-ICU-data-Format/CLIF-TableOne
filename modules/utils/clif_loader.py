@@ -737,7 +737,11 @@ def load_filtered_clif_table(
         con.close()
 
     if return_as == 'pandas':
-        return arrow_tbl.to_pandas(types_mapper=pd.ArrowDtype)
+        # Plain numpy-backed pandas (not arrow-backed). Arrow-backed dtypes
+        # break downstream code that does e.g. `cumsum` on bool columns (used
+        # in the respiratory_support waterfall) — polars and some pandas paths
+        # don't handle bool[pyarrow] / string[pyarrow] uniformly.
+        return arrow_tbl.to_pandas()
 
     import polars as pl
     return pl.from_arrow(arrow_tbl)

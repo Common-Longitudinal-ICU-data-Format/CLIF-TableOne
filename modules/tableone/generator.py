@@ -1308,26 +1308,38 @@ def main(memory_monitor=None, cohort_mode='critical_illness', force_refresh=Fals
         if _waterfall_cache_path.exists():
             print(f"\nRaw respiratory_support newer than cache — recomputing waterfall.")
         print(f"\nLoading respiratory_support table...")
-        # Try to load respiratory support with all columns, but handle gracefully if some don't exist
+        # Stream the parquet via DuckDB with the cohort filter applied at scan
+        # time. clifpy's load_table with filters={hosp_id: list of 1.2M IDs}
+        # materializes 77M+ rows in pandas at large sites (JHU) and exceeds
+        # SLURM cgroup limits. load_filtered_clif_table pushes the filter into
+        # the parquet scan so only matching rows are read.
         try:
-            clif.load_table('respiratory_support',
-                                   columns=rst_required_columns,
-                                   filters={'hospitalization_id': list(adult_hosp_ids)})
-            print(f"Respiratory support loaded ({len(clif.respiratory_support.df):,} rows)")
+            _rst_df = load_filtered_clif_table(
+                str(_raw_resp_path),
+                columns=rst_required_columns,
+                hosp_ids=list(adult_hosp_ids),
+                return_as='pandas',
+            )
+            print(f"Respiratory support loaded ({len(_rst_df):,} rows)")
         except Exception as e:
-            # If specific columns don't exist, try loading without the optional new columns
+            # If specific columns don't exist in the parquet, retry without
+            # the optional ones (some sites lack flow_rate_set / lpm_set).
             print(f"⚠️ Warning: Could not load all requested columns: {e}")
             traceback.print_exc()
             print("   Attempting to load with core columns only...")
-
-            # Core columns that should always exist (exclude optional settings)
             core_rst_columns = [col for col in rst_required_columns
                                if col not in ['flow_rate_set', 'lpm_set']]
-
-            clif.load_table('respiratory_support',
-                                   columns=core_rst_columns,
-                                   filters={'hospitalization_id': list(adult_hosp_ids)})
-            print(f"Respiratory support loaded with core columns ({len(clif.respiratory_support.df):,} rows)")
+            _rst_df = load_filtered_clif_table(
+                str(_raw_resp_path),
+                columns=core_rst_columns,
+                hosp_ids=list(adult_hosp_ids),
+                return_as='pandas',
+            )
+            print(f"Respiratory support loaded with core columns ({len(_rst_df):,} rows)")
+        # Mimic clifpy's BaseTable.df interface — downstream code only touches
+        # .df on clif.respiratory_support (same pattern as the cache branch).
+        clif.respiratory_support = _types.SimpleNamespace(df=_rst_df)
+        del _rst_df
 
         # MCIDE collection moved to separate script: generate_mcide_and_stats.py
         # get_value_counts_mcide(clif.respiratory_support, 'respiratory_support', ['device_name', 'device_category'], output_dir=mcide_dir, config=config)
@@ -1403,8 +1415,14 @@ def main(memory_monitor=None, cohort_mode='critical_illness', force_refresh=Fals
                 raise ValueError("Too few encounters for parallelization")
         except Exception as e:
             print(f"  Parallel waterfall unavailable ({e}), using sequential...")
-            clif.respiratory_support = clif.respiratory_support.waterfall(
-                id_col='encounter_block', verbose=True
+            # Call the same underlying function _waterfall_chunk uses, so the
+            # fallback works whether clif.respiratory_support is clifpy's
+            # BaseTable or our SimpleNamespace shell.
+            from clifpy.utils.waterfall import process_resp_support_waterfall
+            clif.respiratory_support.df = process_resp_support_waterfall(
+                clif.respiratory_support.df,
+                id_col='encounter_block',
+                verbose=True,
             )
         print(f"Waterfall complete: {len(clif.respiratory_support.df):,} rows")
 
@@ -1482,14 +1500,22 @@ def main(memory_monitor=None, cohort_mode='critical_illness', force_refresh=Fals
     # ==============================================================================
 
     print(f"\nLoading medication_admin_continuous table...")
-    clif.load_table(
-        'medication_admin_continuous',
+    # Stream the parquet via DuckDB with cohort + category filter applied at
+    # scan time. clifpy's load_table with filters={hosp_id: list of 1.2M IDs}
+    # materializes the full meds table in pandas at large sites (JHU).
+    # load_filtered_clif_table pushes both filters into the parquet scan.
+    _meds_initial_df = load_filtered_clif_table(
+        os.path.join(config['tables_path'], f"clif_medication_admin_continuous.{config['file_type']}"),
         columns=meds_required_columns,
-        filters={
-            'hospitalization_id': list(adult_hosp_ids),
-            'med_category': meds_of_interest
-        }
+        hosp_ids=list(adult_hosp_ids),
+        category_column='med_category',
+        category_values=meds_of_interest,
+        return_as='pandas',
     )
+    # Mimic clifpy's BaseTable.df interface — downstream code only touches .df
+    # on clif.medication_admin_continuous (later replaced by post-cohort load).
+    clif.medication_admin_continuous = _types.SimpleNamespace(df=_meds_initial_df)
+    del _meds_initial_df
 
     # Identify hospitalizations on advanced mechanical support
     print(f"\nIdentifying hospitalizations with advanced respiratory support devices...")
