@@ -46,7 +46,8 @@ class CodeStatusAnalyzer(BaseTableAnalyzer):
                 data_directory=self.data_dir,
                 filetype=self.filetype,
                 timezone=self.timezone,
-                output_directory=clifpy_output_dir
+                output_directory=clifpy_output_dir,
+                clif_version=self.clif_version,
             )
 
             # Move any CSV files that clifpy created in parent directory to final/

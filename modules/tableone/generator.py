@@ -950,7 +950,8 @@ def main(memory_monitor=None, cohort_mode='critical_illness', force_refresh=Fals
         data_directory=config['tables_path'],
         filetype=config['file_type'],
         timezone=config['timezone'],
-        output_directory=clifpy_dir
+        output_directory=clifpy_dir,
+        clif_version=config.get('clif_version', '3.0')
     )
 
 

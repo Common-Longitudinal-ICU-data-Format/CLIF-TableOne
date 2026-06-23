@@ -33,7 +33,8 @@ class PatientProceduresAnalyzer(BaseTableAnalyzer):
                 data_directory=self.data_dir,
                 filetype=self.filetype,
                 timezone=self.timezone,
-                output_directory=clifpy_output_dir
+                output_directory=clifpy_output_dir,
+                clif_version=self.clif_version,
             )
         except Exception as e:
             print(f"⚠️  Error loading patient_procedures table: {e}")

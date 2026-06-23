@@ -58,7 +58,8 @@ class LabsAnalyzer(BaseTableAnalyzer):
                 data_directory=self.data_dir,
                 filetype=self.filetype,
                 timezone=self.timezone,
-                output_directory=clifpy_output_dir
+                output_directory=clifpy_output_dir,
+                clif_version=self.clif_version,
             )
         except FileNotFoundError:
             print(f"⚠️  labs table file not found in {self.data_dir}")

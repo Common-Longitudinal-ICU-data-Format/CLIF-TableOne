@@ -15,7 +15,8 @@ class BaseTableAnalyzer(ABC):
     """Base class for all table-specific analyzers."""
 
     def __init__(self, data_dir: str, filetype: str = 'parquet',
-                 timezone: str = 'UTC', output_dir: str = None, **kwargs):
+                 timezone: str = 'UTC', output_dir: str = None,
+                 clif_version: str = '3.0', **kwargs):
         """
         Initialize the base analyzer.
 
@@ -29,11 +30,14 @@ class BaseTableAnalyzer(ABC):
             Timezone for datetime processing
         output_dir : str, optional
             Directory for output files
+        clif_version : str
+            CLIF schema version to validate against (default '3.0' on this branch)
         """
         self.data_dir = data_dir
         self.filetype = filetype
         self.timezone = timezone
         self.output_dir = output_dir or 'output'
+        self.clif_version = clif_version
         self.table = None
 
         # Ensure output directories exist with new structure (overall/strata/validation/...)
@@ -69,6 +73,7 @@ class BaseTableAnalyzer(ABC):
                     filetype=self.filetype,
                     timezone=self.timezone,
                     output_directory=os.path.join(self.output_dir, 'logs'),
+                    clif_version=self.clif_version,
                 )
             except Exception as e:
                 import logging as _lg
@@ -116,17 +121,13 @@ class BaseTableAnalyzer(ABC):
 
         try:
             import polars as pl
-            import yaml
-            import clifpy
+            from clifpy.schemas import load_schema
 
             logger.info(f"Attempting streaming fallback for {table_name}...")
             print(f"  ℹ️  Normal loading failed for {table_name}, trying streaming fallback...")
 
-            # Load schema from clifpy's installed schemas
-            clifpy_root = os.path.dirname(clifpy.__file__)
-            schema_path = os.path.join(clifpy_root, 'schemas', f'{table_name}_schema.yaml')
-            with open(schema_path, 'r', encoding='utf-8') as f:
-                schema = yaml.safe_load(f)
+            # Load schema for the configured CLIF version from clifpy's registry
+            schema = load_schema(table_name, self.clif_version) or {}
 
             # Scan parquet lazily
             lf = pl.scan_parquet(str(file_path))
@@ -212,6 +213,7 @@ class BaseTableAnalyzer(ABC):
             error_threshold=10.0,
             warning_threshold=1.0,
             hosp_years=hosp_years,
+            clif_version=self.clif_version,
         )
 
     def extract_cross_table_cache(self) -> Dict[str, Any]:

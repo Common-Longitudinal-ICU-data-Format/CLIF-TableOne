@@ -62,7 +62,9 @@ def _build_analyzer(table_name: str, config: dict):
     filetype = config.get('filetype') or config.get('file_type', 'parquet')
     timezone = config.get('timezone', 'UTC')
     output_dir = config.get('output_dir', 'output')
-    return analyzer_class(data_dir, filetype, timezone, output_dir)
+    clif_version = config.get('clif_version', '3.0')
+    return analyzer_class(data_dir, filetype, timezone, output_dir,
+                          clif_version=clif_version)
 
 
 def _inject_table_stats(validation_results, analyzer):

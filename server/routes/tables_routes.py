@@ -25,20 +25,20 @@ _schema_cache: dict[tuple[str, float], dict] = {}
 _clif_version_cache: dict[str, str | None] = {}
 
 
-def _get_clif_version(table_name: str) -> str | None:
-    """Read the CLIF spec version from the clifpy schema YAML for a table."""
+def _get_clif_version(table_name: str, clif_version: str = '3.0') -> str | None:
+    """Read the CLIF spec version from the clifpy schema for a table.
+
+    clifpy stores schemas under ``schemas/<version>/`` now, so resolve via its
+    versioned ``load_schema`` API rather than a flat path.
+    """
     if table_name in _clif_version_cache:
         return _clif_version_cache[table_name]
     try:
-        import clifpy
-        schema_dir = Path(clifpy.__file__).parent / "schemas"
-        schema_file = schema_dir / f"{table_name}_schema.yaml"
-        if schema_file.exists():
-            with open(schema_file) as f:
-                schema = yaml.safe_load(f)
-            version = schema.get("version")
-            _clif_version_cache[table_name] = version
-            return version
+        from clifpy.schemas import load_schema
+        schema = load_schema(table_name, clif_version)
+        version = schema.get("version") if schema else None
+        _clif_version_cache[table_name] = version
+        return version
     except Exception:
         pass
     _clif_version_cache[table_name] = None

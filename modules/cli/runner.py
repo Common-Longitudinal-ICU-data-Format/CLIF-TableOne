@@ -71,6 +71,7 @@ class CLIAnalysisRunner:
         self.timezone = config.get('timezone', 'UTC')
         self.output_dir = config.get('output_dir', 'output')
         self.site_name = config.get('site_name')
+        self.clif_version = config.get('clif_version', '3.0')
 
     def log(self, message: str, force: bool = False):
         """Log message to console if not in quiet mode."""
@@ -113,7 +114,8 @@ class CLIAnalysisRunner:
 
             # Load table
             self.log(self.formatter.progress(f"Loading {table_name} table"))
-            analyzer = analyzer_class(self.data_dir, self.filetype, self.timezone, self.output_dir)
+            analyzer = analyzer_class(self.data_dir, self.filetype, self.timezone, self.output_dir,
+                                      clif_version=self.clif_version)
 
             if analyzer.table is None:
                 result['error'] = f"Failed to load {table_name} table"
