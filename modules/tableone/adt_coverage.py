@@ -9,6 +9,7 @@ Answers two questions:
 Adapted from dev/adt_location_coverage.py (standalone marimo notebook).
 """
 
+import gc
 import os
 from typing import List
 
@@ -266,57 +267,75 @@ def run_adt_location_coverage(
         ["hospitalization_id", "in_dttm", "out_dttm", "location_category"]
     )
 
-    # ── 2. Load event tables ────────────────────────────────────────────────
-    # Labs and vitals are loaded via the DuckDB-backed helper instead of
-    # clif.load_table. clifpy's load_table reads the full parquet into pandas
-    # then filters — at large sites (JHU: 108M labs rows, 75M+ vitals rows)
-    # that materializes 30+ GB of pandas per table and OOM-kills inside a
-    # constrained SLURM cgroup. load_filtered_clif_table pushes the cohort
-    # filter into the parquet scan so only matching rows are read.
+    # ── 2. Compute dwell summary up front ──────────────────────────────────
+    # Needed by each event-table summary below. Small (a row per location).
+    dwell_summary = _compute_dwell_summary(adt_pl)
+
+    # ── 3. Process each event table sequentially: load → join → summarize → free
+    # Previously this loaded labs + vitals + resp all into memory, joined all
+    # three, THEN summarized — peaking at six large frames simultaneously
+    # (~26 GB at JHU: 108M labs × 3 cols, 380M vitals × 3 cols, 8.6M resp,
+    # plus their join_asof outputs). Sequential processing bounds peak to
+    # one source + one joined frame per stage and explicitly returns memory
+    # to the allocator via gc.collect between stages.
+    # load_filtered_clif_table returns datetimes in UTC (DuckDB session tz);
+    # ADT comes through clifpy.load_table in site tz. join_asof requires
+    # matching dtype, so convert before sort+join.
     _labs_path = os.path.join(
         clif.data_directory, f"clif_labs.{clif.filetype}"
     )
     _vitals_path = os.path.join(
         clif.data_directory, f"clif_vitals.{clif.filetype}"
     )
-    # load_filtered_clif_table returns datetimes in UTC (DuckDB session tz).
-    # ADT comes through clifpy.load_table which converts to the site tz on
-    # load, so the labs/vitals dtmms need to be converted to the same site tz
-    # before the join_asof in _join_events_to_location — otherwise polars
-    # rejects the join with "datatypes of join keys don't match" comparing
-    # datetime[μs, UTC] vs datetime[μs, US/Eastern].
     _site_tz = getattr(clif, 'timezone', None)
 
+    # ── 3a. Labs ────────────────────────────────────────────────────────────
     print("Loading labs for coverage analysis...")
-    labs_pl = load_filtered_clif_table(
+    _events = load_filtered_clif_table(
         _labs_path,
         columns=["hospitalization_id", "lab_collect_dttm", "lab_category"],
         hosp_ids=list(hospitalization_ids),
     ).drop_nulls(["lab_collect_dttm"])
     if _site_tz:
-        labs_pl = labs_pl.with_columns(
+        _events = _events.with_columns(
             pl.col("lab_collect_dttm").dt.convert_time_zone(_site_tz)
         )
-    labs_pl = labs_pl.sort(["hospitalization_id", "lab_collect_dttm"])
-    print(f"  Labs rows: {labs_pl.height:,}")
+    _events = _events.sort(["hospitalization_id", "lab_collect_dttm"])
+    print(f"  Labs rows: {_events.height:,}")
+    _joined = _join_events_to_location(_events, "lab_collect_dttm", adt_for_join)
+    del _events
+    gc.collect()
+    labs_summary = _summarize_capture(_joined, "labs", dwell_summary)
+    del _joined
+    gc.collect()
 
+    # ── 3b. Vitals ──────────────────────────────────────────────────────────
     print("Loading vitals for coverage analysis...")
-    vitals_pl = load_filtered_clif_table(
+    _events = load_filtered_clif_table(
         _vitals_path,
         columns=["hospitalization_id", "recorded_dttm", "vital_category"],
         hosp_ids=list(hospitalization_ids),
     ).drop_nulls(["recorded_dttm"])
     if _site_tz:
-        vitals_pl = vitals_pl.with_columns(
+        _events = _events.with_columns(
             pl.col("recorded_dttm").dt.convert_time_zone(_site_tz)
         )
-    vitals_pl = vitals_pl.sort(["hospitalization_id", "recorded_dttm"])
-    print(f"  Vitals rows: {vitals_pl.height:,}")
+    _events = _events.sort(["hospitalization_id", "recorded_dttm"])
+    print(f"  Vitals rows: {_events.height:,}")
+    _joined = _join_events_to_location(_events, "recorded_dttm", adt_for_join)
+    del _events
+    gc.collect()
+    vitals_summary = _summarize_capture(_joined, "vitals", dwell_summary)
+    del _joined
+    gc.collect()
 
-    # Respiratory support — already loaded + cohort-filtered in generator.
-    # Its recorded_dttm may be UTC (if generator's load_filtered_clif_table
-    # path produced it) — convert to site tz to match adt_for_join.
-    resp_pl = (
+    # ── 3c. Respiratory support ─────────────────────────────────────────────
+    # Already loaded + cohort-filtered in generator (clif.respiratory_support.df).
+    # Its recorded_dttm tz state depends on the cached waterfall path that
+    # produced it (UTC from helper, site tz from older clifpy, or naive);
+    # only convert if tz-aware.
+    print("Building respiratory support frame for coverage analysis...")
+    _events = (
         pl.from_pandas(
             clif.respiratory_support.df[
                 clif.respiratory_support.df["hospitalization_id"].isin(hosp_set)
@@ -324,37 +343,24 @@ def run_adt_location_coverage(
         )
         .drop_nulls(["recorded_dttm"])
     )
-    # Only convert if the column is tz-aware. The cached waterfall file's
-    # tz state depends on whichever code wrote it (could be UTC from the
-    # helper or site tz from older clifpy paths or naive).
     if _site_tz:
-        _resp_dtype = resp_pl.schema.get("recorded_dttm")
+        _resp_dtype = _events.schema.get("recorded_dttm")
         if _resp_dtype is not None and getattr(_resp_dtype, "time_zone", None) is not None:
-            resp_pl = resp_pl.with_columns(
+            _events = _events.with_columns(
                 pl.col("recorded_dttm").dt.convert_time_zone(_site_tz)
             )
-    resp_pl = resp_pl.sort(["hospitalization_id", "recorded_dttm"])
-    print(f"  Respiratory support rows: {resp_pl.height:,}")
+    _events = _events.sort(["hospitalization_id", "recorded_dttm"])
+    print(f"  Respiratory support rows: {_events.height:,}")
+    _joined = _join_events_to_location(_events, "recorded_dttm", adt_for_join)
+    del _events
+    gc.collect()
+    resp_summary = _summarize_capture(_joined, "respiratory_support", dwell_summary)
+    del _joined
+    gc.collect()
 
-    # ── 3. Join events to ADT locations ─────────────────────────────────────
-    labs_with_loc = _join_events_to_location(labs_pl, "lab_collect_dttm", adt_for_join)
-    vitals_with_loc = _join_events_to_location(vitals_pl, "recorded_dttm", adt_for_join)
-    resp_with_loc = _join_events_to_location(resp_pl, "recorded_dttm", adt_for_join)
-
-    # Free raw event frames
-    del labs_pl, vitals_pl, resp_pl
-
-    # ── 4. Compute summaries ────────────────────────────────────────────────
-    dwell_summary = _compute_dwell_summary(adt_pl)
-
-    capture_long = pl.concat([
-        _summarize_capture(labs_with_loc, "labs", dwell_summary),
-        _summarize_capture(vitals_with_loc, "vitals", dwell_summary),
-        _summarize_capture(resp_with_loc, "respiratory_support", dwell_summary),
-    ])
-
-    # Free joined frames
-    del labs_with_loc, vitals_with_loc, resp_with_loc
+    # ── 4. Concatenate the small per-table summaries ────────────────────────
+    capture_long = pl.concat([labs_summary, vitals_summary, resp_summary])
+    del labs_summary, vitals_summary, resp_summary
 
     # ── 5. Write CSVs ──────────────────────────────────────────────────────
     os.makedirs(output_csv_dir, exist_ok=True)

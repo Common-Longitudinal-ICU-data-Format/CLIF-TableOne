@@ -2612,6 +2612,14 @@ def main(memory_monitor=None, cohort_mode='critical_illness', force_refresh=Fals
         except Exception as e:
             print(f"[WARN] ADT location coverage analysis failed: {e}")
             traceback.print_exc()
+        finally:
+            # ADT coverage holds multi-GB labs+vitals frames + their join
+            # outputs during processing. Python's exception path leaves
+            # those allocator pages unreleased even after the locals fall
+            # out of scope. Force a collection so downstream steps
+            # (post-cohort meds load + dose conversion + SOFA preloads)
+            # don't start from an inflated memory baseline.
+            gc.collect()
 
 
     # ==============================================================================
@@ -4653,6 +4661,13 @@ def main(memory_monitor=None, cohort_mode='critical_illness', force_refresh=Fals
         strobe_counts['sepsis_encounters'] = int(enc_with_sepsis)
         strobe_counts['sepsis_incidence_pct'] = round(100 * enc_with_sepsis / len(final_tableone_df), 1) if len(final_tableone_df) > 0 else 0
 
+        # Release ASE intermediates — these can be ~10 GB at large sites
+        # (JHU: 64.9M sepsis-event rows × ~15 columns). Only the per-encounter
+        # sepsis counts merged into final_tableone_df are needed downstream.
+        # The ward branch already does this cleanup; this matches for CI.
+        del ase_df, ase_enc, sepsis_rows, counts_by_sepsis, counts_by_episode, sepsis_counts
+        gc.collect()
+
     except Exception as e:
         print(f"Warning: Failed to compute ASE: {e}. Proceeding without sepsis data.")
         traceback.print_exc()
@@ -4847,6 +4862,12 @@ def main(memory_monitor=None, cohort_mode='critical_illness', force_refresh=Fals
         print("\nSkipping SOFA computation block (ward mode)")
 
     for _sofa_iter in (range(1) if cohort_mode != 'ward' else range(0)):
+        # Force a collection before SOFA preloads so allocator pages from
+        # the preceding sepsis/CCI/medication blocks return to the OS.
+        # At large sites (JHU) Sarah peaked at 93 GB just before SOFA and
+        # then OOM'd; the preloads themselves only add a few GB, the rest
+        # was unreleased residual from earlier steps.
+        gc.collect()
         checkpoint("Starting SOFA Computation")
         print("Preparing SOFA cohort for Polars computation...")
 
