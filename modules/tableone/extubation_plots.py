@@ -163,6 +163,7 @@ def plot_min_pf_sf_per_day_post_intubation(
     figures_dir: str,
     csv_dir: str | None = None,
     n_days: int = 28,
+    resp_waterfall_df: pd.DataFrame | None = None,
 ) -> tuple[Path | None, Path | None]:
     """
     Two-panel plot of daily min P/F and S/F ratio for n_days post intubation,
@@ -177,6 +178,11 @@ def plot_min_pf_sf_per_day_post_intubation(
       5. Aggregate across encounters per day → median + Q1 + Q3 + n.
 
     CSV columns: ratio_type ∈ {PF, SF}, day, median, q1, q3, n_encounters.
+
+    If ``resp_waterfall_df`` is provided (a pandas DataFrame of post-waterfall
+    respiratory_support data), it is used directly and the per-year raw-parquet
+    rescan + waterfall recompute is skipped. At large sites (JHU: 10 years,
+    8.6M-row waterfall) this avoids ~10 full parquet scans + waterfall passes.
     """
     from modules.sofa.calculator import (
         _calculate_concurrent_pf_ratios,
@@ -222,10 +228,63 @@ def plot_min_pf_sf_per_day_post_intubation(
 
     print(f"  Loading data for {len(hosp_ids):,} hospitalizations "
           f"({n_days}d window)...")
-    resp_df = _load_respiratory_support(
-        data_directory, filetype, hosp_ids, cohort_pl,
-        lookback_hours=n_days * 24, timezone=timezone,
-    ).collect()
+    if resp_waterfall_df is not None and len(resp_waterfall_df) > 0:
+        # Use the cached post-waterfall data instead of rescanning the raw
+        # parquet + re-running waterfall. The cached df was produced earlier
+        # by the same waterfall logic over the full cohort; filtering it to
+        # this call's IMV cohort + [intubation, intubation + n_days] window
+        # is bit-equivalent to re-running _load_respiratory_support.
+        _hosp_set = set(str(h) for h in hosp_ids)
+        _wf = resp_waterfall_df.copy()
+        _wf['hospitalization_id'] = _wf['hospitalization_id'].astype(str)
+        _wf = _wf[_wf['hospitalization_id'].isin(_hosp_set)].copy()
+        # Normalize recorded_dttm to target tz so the time-window comparison
+        # below is well-defined. The cached waterfall is typically UTC-aware
+        # (DuckDB convention); intubation_start_dttm may be in site tz.
+        _wf['recorded_dttm'] = pd.to_datetime(_wf['recorded_dttm'])
+        if _wf['recorded_dttm'].dt.tz is None:
+            _wf['recorded_dttm'] = _wf['recorded_dttm'].dt.tz_localize('UTC')
+        _wf['recorded_dttm'] = _wf['recorded_dttm'].dt.tz_convert(timezone)
+
+        _intub_window = intub[['hospitalization_id', 'intubation_start_dttm']].copy()
+        _intub_window['hospitalization_id'] = _intub_window['hospitalization_id'].astype(str)
+        _intub_window['intubation_start_dttm'] = pd.to_datetime(
+            _intub_window['intubation_start_dttm']
+        )
+        if _intub_window['intubation_start_dttm'].dt.tz is None:
+            _intub_window['intubation_start_dttm'] = (
+                _intub_window['intubation_start_dttm'].dt.tz_localize(timezone)
+            )
+        else:
+            _intub_window['intubation_start_dttm'] = (
+                _intub_window['intubation_start_dttm'].dt.tz_convert(timezone)
+            )
+        _intub_window['start_dttm'] = _intub_window['intubation_start_dttm']
+        _intub_window['end_dttm'] = (
+            _intub_window['intubation_start_dttm'] + timedelta(days=n_days)
+        )
+
+        _filt = _wf.merge(
+            _intub_window[['hospitalization_id', 'start_dttm', 'end_dttm']],
+            on='hospitalization_id', how='inner',
+        )
+        _filt = _filt[
+            (_filt['recorded_dttm'] >= _filt['start_dttm'])
+            & (_filt['recorded_dttm'] <= _filt['end_dttm'])
+        ].drop(columns=['start_dttm', 'end_dttm'])
+        resp_df = standardize_datetime_columns(
+            pl.from_pandas(_filt),
+            target_timezone=timezone,
+            target_time_unit='ns',
+            datetime_columns=['recorded_dttm'],
+        )
+        print(f"  Using cached waterfall: {resp_df.height:,} rows in {n_days}d window")
+        del _wf, _filt, _intub_window, _hosp_set
+    else:
+        resp_df = _load_respiratory_support(
+            data_directory, filetype, hosp_ids, cohort_pl,
+            lookback_hours=n_days * 24, timezone=timezone,
+        ).collect()
     labs_df = _load_labs(
         data_directory, filetype, hosp_ids, cohort_pl, timezone=timezone,
     ).collect()

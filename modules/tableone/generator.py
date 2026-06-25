@@ -2848,6 +2848,12 @@ def main(memory_monitor=None, cohort_mode='critical_illness', force_refresh=Fals
             traceback.print_exc()
 
         try:
+            # Pass the cached waterfall df so the function skips its own
+            # raw-parquet rescan + waterfall recompute. Inside year-sharded
+            # processing this fires 10× (once per year) — each call would
+            # otherwise scan 12 GB of raw clif_respiratory_support.parquet
+            # and re-run the polars waterfall on ~500K rows at JHU.
+            _cached_resp_wf = getattr(clif.respiratory_support, 'df', None)
             plot_min_pf_sf_per_day_post_intubation(
                 final_tableone_df,
                 data_directory=config['tables_path'],
@@ -2855,6 +2861,7 @@ def main(memory_monitor=None, cohort_mode='critical_illness', force_refresh=Fals
                 timezone=config['timezone'],
                 figures_dir=figures_dir,
                 csv_dir=str(_vent_agg_dir),
+                resp_waterfall_df=_cached_resp_wf,
             )
         except Exception as e:
             print(f"  ⚠️ Daily PF/SF plot failed: {e}")
@@ -5007,12 +5014,20 @@ def main(memory_monitor=None, cohort_mode='critical_illness', force_refresh=Fals
             print("Proceeding without SOFA scores.")
             sofa_scores = pd.DataFrame(columns=['encounter_block', 'sofa_total'])
 
-        # Free preloaded SOFA data
-        for _v in ('_sofa_labs', '_sofa_vitals', '_sofa_weights', '_sofa_labs_lazy', '_sofa_vitals_lazy', '_sofa_weights_lazy'):
-            try:
-                del locals()[_v]
-            except (KeyError, NameError):
-                pass
+        # Free preloaded SOFA data. `del locals()[name]` is a no-op in
+        # function scope — locals() returns a snapshot dict, so the actual
+        # local refs stayed alive and held ~12 GB through year-sharded
+        # processing at JHU. Explicit `del` actually drops them. The eager
+        # *_pl objects exist only on successful pre-load (inside try-blocks),
+        # so guard each with try/except NameError; the *_lazy aliases are
+        # always assigned (LazyFrame or None) so a single del covers them.
+        try: del _sofa_labs
+        except NameError: pass
+        try: del _sofa_vitals
+        except NameError: pass
+        try: del _sofa_weights
+        except NameError: pass
+        del _sofa_labs_lazy, _sofa_vitals_lazy, _sofa_weights_lazy
         gc.collect()
 
         # Note: death_enc will come from final_tableone_df when we merge later
