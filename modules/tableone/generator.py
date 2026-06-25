@@ -4583,13 +4583,9 @@ def main(memory_monitor=None, cohort_mode='critical_illness', force_refresh=Fals
             if _ase_cache_valid:
                 print(f"   ✅ ASE cache hit — loading from {_ase_cache_path.name}")
 
-        if _ase_cache_valid:
-            ase_df = pd.read_parquet(_ase_cache_path)
-            # Filter to this run's hospitalization IDs
-            ase_df = ase_df[ase_df['hospitalization_id'].isin(final_hosp_ids)]
-            print(f"   Loaded {len(ase_df):,} ASE rows for {ase_df['hospitalization_id'].nunique():,} hospitalizations (from cache)")
-        else:
-            # ── Full computation (batched) ────────────────────────
+        # ── Ensure the ASE cache is on disk (compute + persist if absent) ──
+        if not _ase_cache_valid:
+            # Full computation (batched) — only runs when cache is stale/missing.
             if len(final_hosp_ids) > ASE_BATCH_SIZE:
                 batches = [
                     final_hosp_ids[i:i + ASE_BATCH_SIZE]
@@ -4608,39 +4604,55 @@ def main(memory_monitor=None, cohort_mode='critical_illness', force_refresh=Fals
                     )
                     ase_parts.append(part)
                     gc.collect()
-                ase_df = pd.concat(ase_parts, ignore_index=True)
+                ase_df_tmp = pd.concat(ase_parts, ignore_index=True)
                 del ase_parts
                 gc.collect()
-                print(f"   All batches complete — {len(ase_df):,} total rows")
+                print(f"   All batches complete — {len(ase_df_tmp):,} total rows")
             else:
-                ase_df = compute_ase(
+                ase_df_tmp = compute_ase(
                     hospitalization_ids=final_hosp_ids,
                     config_path=config_path,
                     data_directory=config['tables_path'],
                     filetype=config['file_type'],
                     verbose=True
                 )
-
-            # Cache for the sibling cohort run (CI → ward or ward → CI)
             _ase_cache_path.parent.mkdir(parents=True, exist_ok=True)
-            ase_df.to_parquet(_ase_cache_path, index=False)
+            ase_df_tmp.to_parquet(_ase_cache_path, index=False)
             print(f"   Cached ASE → {_ase_cache_path.name}")
+            del ase_df_tmp
+            gc.collect()
+        else:
+            print(f"   ✅ ASE cache valid → streaming from {_ase_cache_path.name} via DuckDB")
 
-        print(f"\n✅ ASE computation complete: {len(ase_df):,} sepsis-event rows across {ase_df['hospitalization_id'].nunique():,} hospitalizations.\n")
-
-        # Map hospitalization_id → encounter_block
-        ase_enc = ase_df.merge(
-            encounter_mapping[['hospitalization_id', 'encounter_block']],
-            on='hospitalization_id',
-            how='inner'
-        )
-
-        # Count sepsis events per encounter_block using both methods
-        sepsis_rows = ase_enc[ase_enc['sepsis'] == 1]
-        counts_by_sepsis = sepsis_rows.groupby('encounter_block').size().reset_index(name='sepsis_events_by_sepsis_col')
-        counts_by_episode = sepsis_rows.groupby('encounter_block')['episode_id'].count().reset_index(name='sepsis_events_by_episode_id')
-
-        sepsis_counts = counts_by_sepsis.merge(counts_by_episode, on='encounter_block', how='outer')
+        # ── Per-encounter sepsis counts via DuckDB streaming ───────────────
+        # Previously: pd.read_parquet(cache) → merge with encounter_mapping →
+        # filter sepsis==1 → two groupbys → merge — five frames of ~10 GB
+        # each at JHU scale (65M ASE rows × 15 cols), totalling ~30 GB of
+        # short-lived intermediates that pushed Sarah's run past her 125 GB
+        # SLURM cap on the merge step (silent OOM-kill).
+        # This SQL streams the cache parquet directly, joins against the
+        # small encounter_mapping (1 row per hospitalization) + the cohort
+        # filter, and aggregates to a ~50k-row per-encounter counts table.
+        # ase_df is never materialized in pandas.
+        import duckdb
+        _enc_map = encounter_mapping[['hospitalization_id', 'encounter_block']].copy()
+        _enc_map['hospitalization_id'] = _enc_map['hospitalization_id'].astype(str)
+        _final_hosp = pd.DataFrame({'hospitalization_id': [str(h) for h in final_hosp_ids]})
+        sepsis_counts = duckdb.sql(f"""
+            SELECT
+                e.encounter_block,
+                COUNT(*) FILTER (WHERE CAST(a.sepsis AS INT) = 1) AS sepsis_events_by_sepsis_col,
+                COUNT(a.episode_id) FILTER (WHERE CAST(a.sepsis AS INT) = 1) AS sepsis_events_by_episode_id
+            FROM read_parquet('{_ase_cache_path.as_posix()}') AS a
+            INNER JOIN _enc_map AS e
+                ON CAST(a.hospitalization_id AS VARCHAR) = e.hospitalization_id
+            INNER JOIN _final_hosp AS f
+                ON CAST(a.hospitalization_id AS VARCHAR) = f.hospitalization_id
+            GROUP BY e.encounter_block
+        """).df()
+        del _enc_map, _final_hosp
+        gc.collect()
+        print(f"\n✅ ASE computation complete: {len(sepsis_counts):,} encounters with >=1 sepsis-event row streamed via DuckDB.\n")
 
         # Drop any pre-existing sepsis columns to avoid _x/_y suffixes
         for _sc in ['sepsis_events_by_sepsis_col', 'sepsis_events_by_episode_id']:
@@ -4661,11 +4673,7 @@ def main(memory_monitor=None, cohort_mode='critical_illness', force_refresh=Fals
         strobe_counts['sepsis_encounters'] = int(enc_with_sepsis)
         strobe_counts['sepsis_incidence_pct'] = round(100 * enc_with_sepsis / len(final_tableone_df), 1) if len(final_tableone_df) > 0 else 0
 
-        # Release ASE intermediates — these can be ~10 GB at large sites
-        # (JHU: 64.9M sepsis-event rows × ~15 columns). Only the per-encounter
-        # sepsis counts merged into final_tableone_df are needed downstream.
-        # The ward branch already does this cleanup; this matches for CI.
-        del ase_df, ase_enc, sepsis_rows, counts_by_sepsis, counts_by_episode, sepsis_counts
+        del sepsis_counts
         gc.collect()
 
     except Exception as e:
@@ -5666,11 +5674,7 @@ def main(memory_monitor=None, cohort_mode='critical_illness', force_refresh=Fals
                         _src_mtime = max(_src_mtime, _p.stat().st_mtime)
                 _ase_cache_valid = _ase_cache_path.stat().st_mtime >= _src_mtime
 
-            if _ase_cache_valid:
-                ase_df = pd.read_parquet(_ase_cache_path)
-                ase_df = ase_df[ase_df['hospitalization_id'].isin(final_hosp_ids)]
-                print(f"   ✅ ASE cache hit — {len(ase_df):,} rows for ward cohort")
-            else:
+            if not _ase_cache_valid:
                 ASE_BATCH_SIZE = 20_000
                 if len(final_hosp_ids) > ASE_BATCH_SIZE:
                     batches = [
@@ -5690,11 +5694,11 @@ def main(memory_monitor=None, cohort_mode='critical_illness', force_refresh=Fals
                         )
                         ase_parts.append(part)
                         gc.collect()
-                    ase_df = pd.concat(ase_parts, ignore_index=True)
+                    ase_df_tmp = pd.concat(ase_parts, ignore_index=True)
                     del ase_parts
                     gc.collect()
                 else:
-                    ase_df = compute_ase(
+                    ase_df_tmp = compute_ase(
                         hospitalization_ids=final_hosp_ids,
                         config_path=config_path,
                         data_directory=config['tables_path'],
@@ -5702,18 +5706,34 @@ def main(memory_monitor=None, cohort_mode='critical_illness', force_refresh=Fals
                         verbose=True
                     )
                 _ase_cache_path.parent.mkdir(parents=True, exist_ok=True)
-                ase_df.to_parquet(_ase_cache_path, index=False)
+                ase_df_tmp.to_parquet(_ase_cache_path, index=False)
                 print(f"   Cached ASE → {_ase_cache_path.name}")
+                del ase_df_tmp
+                gc.collect()
+            else:
+                print(f"   ✅ ASE cache valid → streaming from {_ase_cache_path.name} via DuckDB")
 
-            # Map hospitalization_id → encounter_block and merge
-            ase_enc = ase_df.merge(
-                encounter_mapping[['hospitalization_id', 'encounter_block']],
-                on='hospitalization_id', how='inner'
-            )
-            sepsis_rows = ase_enc[ase_enc['sepsis'] == 1]
-            counts_by_sepsis = sepsis_rows.groupby('encounter_block').size().reset_index(name='sepsis_events_by_sepsis_col')
-            counts_by_episode = sepsis_rows.groupby('encounter_block')['episode_id'].count().reset_index(name='sepsis_events_by_episode_id')
-            sepsis_counts = counts_by_sepsis.merge(counts_by_episode, on='encounter_block', how='outer')
+            # Per-encounter sepsis counts via DuckDB streaming (see CI block
+            # for rationale). Avoids ~30 GB pandas intermediates at JHU scale.
+            import duckdb
+            _enc_map = encounter_mapping[['hospitalization_id', 'encounter_block']].copy()
+            _enc_map['hospitalization_id'] = _enc_map['hospitalization_id'].astype(str)
+            _final_hosp = pd.DataFrame({'hospitalization_id': [str(h) for h in final_hosp_ids]})
+            sepsis_counts = duckdb.sql(f"""
+                SELECT
+                    e.encounter_block,
+                    COUNT(*) FILTER (WHERE CAST(a.sepsis AS INT) = 1) AS sepsis_events_by_sepsis_col,
+                    COUNT(a.episode_id) FILTER (WHERE CAST(a.sepsis AS INT) = 1) AS sepsis_events_by_episode_id
+                FROM read_parquet('{_ase_cache_path.as_posix()}') AS a
+                INNER JOIN _enc_map AS e
+                    ON CAST(a.hospitalization_id AS VARCHAR) = e.hospitalization_id
+                INNER JOIN _final_hosp AS f
+                    ON CAST(a.hospitalization_id AS VARCHAR) = f.hospitalization_id
+                GROUP BY e.encounter_block
+            """).df()
+            del _enc_map, _final_hosp
+            gc.collect()
+
             # Drop any pre-existing sepsis columns to avoid _x/_y suffixes
             for _sc in ['sepsis_events_by_sepsis_col', 'sepsis_events_by_episode_id']:
                 if _sc in final_tableone_df.columns:
@@ -5726,7 +5746,8 @@ def main(memory_monitor=None, cohort_mode='critical_illness', force_refresh=Fals
             print(f"   Encounters with >=1 sepsis event: {enc_with_sepsis:,} / {len(final_tableone_df):,}")
             strobe_counts['sepsis_encounters'] = int(enc_with_sepsis)
             strobe_counts['sepsis_incidence_pct'] = round(100 * enc_with_sepsis / len(final_tableone_df), 1) if len(final_tableone_df) > 0 else 0
-            del ase_df, ase_enc
+            del sepsis_counts
+            gc.collect()
         except Exception as e:
             print(f"   ⚠️ Ward ASE failed: {e}. Proceeding without sepsis data.")
             traceback.print_exc()
