@@ -285,12 +285,69 @@ def plot_min_pf_sf_per_day_post_intubation(
             data_directory, filetype, hosp_ids, cohort_pl,
             lookback_hours=n_days * 24, timezone=timezone,
         ).collect()
-    labs_df = _load_labs(
-        data_directory, filetype, hosp_ids, cohort_pl, timezone=timezone,
-    ).collect()
-    vitals_df = _load_vitals(
-        data_directory, filetype, hosp_ids, cohort_pl, timezone=timezone,
-    ).collect()
+    # Replace _load_labs / _load_vitals (polars scan_parquet + is_in filter on
+    # 109M-row labs / 383M-row vitals) with a DuckDB-backed scan that pushes
+    # the hosp_id AND category filter into the parquet read. The polars path
+    # silently aborts at JHU after standardize_datetime_columns — same family
+    # of polars-on-large-parquet crash we fixed for SOFA. The 28-day window
+    # only needs po2_arterial (labs) and spo2 (vitals), so scope the read
+    # tightly: a few MB instead of a full-file scan.
+    from modules.utils.clif_loader import load_filtered_clif_table
+
+    def _load_via_duckdb_in_window(
+        file_path, columns, category_col, category_value,
+        dttm_col, hosp_ids, intub_df, timezone, n_days,
+    ):
+        df_pd = load_filtered_clif_table(
+            file_path,
+            columns=columns,
+            hosp_ids=hosp_ids,
+            category_column=category_col,
+            category_values=[category_value],
+            return_as='pandas',
+        )
+        if len(df_pd) == 0:
+            return pl.DataFrame(schema={c: pl.Utf8 for c in columns})
+        df_pd['hospitalization_id'] = df_pd['hospitalization_id'].astype(str)
+        df_pd[dttm_col] = pd.to_datetime(df_pd[dttm_col])
+        if df_pd[dttm_col].dt.tz is None:
+            df_pd[dttm_col] = df_pd[dttm_col].dt.tz_localize('UTC')
+        df_pd[dttm_col] = df_pd[dttm_col].dt.tz_convert(timezone)
+
+        win = intub_df[['hospitalization_id', 'intubation_start_dttm']].copy()
+        win['hospitalization_id'] = win['hospitalization_id'].astype(str)
+        win['intubation_start_dttm'] = pd.to_datetime(win['intubation_start_dttm'])
+        if win['intubation_start_dttm'].dt.tz is None:
+            win['intubation_start_dttm'] = win['intubation_start_dttm'].dt.tz_localize(timezone)
+        else:
+            win['intubation_start_dttm'] = win['intubation_start_dttm'].dt.tz_convert(timezone)
+        win['start_dttm'] = win['intubation_start_dttm']
+        win['end_dttm'] = win['intubation_start_dttm'] + timedelta(days=n_days)
+
+        df_pd = df_pd.merge(
+            win[['hospitalization_id', 'start_dttm', 'end_dttm']],
+            on='hospitalization_id', how='inner',
+        )
+        df_pd = df_pd[
+            (df_pd[dttm_col] >= df_pd['start_dttm'])
+            & (df_pd[dttm_col] <= df_pd['end_dttm'])
+        ].drop(columns=['start_dttm', 'end_dttm'])
+        return pl.from_pandas(df_pd)
+
+    labs_df = _load_via_duckdb_in_window(
+        str(Path(data_directory) / f"clif_labs.{filetype}"),
+        columns=['hospitalization_id', 'lab_result_dttm', 'lab_category', 'lab_value_numeric'],
+        category_col='lab_category', category_value='po2_arterial',
+        dttm_col='lab_result_dttm', hosp_ids=hosp_ids,
+        intub_df=intub, timezone=timezone, n_days=n_days,
+    )
+    vitals_df = _load_via_duckdb_in_window(
+        str(Path(data_directory) / f"clif_vitals.{filetype}"),
+        columns=['hospitalization_id', 'recorded_dttm', 'vital_category', 'vital_value'],
+        category_col='vital_category', category_value='spo2',
+        dttm_col='recorded_dttm', hosp_ids=hosp_ids,
+        intub_df=intub, timezone=timezone, n_days=n_days,
+    )
     print(f"    resp={resp_df.height:,}  labs={labs_df.height:,}  "
           f"vitals={vitals_df.height:,}")
 
