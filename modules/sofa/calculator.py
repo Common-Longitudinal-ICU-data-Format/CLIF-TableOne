@@ -270,67 +270,99 @@ def _load_labs(
         Filtered labs data in long format (not pivoted) with columns:
         id columns, lab_result_dttm, lab_category, lab_value_numeric
     """
+    import pandas as pd
+
     file_path = Path(data_directory) / f"clif_labs.{filetype}"
 
     if not file_path.exists():
         logger.warning(f"Labs file not found: {file_path}")
-        return pl.DataFrame()
+        return pl.LazyFrame(schema={
+            'hospitalization_id': pl.Utf8,
+            'lab_result_dttm': pl.Datetime,
+            'lab_category': pl.Utf8,
+            'lab_value_numeric': pl.Float64,
+        })
 
     # Define columns to load
-    load_columns = ['hospitalization_id', 'lab_result_dttm', 'lab_category', 'lab_value', 'lab_value_numeric']
+    load_columns = ['hospitalization_id', 'lab_result_dttm', 'lab_category',
+                    'lab_value_numeric']
 
-    # Load labs with filters
+    # Stream the parquet via DuckDB with cohort + category filter applied at
+    # scan time. The prior pl.scan_parquet(...).filter(is_in(big_list)) path
+    # silently aborts at JHU scale (109M-row labs parquet × 1000+ hosp_ids):
+    # same polars streaming-engine cache-lifecycle bug we already worked
+    # around in _load_patient_assessments, _load_respiratory_support, and
+    # _load_and_convert_medications. load_filtered_clif_table pushes both
+    # filters into the parquet read and LOWER()s lab_category for the match.
     if filetype == 'parquet':
-        labs = pl.scan_parquet(str(file_path)).select(load_columns)
-    else:
-        labs = pl.scan_csv(str(file_path)).select(load_columns)
-
-    # Normalize hospitalization_id to Utf8 for consistent type matching
-    labs = labs.with_columns([
-        pl.col('hospitalization_id').cast(pl.Utf8).alias('hospitalization_id')
-    ])
-
-    # Normalize lab_category to lowercase for consistent matching with REQUIRED_LABS
-    labs = labs.with_columns(pl.col('lab_category').str.to_lowercase())
-
-    # Filter for required categories and hospitalization_ids
-    labs = labs.filter(
-        pl.col('lab_category').is_in(REQUIRED_LABS) &
-        pl.col('hospitalization_id').is_in(hospitalization_ids)
-    )
-
-    # Standardize datetime column to consistent timezone and time unit BEFORE join
-    if timezone:
-        labs = standardize_datetime_columns(
-            labs,
-            target_timezone=timezone,
-            target_time_unit='ns',
-            datetime_columns=['lab_result_dttm']
+        from modules.utils.clif_loader import load_filtered_clif_table
+        logger.info("Loading labs via DuckDB scan...")
+        labs_pd = load_filtered_clif_table(
+            file_path,
+            columns=load_columns,
+            hosp_ids=hospitalization_ids,
+            category_column='lab_category',
+            category_values=REQUIRED_LABS,
+            return_as='pandas',
         )
+    else:
+        logger.info("Loading labs with pandas (CSV)...")
+        labs_pd = pd.read_csv(file_path, usecols=load_columns)
+        labs_pd['hospitalization_id'] = labs_pd['hospitalization_id'].astype(str)
+        labs_pd['lab_category'] = labs_pd['lab_category'].str.lower()
+        labs_pd = labs_pd[
+            labs_pd['lab_category'].isin(REQUIRED_LABS) &
+            labs_pd['hospitalization_id'].isin(hospitalization_ids)
+        ]
+    logger.info(f"✓ Loaded {len(labs_pd)} lab rows for target hospitalizations")
 
-    # Join with cohort to apply time window filter
-    labs = labs.join(
-        cohort_df.lazy(),
+    # Convert datetime and timezone with pandas
+    if timezone:
+        logger.info("Converting timezone with pandas...")
+        labs_pd['lab_result_dttm'] = pd.to_datetime(labs_pd['lab_result_dttm'])
+        if labs_pd['lab_result_dttm'].dt.tz is None:
+            labs_pd['lab_result_dttm'] = labs_pd['lab_result_dttm'].dt.tz_localize('UTC')
+        labs_pd['lab_result_dttm'] = labs_pd['lab_result_dttm'].dt.tz_convert(timezone)
+        logger.info("✓ Timezone conversion complete")
+
+    # Join with cohort using pandas
+    logger.info("Performing pandas merge...")
+    cohort_pd = cohort_df.to_pandas()
+    labs_pd = labs_pd.merge(
+        cohort_pd,
         on='hospitalization_id',
         how='inner'
-    ).filter(
-        (pl.col('lab_result_dttm') >= pl.col('start_dttm')) &
-        (pl.col('lab_result_dttm') <= pl.col('end_dttm'))
     )
+    logger.info(f"✓ Merge complete: {len(labs_pd)} rows")
+
+    # Apply date filter
+    logger.info("Applying date filters...")
+    labs_pd = labs_pd[
+        (labs_pd['lab_result_dttm'] >= labs_pd['start_dttm']) &
+        (labs_pd['lab_result_dttm'] <= labs_pd['end_dttm'])
+    ]
+    logger.info(f"✓ Filtered to {len(labs_pd)} rows within time windows")
 
     # Select relevant columns (keep in long format for memory efficiency)
     id_cols = [col for col in cohort_df.columns if col not in ['start_dttm', 'end_dttm']]
+    labs_pd = labs_pd[[*id_cols, 'lab_result_dttm', 'lab_category', 'lab_value_numeric']]
 
-    labs = labs.select([
-        *id_cols,
-        'lab_result_dttm',
-        'lab_category',
-        'lab_value_numeric'
-    ])
+    # Convert to polars
+    logger.info("Converting to polars...")
+    labs = pl.from_pandas(labs_pd)
 
-    # Return LazyFrame (no collect, no pivot)
-    # Pivoting will happen later in the pipeline after all data is combined
-    return labs
+    # Re-standardize datetime after pandas → polars conversion so the time
+    # unit / tz dtype matches every other source the SOFA pipeline collects.
+    labs = standardize_datetime_columns(
+        labs,
+        target_timezone=timezone,
+        target_time_unit='ns',
+        datetime_columns=['lab_result_dttm']
+    )
+    logger.info("✓ Conversion to polars complete")
+
+    # Return as lazy for downstream processing (pivoting happens later)
+    return labs.lazy()
 
 
 def _load_vitals(
@@ -360,64 +392,95 @@ def _load_vitals(
         Filtered vitals data in long format (not pivoted) with columns:
         id columns, recorded_dttm, vital_category, vital_value
     """
+    import pandas as pd
+
     file_path = Path(data_directory) / f"clif_vitals.{filetype}"
 
     if not file_path.exists():
         logger.warning(f"Vitals file not found: {file_path}")
-        return pl.DataFrame()
+        return pl.LazyFrame(schema={
+            'hospitalization_id': pl.Utf8,
+            'recorded_dttm': pl.Datetime,
+            'vital_category': pl.Utf8,
+            'vital_value': pl.Float64,
+        })
 
     # Define columns to load
     load_columns = ['hospitalization_id', 'recorded_dttm', 'vital_category', 'vital_value']
 
-    # Load vitals with filters
+    # Stream the parquet via DuckDB with cohort + category filter applied at
+    # scan time. The prior pl.scan_parquet(...).filter(is_in(big_list)) path
+    # silently aborts on the 383M-row vitals parquet at JHU — same polars
+    # streaming-engine cache-lifecycle bug as _load_labs. load_filtered_clif_table
+    # pushes both filters into the parquet read and LOWER()s vital_category.
     if filetype == 'parquet':
-        vitals = pl.scan_parquet(str(file_path)).select(load_columns)
-    else:
-        vitals = pl.scan_csv(str(file_path)).select(load_columns)
-
-    # Normalize hospitalization_id to Utf8 for consistent type matching
-    vitals = vitals.with_columns([
-        pl.col('hospitalization_id').cast(pl.Utf8).alias('hospitalization_id')
-    ])
-
-    # Filter for required categories and hospitalization_ids
-    vitals = vitals.filter(
-        pl.col('vital_category').is_in(REQUIRED_VITALS) &
-        pl.col('hospitalization_id').is_in(hospitalization_ids)
-    )
-
-    # Standardize datetime column to consistent timezone and time unit BEFORE join
-    if timezone:
-        vitals = standardize_datetime_columns(
-            vitals,
-            target_timezone=timezone,
-            target_time_unit='ns',
-            datetime_columns=['recorded_dttm']
+        from modules.utils.clif_loader import load_filtered_clif_table
+        logger.info("Loading vitals via DuckDB scan...")
+        vitals_pd = load_filtered_clif_table(
+            file_path,
+            columns=load_columns,
+            hosp_ids=hospitalization_ids,
+            category_column='vital_category',
+            category_values=REQUIRED_VITALS,
+            return_as='pandas',
         )
+    else:
+        logger.info("Loading vitals with pandas (CSV)...")
+        vitals_pd = pd.read_csv(file_path, usecols=load_columns)
+        vitals_pd['hospitalization_id'] = vitals_pd['hospitalization_id'].astype(str)
+        vitals_pd = vitals_pd[
+            vitals_pd['vital_category'].isin(REQUIRED_VITALS) &
+            vitals_pd['hospitalization_id'].isin(hospitalization_ids)
+        ]
+    logger.info(f"✓ Loaded {len(vitals_pd)} vital rows for target hospitalizations")
 
-    # Join with cohort to apply time window filter
-    vitals = vitals.join(
-        cohort_df.lazy(),
+    # Convert datetime and timezone with pandas
+    if timezone:
+        logger.info("Converting timezone with pandas...")
+        vitals_pd['recorded_dttm'] = pd.to_datetime(vitals_pd['recorded_dttm'])
+        if vitals_pd['recorded_dttm'].dt.tz is None:
+            vitals_pd['recorded_dttm'] = vitals_pd['recorded_dttm'].dt.tz_localize('UTC')
+        vitals_pd['recorded_dttm'] = vitals_pd['recorded_dttm'].dt.tz_convert(timezone)
+        logger.info("✓ Timezone conversion complete")
+
+    # Join with cohort using pandas
+    logger.info("Performing pandas merge...")
+    cohort_pd = cohort_df.to_pandas()
+    vitals_pd = vitals_pd.merge(
+        cohort_pd,
         on='hospitalization_id',
         how='inner'
-    ).filter(
-        (pl.col('recorded_dttm') >= pl.col('start_dttm')) &
-        (pl.col('recorded_dttm') <= pl.col('end_dttm'))
     )
+    logger.info(f"✓ Merge complete: {len(vitals_pd)} rows")
+
+    # Apply date filter
+    logger.info("Applying date filters...")
+    vitals_pd = vitals_pd[
+        (vitals_pd['recorded_dttm'] >= vitals_pd['start_dttm']) &
+        (vitals_pd['recorded_dttm'] <= vitals_pd['end_dttm'])
+    ]
+    logger.info(f"✓ Filtered to {len(vitals_pd)} rows within time windows")
 
     # Select relevant columns (keep in long format for memory efficiency)
     id_cols = [col for col in cohort_df.columns if col not in ['start_dttm', 'end_dttm']]
+    vitals_pd = vitals_pd[[*id_cols, 'recorded_dttm', 'vital_category', 'vital_value']]
 
-    vitals = vitals.select([
-        *id_cols,
-        'recorded_dttm',
-        'vital_category',
-        'vital_value'
-    ])
+    # Convert to polars
+    logger.info("Converting to polars...")
+    vitals = pl.from_pandas(vitals_pd)
 
-    # Return LazyFrame (no collect, no pivot)
-    # Pivoting will happen later in the pipeline after all data is combined
-    return vitals
+    # Re-standardize datetime after pandas → polars conversion so the time
+    # unit / tz dtype matches every other source the SOFA pipeline collects.
+    vitals = standardize_datetime_columns(
+        vitals,
+        target_timezone=timezone,
+        target_time_unit='ns',
+        datetime_columns=['recorded_dttm']
+    )
+    logger.info("✓ Conversion to polars complete")
+
+    # Return as lazy for downstream processing (pivoting happens later)
+    return vitals.lazy()
 
 
 def _load_patient_assessments(

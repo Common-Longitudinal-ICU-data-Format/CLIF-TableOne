@@ -332,7 +332,18 @@ def plot_min_pf_sf_per_day_post_intubation(
             (df_pd[dttm_col] >= df_pd['start_dttm'])
             & (df_pd[dttm_col] <= df_pd['end_dttm'])
         ].drop(columns=['start_dttm', 'end_dttm'])
-        return pl.from_pandas(df_pd)
+        # Standardize datetime precision/tz to match the cached-waterfall
+        # resp_df above (ns + site tz). Without this, DuckDB's μs/UTC sneaks
+        # through and the downstream join_asof against resp_df fails with
+        # "datatypes of join keys don't match".
+        out = pl.from_pandas(df_pd)
+        out = standardize_datetime_columns(
+            out,
+            target_timezone=timezone,
+            target_time_unit='ns',
+            datetime_columns=[dttm_col],
+        )
+        return out
 
     labs_df = _load_via_duckdb_in_window(
         str(Path(data_directory) / f"clif_labs.{filetype}"),

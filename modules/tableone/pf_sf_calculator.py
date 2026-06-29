@@ -190,6 +190,19 @@ def _aggregate_pf_sf_per_encounter(
     contemporary to worst PF.
     """
     onset_pl = pl.from_pandas(onset_df[[id_col, 'onset_dttm', 'onset_device']])
+    # Standardize onset_dttm to match the precision/tz of the lab/vital
+    # datetimes coming from the DuckDB-backed loaders (ns / site tz).
+    # Without this, pandas-side μs/UTC sneaks through and the polars
+    # subtraction below fails with "failed to determine supertype".
+    from modules.utils.datetime_utils import canonical_tz_from_frame
+    _target_tz = canonical_tz_from_frame(pf_df) or canonical_tz_from_frame(sf_df)
+    if _target_tz is not None:
+        onset_pl = standardize_datetime_columns(
+            onset_pl,
+            target_timezone=_target_tz,
+            target_time_unit='ns',
+            datetime_columns=['onset_dttm'],
+        )
 
     # --- PF aggregation ---
     pf_agg = pl.DataFrame(schema={id_col: pl.Utf8})
