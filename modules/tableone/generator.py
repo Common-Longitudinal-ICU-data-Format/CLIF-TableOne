@@ -950,7 +950,8 @@ def main(memory_monitor=None, cohort_mode='critical_illness', force_refresh=Fals
         data_directory=config['tables_path'],
         filetype=config['file_type'],
         timezone=config['timezone'],
-        output_directory=clifpy_dir
+        output_directory=clifpy_dir,
+        clif_version=config.get('clif_version', '3.0')
     )
 
 
@@ -1191,7 +1192,7 @@ def main(memory_monitor=None, cohort_mode='critical_illness', force_refresh=Fals
     }).reset_index()
 
     encounter_locations['has_procedural_or_ld'] = encounter_locations['location_category'].apply(
-            lambda locs: any(loc in {'procedural', 'l&d'} for loc in locs if loc is not None)
+            lambda locs: any(loc in {'procedural', 'l_and_d'} for loc in locs if loc is not None)
         )
 
     # Step 3: Flag as procedural/L&D only if: 
@@ -1304,10 +1305,10 @@ def main(memory_monitor=None, cohort_mode='critical_illness', force_refresh=Fals
         # that the waterfall could infer as IMV/NIPPV.  Only these can contribute
         # to high_support_enc; waterfalling non-qualifying encounters is wasted work.
         _device_mask = clif.respiratory_support.df['device_category'].isin(
-            ['imv', 'nippv', 'cpap', 'high flow nc']
+            ['imv', 'nippv', 'cpap', 'hfnc']
         )
         _mode_mask = clif.respiratory_support.df['mode_category'].str.contains(
-            r'(?:assist control-volume control|simv|pressure control)',
+            r'(?:acvc|simv|pressure_control)',
             na=False, regex=True,
         ) if 'mode_category' in clif.respiratory_support.df.columns else pd.Series(False, index=clif.respiratory_support.df.index)
         _enc_with_qualifying = clif.respiratory_support.df.loc[
@@ -1362,7 +1363,7 @@ def main(memory_monitor=None, cohort_mode='critical_illness', force_refresh=Fals
         ['imv', 'nippv', 'cpap']
     )
     hfnc_mask = (
-        (clif.respiratory_support.df['device_category'] == 'high flow nc')
+        (clif.respiratory_support.df['device_category'] == 'hfnc')
         & (clif.respiratory_support.df['lpm_set'] >= HFNC_LPM_THRESHOLD)
     )
     advanced_support_hosp_ids = clif.respiratory_support.df.loc[
@@ -1389,7 +1390,7 @@ def main(memory_monitor=None, cohort_mode='critical_illness', force_refresh=Fals
     nippv_hfnc_hosp_ids = clif.respiratory_support.df.loc[
         (clif.respiratory_support.df['device_category'] == 'nippv')
         | (
-            (clif.respiratory_support.df['device_category'] == 'high flow nc')
+            (clif.respiratory_support.df['device_category'] == 'hfnc')
             & (clif.respiratory_support.df['lpm_set'] >= HFNC_LPM_THRESHOLD)
         ),
         'encounter_block'
@@ -2219,9 +2220,9 @@ def main(memory_monitor=None, cohort_mode='critical_illness', force_refresh=Fals
     # An ICU row starts a NEW episode when a "new-episode" location_category
     # appeared between it and the previous ICU row in the same encounter_block.
     #   same episode (collapse): icu (lateral transfer), procedural, radiology, dialysis
-    #   new episode (readmit):   ward, stepdown, l&d, hospice, psych, rehab, other
+    #   new episode (readmit):   ward, stepdown, l_and_d, hospice, psych, rehab, other
     #   skipped:                 ed (treated as if the row weren't there)
-    NEW_EPISODE_LOCS = {'ward', 'stepdown', 'l&d', 'hospice', 'psych', 'rehab', 'other'}
+    NEW_EPISODE_LOCS = {'ward', 'stepdown', 'l_and_d', 'hospice', 'psych', 'rehab', 'other'}
 
     adt_sorted = adt_cohort.sort_values(['encounter_block', 'in_dttm', 'out_dttm']).copy()
     adt_sorted['triggers_new_episode'] = adt_sorted['location_category'].isin(NEW_EPISODE_LOCS)
@@ -2621,7 +2622,7 @@ def main(memory_monitor=None, cohort_mode='critical_illness', force_refresh=Fals
         _ni_mask = (
             resp_stitched['device_category'].isin(['nippv', 'cpap'])
             | (
-                (resp_stitched['device_category'] == 'high flow nc')
+                (resp_stitched['device_category'] == 'hfnc')
                 & (resp_stitched['lpm_set'] >= HFNC_LPM_THRESHOLD)
             )
         )
@@ -2963,8 +2964,8 @@ def main(memory_monitor=None, cohort_mode='critical_illness', force_refresh=Fals
         # ============================================================================
 
         # Define mode categories of interest
-        volume_control_modes = ['assist control-volume control', 'pressure-regulated volume control']
-        pressure_control_mode = ['pressure control']
+        volume_control_modes = ['acvc', 'prvc']
+        pressure_control_mode = ['pressure_control']
 
         # Filter data
         volume_mode_data = resp_imv_post_start[
@@ -3291,13 +3292,11 @@ def main(memory_monitor=None, cohort_mode='critical_illness', force_refresh=Fals
 
         # Define mode category mapping (based on your image)
         mode_mapping = {
-            'assist control-volume control': 'Assist Control-Volume Control',
-            'pressure-regulated volume control': 'Pressure-Regulated Volume Control',
+            'acvc': 'Assist Control-Volume Control',
+            'prvc': 'Pressure-Regulated Volume Control',
             'simv': 'SIMV',
-            'pressure support/cpap': 'Pressure Support/CPAP',
-            'pressure support': 'Pressure Support/CPAP',
-            'cpap': 'Pressure Support/CPAP',
-            'pressure control': 'Pressure Control',
+            'ps_or_cpap': 'Pressure Support/CPAP',
+            'pressure_control': 'Pressure Control',
         }
 
         # Apply mapping, anything not mapped goes to "Other"
@@ -4316,36 +4315,36 @@ def main(memory_monitor=None, cohort_mode='critical_illness', force_refresh=Fals
     # # ECMO
     # ==============================================================================
 
-    print(f"\nLoading ECMO table...")
+    print(f"\nLoading MCS table for ECMO status...")
     try:
         clif.load_table(
-            'ecmo_mcs',
+            'mcs',
             filters={
                 'hospitalization_id': final_hosp_ids
             }
         )
-        clif.ecmo_mcs.df = pd.merge(
-            clif.ecmo_mcs.df,
+        # CLIF 3.0 replaced the wide ecmo_mcs table with the long-format mcs table.
+        # support_category distinguishes ecmo from lvad/rvad, so on_ecmo flags only
+        # encounters that have an actual ECMO record.
+        mcs_df = clif.mcs.df
+        if 'support_category' in mcs_df.columns:
+            mcs_df = mcs_df[mcs_df['support_category'].astype(str).str.lower() == 'ecmo']
+        mcs_df = pd.merge(
+            mcs_df,
             encounter_mapping,
             on='hospitalization_id',
             how='left'
         )
-        # Add on_ecmo = 1 for all encounter blocks in this df
-        clif.ecmo_mcs.df['on_ecmo'] = 1
+        # Add on_ecmo = 1 for all encounter blocks with an ECMO record
+        mcs_df['on_ecmo'] = 1
         # Keep only encounter_block and on_ecmo
-        ecmo_df = clif.ecmo_mcs.df[['encounter_block', 'on_ecmo']].drop_duplicates()
+        ecmo_df = mcs_df[['encounter_block', 'on_ecmo']].drop_duplicates()
         # Join with final_tableone_df on encounter_block (left join)
         final_tableone_df = final_tableone_df.merge(ecmo_df, on='encounter_block', how='left')
-        # Optionally fill NaN with 0 if you want on_ecmo=0 for non-ECMO
+        # Fill NaN with 0 for non-ECMO encounters
         final_tableone_df['on_ecmo'] = final_tableone_df['on_ecmo'].fillna(0).astype(int)
-        # MCIDE and summary statistics moved to separate script: generate_mcide_and_stats.py
-        # get_value_counts_mcide(clif.ecmo_mcs, 'ecmo_mcs', ['device_name', 'device_category'], output_dir=mcide_dir, config=config)
-        # create_summary_table(clif.ecmo_mcs,
-        #                         ['device_rate', 'sweep', 'fdO2','flow'],
-        #                         group_by_cols='device_category',
-        #                         output_dir=summary_stats_dir)
     except FileNotFoundError as e:
-        print(f"Warning: Failed to load the ECMO table: {e}. Proceeding without ECMO data.")
+        print(f"Warning: Failed to load the MCS table: {e}. Proceeding without ECMO data.")
 
     checkpoint("ECMO Complete")
 

@@ -415,7 +415,7 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [
-    { name = "clifpy", specifier = ">=0.4.9" },
+    { name = "clifpy", git = "https://github.com/Common-Longitudinal-ICU-data-Format/clifpy.git?branch=feat%2Fclif-3.0-schema-versioning" },
     { name = "duckdb", specifier = ">=1.4.1" },
     { name = "fastapi", specifier = ">=0.115.0" },
     { name = "jupyter", specifier = ">=1.1.1" },
@@ -445,8 +445,8 @@ requires-dist = [
 
 [[package]]
 name = "clifpy"
-version = "0.4.9"
-source = { registry = "https://pypi.org/simple" }
+version = "0.5.0"
+source = { git = "https://github.com/Common-Longitudinal-ICU-data-Format/clifpy.git?branch=feat%2Fclif-3.0-schema-versioning#ff7adc11e1f8da8c8474984bc9ae4f05064e2484" }
 dependencies = [
     { name = "build" },
     { name = "duckdb" },
@@ -463,10 +463,6 @@ dependencies = [
     { name = "toml" },
     { name = "tqdm" },
     { name = "twine" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/f4/3a/da891d0ae27a3ba10362c1fed4b632353561ceec769bfd68848c60d856c0/clifpy-0.4.9.tar.gz", hash = "sha256:daad3c45f61c911ca17d1b5611fcda5e1327219851fd83bc6914ced76dc13ad3", size = 1984603, upload-time = "2026-04-22T19:43:42.094Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/eb/be/d106499bd6d845a344f628a3c1c3217fc4c5ecbfb7e9968135ed39375496/clifpy-0.4.9-py3-none-any.whl", hash = "sha256:144dbbb58a077aa638c9d4e83ac1ce58bc1d0eac91b84eaf13a9beaf4377a49f", size = 2024359, upload-time = "2026-04-22T19:43:39.915Z" },
 ]
 
 [[package]]

@@ -445,13 +445,17 @@ class MCIDEStatsCollector:
                 except Exception as e:
                     logger.error(f"Error calculating CRRT stats for {col}: {e}")
 
-    def collect_ecmo_stats(self):
-        """ECMO: MCIDE + summary stats for numerical variables"""
-        logger.info("Processing ECMO/MCS table...")
-        table_path = self.tables_path / f"clif_ecmo_mcs.{self.file_type}"
+    def collect_mcs_stats(self):
+        """MCS (mechanical circulatory support): MCIDE + summary stats.
+
+        CLIF 3.0 replaced the wide ``ecmo_mcs`` table with the long-format ``mcs``
+        table (support/device/config/setting categories plus a single
+        ``setting_value`` column)."""
+        logger.info("Processing MCS table...")
+        table_path = self.tables_path / f"clif_mcs.{self.file_type}"
 
         if not table_path.exists():
-            logger.warning(f"ECMO/MCS table not found: {table_path}")
+            logger.warning(f"MCS table not found: {table_path}")
             return
 
         lf = pl.scan_parquet(table_path) if self.file_type == 'parquet' else pl.scan_csv(table_path)
@@ -459,56 +463,38 @@ class MCIDEStatsCollector:
 
         # MCIDE collections (skip for stratum — only overall)
         if not self._stratum_name:
-            self.collect_mcide(lf, 'ecmo_mcs', ['device_name', 'device_category'])
+            for name_col, cat_col in [
+                ('support_name', 'support_category'),
+                ('device_name', 'device_category'),
+                ('config_name', 'config_category'),
+                ('setting_name', 'setting_category'),
+            ]:
+                if self.check_columns_exist(lf, [name_col, cat_col]):
+                    self.collect_mcide(lf, 'mcs', [name_col, cat_col])
 
-        # Summary statistics for ECMO numerical variables
-        numeric_cols = ['device_rate', 'sweep', 'flow', 'fdO2']
-
-        for col in numeric_cols:
-            if self.check_column_exists(lf, col):
-                logger.info(f"Calculating ECMO stats for {col}...")
-                try:
-                    # Overall stats with missing count
-                    overall_stats = (
-                        lf.select([
-                            pl.lit(col).alias('variable'),
-                            pl.count().alias('total_obs'),
-                            pl.col(col).count().alias('n'),
-                            pl.col(col).null_count().alias('missing'),
-                            pl.col(col).min().alias('min'),
-                            pl.col(col).max().alias('max'),
-                            pl.col(col).mean().alias('mean'),
-                            pl.col(col).median().alias('median'),
-                            pl.col(col).std().alias('sd'),
-                            pl.col(col).quantile(0.25).alias('q1'),
-                            pl.col(col).quantile(0.75).alias('q3')
-                        ])
-                        .collect()
-                    )
-                    self.save_summary_stats(overall_stats, f'ecmo_{col}_overall')
-
-                    # Stats by device category with missing count
-                    if self.check_column_exists(lf, 'device_category'):
-                        category_stats = (
-                            lf.group_by('device_category')
-                            .agg([
-                                pl.count().alias('total_obs'),
-                                pl.col(col).count().alias('n'),
-                                pl.col(col).null_count().alias('missing'),
-                                pl.col(col).min().alias('min'),
-                                pl.col(col).max().alias('max'),
-                                pl.col(col).mean().alias('mean'),
-                                pl.col(col).median().alias('median'),
-                                pl.col(col).std().alias('sd'),
-                                pl.col(col).quantile(0.25).alias('q1'),
-                                pl.col(col).quantile(0.75).alias('q3')
-                            ])
-                            .collect()
-                        )
-                        self.save_summary_stats(category_stats, f'ecmo_{col}_by_category')
-
-                except Exception as e:
-                    logger.error(f"Error calculating ECMO stats for {col}: {e}")
+        # Summary statistics for the long-format setting_value, grouped by setting_category
+        if self.check_columns_exist(lf, ['setting_value', 'setting_category']):
+            logger.info("Calculating MCS setting_value statistics...")
+            try:
+                category_stats = (
+                    lf.group_by('setting_category')
+                    .agg([
+                        pl.count().alias('total_obs'),
+                        pl.col('setting_value').count().alias('n'),
+                        pl.col('setting_value').null_count().alias('missing'),
+                        pl.col('setting_value').min().alias('min'),
+                        pl.col('setting_value').max().alias('max'),
+                        pl.col('setting_value').mean().alias('mean'),
+                        pl.col('setting_value').median().alias('median'),
+                        pl.col('setting_value').std().alias('sd'),
+                        pl.col('setting_value').quantile(0.25).alias('q1'),
+                        pl.col('setting_value').quantile(0.75).alias('q3')
+                    ])
+                    .collect()
+                )
+                self.save_summary_stats(category_stats, 'mcs_setting_value_by_category')
+            except Exception as e:
+                logger.error(f"Error calculating MCS stats for setting_value: {e}")
 
     def collect_code_status(self):
         """Collect MCIDE for code status table"""
@@ -679,7 +665,7 @@ class MCIDEStatsCollector:
             stratum_collector.collect_medication_stats('continuous')
             stratum_collector.collect_medication_stats('intermittent')
             stratum_collector.collect_crrt_stats()
-            stratum_collector.collect_ecmo_stats()
+            stratum_collector.collect_mcs_stats()
             stratum_collector.collect_patient_assessments()
 
     def run_all(self):
@@ -708,7 +694,7 @@ class MCIDEStatsCollector:
         self.collect_medication_stats('continuous')
         self.collect_medication_stats('intermittent')
         self.collect_crrt_stats()
-        self.collect_ecmo_stats()
+        self.collect_mcs_stats()
         self.collect_patient_assessments()
 
         # Stratified summary stats by encounter type

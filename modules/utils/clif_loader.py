@@ -447,13 +447,13 @@ class ClifDB:
         self.close()
 
 
-def _load_schema(table_name: str) -> Optional[Dict[str, Any]]:
-    """Load a CLIF schema YAML from the installed clifpy package."""
+def _load_schema(table_name: str, clif_version: str = '3.0') -> Optional[Dict[str, Any]]:
+    """Load a versioned CLIF schema YAML from the installed clifpy package."""
     import yaml
     import clifpy
 
     schema_path = (
-        Path(clifpy.__file__).parent / 'schemas' / f'{table_name}_schema.yaml'
+        Path(clifpy.__file__).parent / 'schemas' / clif_version / f'{table_name}_schema.yaml'
     )
     if not schema_path.exists():
         logger.warning("Schema file not found: %s", schema_path)
@@ -481,6 +481,7 @@ def load_clif_table(
     timezone: str = 'UTC',
     output_directory: Optional[str] = None,
     duckdb_memory_limit: str = '8GB',
+    clif_version: str = '3.0',
 ) -> Optional[SimpleNamespace]:
     """
     Load a CLIF table via DuckDB into an arrow-backed pandas DataFrame.
@@ -499,7 +500,7 @@ def load_clif_table(
         logger.info("CLIF file not found for %s in %s", table_name, data_dir)
         return None
 
-    schema = _load_schema(table_name) or {}
+    schema = _load_schema(table_name, clif_version) or {}
 
     try:
         import duckdb

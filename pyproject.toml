@@ -1,10 +1,10 @@
 [project]
 name = "clif-tableone"
 version = "0.1.0"
-description = "Validation and TableOne Cohort for CLIF-2.1"
+description = "Validation and TableOne Cohort for CLIF-3.0"
 requires-python = ">=3.11"
 dependencies = [
-    "clifpy>=0.4.9",
+    "clifpy>=0.5.0",
     "duckdb>=1.4.1",
     "jupyter>=1.1.1",
     "lifelines>=0.27.0",
@@ -31,3 +31,9 @@ dependencies = [
     "upsetplot>=0.9.0",
     "venny4py>=1.0.3",
 ]
+
+[tool.uv.sources]
+# CLIF 3.0 support: the published clifpy 0.5.0 ships 3.0 schemas but only 2.1-era
+# table classes. The 3.0 development branch adds table classes for mcs and all new
+# 3.0 tables. Pinned via git; uv.lock captures the exact commit for reproducibility.
+clifpy = { git = "https://github.com/Common-Longitudinal-ICU-data-Format/clifpy.git", branch = "feat/clif-3.0-schema-versioning" }

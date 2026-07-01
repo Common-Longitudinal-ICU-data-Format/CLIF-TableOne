@@ -25,24 +25,33 @@ _schema_cache: dict[tuple[str, float], dict] = {}
 _clif_version_cache: dict[str, str | None] = {}
 
 
+def _configured_clif_version() -> str:
+    """Return the CLIF version from config.json (default '3.0')."""
+    try:
+        from server.config import load_config
+        return load_config().get("clif_version", "3.0")
+    except Exception:
+        return "3.0"
+
+
 def _get_clif_version(table_name: str) -> str | None:
-    """Read the CLIF spec version from the clifpy schema YAML for a table."""
+    """Read the CLIF spec version from the versioned clifpy schema YAML for a table."""
     if table_name in _clif_version_cache:
         return _clif_version_cache[table_name]
+    version = None
     try:
         import clifpy
-        schema_dir = Path(clifpy.__file__).parent / "schemas"
-        schema_file = schema_dir / f"{table_name}_schema.yaml"
+        clif_version = _configured_clif_version()
+        schema_file = Path(clifpy.__file__).parent / "schemas" / clif_version / f"{table_name}_schema.yaml"
         if schema_file.exists():
             with open(schema_file) as f:
                 schema = yaml.safe_load(f)
-            version = schema.get("version")
-            _clif_version_cache[table_name] = version
-            return version
+            # Prefer the schema's own version field, fall back to the configured version
+            version = schema.get("version") or clif_version
     except Exception:
         pass
-    _clif_version_cache[table_name] = None
-    return None
+    _clif_version_cache[table_name] = version
+    return version
 
 TABLE_DISPLAY_NAMES = {
     'patient': 'Patient',

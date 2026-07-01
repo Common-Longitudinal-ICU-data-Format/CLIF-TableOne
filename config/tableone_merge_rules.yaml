@@ -22,10 +22,11 @@ version: 1
 Race:
   Other:
     - Missing
-    - American Indian or Alaska Native
-    - Native Hawaiian or Other Pacific Islander
-    - Other
-    - Unknown
+    - american_indian_or_alaska_native
+    - native_hawaiian_or_other_pacific_islander
+    - middle_eastern_or_north_african
+    - other
+    - unknown
 
 suppression:
   threshold: 10

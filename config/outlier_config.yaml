@@ -721,3 +721,9 @@ tables:
       weight_kg:
         min: 30
         max: 1100
+      intracranial_pressure:
+        min: 0
+        max: 100
+      pulse_pressure_variation:
+        min: 0
+        max: 50

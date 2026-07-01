@@ -56,6 +56,7 @@ class LabsAnalyzer(BaseTableAnalyzer):
         try:
             self.table = Labs.from_file(
                 data_directory=self.data_dir,
+                clif_version=self.clif_version,
                 filetype=self.filetype,
                 timezone=self.timezone,
                 output_directory=clifpy_output_dir

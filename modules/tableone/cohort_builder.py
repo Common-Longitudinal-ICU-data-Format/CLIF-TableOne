@@ -19,16 +19,16 @@ where:
   - ``death_enc``     = encounter ever had a row with discharge_category
                         ∈ {'expired', 'hospice'}
   - ``high_support_enc`` = encounter ever received imv/nippv/cpap
-                           (unconditionally) or 'high flow nc' with
+                           (unconditionally) or 'hfnc' with
                            lpm_set ≥ ``hfnc_lpm_threshold`` (default 30)
   - ``nippv_hfnc_enc``   = encounter ever received 'nippv' or
-                           'high flow nc' with lpm_set ≥ threshold
+                           'hfnc' with lpm_set ≥ threshold
   - ``vaso_support_enc`` = encounter ever received any med in
                            ``vaso_meds`` (default: norepinephrine,
                            epinephrine, phenylephrine, vasopressin,
                            dopamine, angiotensin)
   - ``is_procedural_ld_only`` = encounter never touched ICU AND visited
-                                 a 'procedural' or 'l&d' location at
+                                 a 'procedural' or 'l_and_d' location at
                                  least once
 
 Procedural/L&D-only encounters get their support flags zeroed (so a
@@ -146,7 +146,7 @@ def compute_is_procedural_ld_only(
 ) -> pd.DataFrame:
     """Compute the ``is_procedural_ld_only`` flag per encounter_block.
 
-    Defined as: never touched ICU AND visited a 'procedural' or 'l&d'
+    Defined as: never touched ICU AND visited a 'procedural' or 'l_and_d'
     location at least once.
 
     Args:
@@ -160,7 +160,7 @@ def compute_is_procedural_ld_only(
     """
     df = adt_df[["encounter_block", "location_category"]].copy()
     df["location_category"] = df["location_category"].astype(str).str.lower()
-    df["_is_proc_or_ld"] = df["location_category"].isin({"procedural", "l&d"})
+    df["_is_proc_or_ld"] = df["location_category"].isin({"procedural", "l_and_d"})
 
     has_proc_or_ld = (
         df.groupby("encounter_block", as_index=False)
@@ -183,7 +183,7 @@ def compute_high_support_encounters(
 
     Args:
         resp_support_df: must contain ``encounter_block, device_category``.
-            ``lpm_set`` only required if any rows have device_category=='high flow nc'.
+            ``lpm_set`` only required if any rows have device_category=='hfnc'.
         hfnc_lpm_threshold: minimum LPM for HFNC to qualify as advanced
             respiratory support (default 30).
     """
@@ -194,7 +194,7 @@ def compute_high_support_encounters(
     always_mask = dev.isin({"imv", "nippv", "cpap"})
 
     if "lpm_set" in resp_support_df.columns:
-        hfnc_mask = (dev == "high flow nc") & (
+        hfnc_mask = (dev == "hfnc") & (
             pd.to_numeric(resp_support_df["lpm_set"], errors="coerce") >= hfnc_lpm_threshold
         )
     else:
@@ -216,7 +216,7 @@ def compute_nippv_hfnc_encounters(
     nippv_mask = dev == "nippv"
 
     if "lpm_set" in resp_support_df.columns:
-        hfnc_mask = (dev == "high flow nc") & (
+        hfnc_mask = (dev == "hfnc") & (
             pd.to_numeric(resp_support_df["lpm_set"], errors="coerce") >= hfnc_lpm_threshold
         )
     else:
@@ -267,7 +267,7 @@ def build_critical_illness_cohort(
             (post-stitching). One row per ADT event; the function
             aggregates per-encounter.
         resp_support_df: encounter_block + device_category (+ lpm_set
-            when device_category includes 'high flow nc').
+            when device_category includes 'hfnc').
         meds_continuous_df: encounter_block + med_category.
         encounter_mapping_df: optional 2-column DataFrame with
             ``hospitalization_id, encounter_block`` (the post-stitching

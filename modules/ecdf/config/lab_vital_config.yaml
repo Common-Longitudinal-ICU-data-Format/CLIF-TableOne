@@ -861,3 +861,30 @@ vitals:
       below_normal: 5
       normal: 5
       above_normal: 5
+
+  # New CLIF 3.0 vital categories
+  intracranial_pressure:
+    reference_unit: "mmHg"
+    normal_range:
+      lower: 5
+      upper: 15
+    outlier_range:
+      min: 0
+      max: 100
+    bins:
+      below_normal: 5
+      normal: 5
+      above_normal: 5
+
+  pulse_pressure_variation:
+    reference_unit: "%"
+    normal_range:
+      lower: 0
+      upper: 13
+    outlier_range:
+      min: 0
+      max: 50
+    bins:
+      below_normal: 5
+      normal: 5
+      above_normal: 5

@@ -2,5 +2,6 @@
     "site_name": "Your_Site_Name - UCMC, MIMIC, etc.",
     "tables_path": "/path/to/tables - Note there is no '/' at the end",
     "file_type": "parquet",
-    "timezone": "eg. US/Central, US/Eastern- Your local timezone"
+    "timezone": "eg. US/Central, US/Eastern- Your local timezone",
+    "clif_version": "3.0"
 }

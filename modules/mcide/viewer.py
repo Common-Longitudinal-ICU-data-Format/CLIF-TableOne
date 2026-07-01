@@ -113,7 +113,7 @@ def format_column_names(filename: str) -> str:
         'respiratory_support',
         'code_status',
         'crrt_therapy',
-        'ecmo_mcs',
+        'mcs',
         'hospital_diagnosis'
     ]
 
@@ -279,7 +279,7 @@ def display_mcide_tab(output_dir: str = 'output'):
         'adt': 'ADT',
         'code_status': 'Code Status',
         'crrt_therapy': 'CRRT Therapy',
-        'ecmo_mcs': 'ECMO/MCS',
+        'mcs': 'MCS',
         'labs': 'Labs',
         'medication_admin_continuous': 'Medication Admin (Continuous)',
         'medication_admin_intermittent': 'Medication Admin (Intermittent)',
@@ -313,7 +313,7 @@ def display_mcide_tab(output_dir: str = 'output'):
             'respiratory_support',
             'code_status',
             'crrt_therapy',
-            'ecmo_mcs',
+            'mcs',
             'hospital_diagnosis'
         ]
 

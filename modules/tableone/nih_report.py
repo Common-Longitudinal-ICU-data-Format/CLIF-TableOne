@@ -33,20 +33,22 @@ def crosstab_demographics(patient_df: pd.DataFrame) -> pd.DataFrame:
         visible cells still sum to displayed totals.
     """
     # CLIF 2.1 patient schema permissible values
+    # CLIF 3.0 patient schema permissible values (lowercase snake_case)
     race_values = [
-        "American Indian or Alaska Native",
-        "Asian",
-        "Native Hawaiian or Other Pacific Islander",
-        "Black or African American",
-        "White",
-        "Other",
-        "Unknown",
+        "american_indian_or_alaska_native",
+        "asian",
+        "native_hawaiian_or_other_pacific_islander",
+        "middle_eastern_or_north_african",
+        "black_or_african_american",
+        "white",
+        "other",
+        "unknown",
     ]
-    ethnicity_values = ["Non-Hispanic", "Hispanic", "Unknown"]
-    sex_values = ["Female", "Male", "Unknown"]
+    ethnicity_values = ["non_hispanic", "hispanic", "unknown"]
+    sex_values = ["female", "male", "unknown"]
 
     df = patient_df[["race_category", "ethnicity_category", "sex_category"]].copy()
-    df.fillna("Unknown", inplace=True)
+    df.fillna("unknown", inplace=True)
 
     ct = pd.crosstab(
         df["race_category"],

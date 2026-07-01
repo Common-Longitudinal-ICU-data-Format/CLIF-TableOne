@@ -5,12 +5,12 @@ import json
 from typing import Dict, Any, List, Optional
 from modules.tables import (
     PatientAnalyzer, HospitalizationAnalyzer, ADTAnalyzer, CodeStatusAnalyzer,
-    CRRTTherapyAnalyzer, HospitalDiagnosisAnalyzer, LabsAnalyzer,
+    CRRTTherapyAnalyzer, MCSAnalyzer, HospitalDiagnosisAnalyzer, LabsAnalyzer,
     MedicationAdminContinuousAnalyzer, MedicationAdminIntermittentAnalyzer,
-    MicrobiologyCultureAnalyzer, 
+    MicrobiologyCultureAnalyzer,
     MicrobiologySusceptibilityAnalyzer, PatientAssessmentsAnalyzer,
     PatientProceduresAnalyzer, PositionAnalyzer, RespiratorySupportAnalyzer,
-    VitalsAnalyzer
+    VitalsAnalyzer, GENERIC_TABLE_ANALYZERS
 )
 from .formatters import ConsoleFormatter
 from .pdf_generator import ValidationPDFGenerator
@@ -25,6 +25,7 @@ class CLIAnalysisRunner:
         'adt': ADTAnalyzer,
         'code_status': CodeStatusAnalyzer,
         'crrt_therapy': CRRTTherapyAnalyzer,
+        'mcs': MCSAnalyzer,
         'hospital_diagnosis': HospitalDiagnosisAnalyzer,
         'labs': LabsAnalyzer,
         'medication_admin_continuous': MedicationAdminContinuousAnalyzer,
@@ -35,7 +36,9 @@ class CLIAnalysisRunner:
         'patient_procedures': PatientProceduresAnalyzer,
         'position': PositionAnalyzer,
         'respiratory_support': RespiratorySupportAnalyzer,
-        'vitals': VitalsAnalyzer
+        'vitals': VitalsAnalyzer,
+        # New CLIF 3.0 tables (schema-driven validation via GenericTableAnalyzer)
+        **GENERIC_TABLE_ANALYZERS,
     }
 
     def __init__(self, config: Dict[str, Any], verbose: bool = False, quiet: bool = False,
@@ -71,6 +74,7 @@ class CLIAnalysisRunner:
         self.timezone = config.get('timezone', 'UTC')
         self.output_dir = config.get('output_dir', 'output')
         self.site_name = config.get('site_name')
+        self.clif_version = config.get('clif_version', '3.0')
 
     def log(self, message: str, force: bool = False):
         """Log message to console if not in quiet mode."""
@@ -113,7 +117,8 @@ class CLIAnalysisRunner:
 
             # Load table
             self.log(self.formatter.progress(f"Loading {table_name} table"))
-            analyzer = analyzer_class(self.data_dir, self.filetype, self.timezone, self.output_dir)
+            analyzer = analyzer_class(self.data_dir, self.filetype, self.timezone, self.output_dir,
+                                      clif_version=self.clif_version)
 
             if analyzer.table is None:
                 result['error'] = f"Failed to load {table_name} table"
@@ -482,7 +487,7 @@ class CLIAnalysisRunner:
                     # 'patient_procedures': collector.collect_patient_procedures,  # Not collecting MCIDE for this
                     'position': collector.collect_position,
                     'crrt_therapy': collector.collect_crrt_stats,
-                    'ecmo_mcs': collector.collect_ecmo_stats,
+                    'mcs': collector.collect_mcs_stats,
                     # 'hospital_diagnosis': collector.collect_hospital_diagnosis,  # Not collecting MCIDE for this
                     'code_status': collector.collect_code_status
                 }

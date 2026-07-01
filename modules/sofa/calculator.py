@@ -59,30 +59,33 @@ def _create_resp_support_episodes(
     logger.info("IN WATERFALL IMV detection...")
     # === HEURISTIC 1: IMV detection from mode_category ===
     # Fill in missing device_category if mode_category suggests IMV
-    # Patterns: assist control-volume control, SIMV, pressure control
+    # CLIF 3.0 mode_category acronyms: acvc, simv, pressure_control
     resp_df = resp_df.with_columns([
         pl.when(
             pl.col('device_category').is_null() &
             pl.col('mode_category').is_not_null() &
             pl.col('mode_category').str.to_lowercase().str.contains(
-                r"(?:assist control-volume control|simv|pressure control)"
+                r"(?:acvc|simv|pressure_control)"
             )
         )
-        .then(pl.lit('IMV'))
+        .then(pl.lit('imv'))
         .otherwise(pl.col('device_category'))
         .alias('device_category')
     ])
     logger.info("IN WATERFALL nippv detection...")
     # === HEURISTIC 2: NIPPV detection from mode_category ===
-    # Pattern: pressure support (but not CPAP)
+    # Catch a standalone pressure-support mode (but not CPAP). The permissible combined
+    # mode ('pressure support/cpap' in 2.1, 'ps_or_cpap' in 3.0) does NOT match here
+    # (it contains 'cpap' and lacks the 'pressure support' substring), so this only
+    # fires on non-permissible bare 'pressure support' values — same as the 2.1 behavior.
     resp_df = resp_df.with_columns([
         pl.when(
             pl.col('device_category').is_null() &
             pl.col('mode_category').is_not_null() &
-            pl.col('mode_category').str.to_lowercase().str.contains(r"pressure support") &
-            ~pl.col('mode_category').str.to_lowercase().str.contains(r"cpap")
+            pl.col('mode_name').str.to_lowercase().str.contains(r"(?:ps|pressure_support)") &
+            ~pl.col('mode_name').str.to_lowercase().str.contains(r"cpap")
         )
-        .then(pl.lit('NIPPV'))
+        .then(pl.lit('nippv'))
         .otherwise(pl.col('device_category'))
         .alias('device_category')
     ])
@@ -91,7 +94,7 @@ def _create_resp_support_episodes(
     # Set FiO2 = 0.21 for room air when missing
     resp_df = resp_df.with_columns([
         pl.when(
-            (pl.col('device_category').str.to_lowercase() == 'room air') &
+            (pl.col('device_category').str.to_lowercase() == 'room_air') &
             pl.col('fio2_set').is_null()
         )
         .then(pl.lit(0.21))
@@ -130,7 +133,7 @@ def _create_resp_support_episodes(
         # Apply imputation for nasal cannula rows with missing FiO2
         resp_df = resp_df.with_columns([
             pl.when(
-                (pl.col('device_category').str.to_lowercase() == 'nasal cannula') &
+                (pl.col('device_category').str.to_lowercase() == 'nasal_cannula') &
                 pl.col('fio2_set').is_null() &
                 pl.col('lpm_set').is_not_null() &
                 (pl.col('_lpm_rounded') >= 1) &
@@ -144,7 +147,7 @@ def _create_resp_support_episodes(
         logger.info("IN WATERFALL imputation of nasal cannula...")
         # Log imputation statistics
         nasal_cannula_imputed = (
-            (resp_df['device_category'].str.to_lowercase() == 'nasal cannula') &
+            (resp_df['device_category'].str.to_lowercase() == 'nasal_cannula') &
             (resp_df['fio2_set'].is_not_null()) &
             (resp_df['_lpm_rounded'].is_not_null()) &
             (resp_df['_lpm_rounded'] >= 1) &
@@ -214,16 +217,17 @@ REQUIRED_MEDS = ['norepinephrine', 'epinephrine', 'dopamine', 'dobutamine']
 REQUIRED_RESP_SUPPORT_COLS = ['device_category', 'mode_category', 'fio2_set']
 
 # Device ranking for respiratory SOFA score (lower rank = worse)
+# CLIF 3.0 device_category values (lowercase snake_case)
 DEVICE_RANK_DICT = {
-    'IMV': 1,
-    'NIPPV': 2,
-    'CPAP': 3,
-    'High Flow NC': 4,
-    'Face Mask': 5,
-    'Trach Collar': 6,
-    'Nasal Cannula': 7,
-    'Other': 8,
-    'Room Air': 9
+    'imv': 1,
+    'nippv': 2,
+    'cpap': 3,
+    'hfnc': 4,
+    'face_mask': 5,
+    'trach_collar': 6,
+    'nasal_cannula': 7,
+    'other': 8,
+    'room_air': 9
 }
 
 # Unit conversion patterns

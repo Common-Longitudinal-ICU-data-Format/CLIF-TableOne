@@ -105,7 +105,7 @@ def generate_ventilator_settings_summary(resp_valid, vent_settings, output_dir, 
 def generate_tidal_volume_stats(resp_imv_post_start, output_dir, suffix=""):
     """Generate tidal volume stats for volume control modes."""
     os.makedirs(output_dir, exist_ok=True)
-    volume_control_modes = ["assist control-volume control", "pressure-regulated volume control"]
+    volume_control_modes = ["acvc", "prvc"]
     volume_mode_data = resp_imv_post_start[
         resp_imv_post_start["mode_category"].isin(volume_control_modes)
     ].copy()
@@ -181,13 +181,11 @@ def generate_mode_proportions(resp_imv_post_start, output_dir, suffix=""):
         return
 
     mode_mapping = {
-        "assist control-volume control": "Assist Control-Volume Control",
-        "pressure-regulated volume control": "Pressure-Regulated Volume Control",
+        "acvc": "Assist Control-Volume Control",
+        "prvc": "Pressure-Regulated Volume Control",
         "simv": "SIMV",
-        "pressure support/cpap": "Pressure Support/CPAP",
-        "pressure support": "Pressure Support/CPAP",
-        "cpap": "Pressure Support/CPAP",
-        "pressure control": "Pressure Control",
+        "ps_or_cpap": "Pressure Support/CPAP",
+        "pressure_control": "Pressure Control",
     }
     imv_first_24h["mode_group"] = (
         imv_first_24h["mode_category"].str.lower().map(mode_mapping).fillna("Other")

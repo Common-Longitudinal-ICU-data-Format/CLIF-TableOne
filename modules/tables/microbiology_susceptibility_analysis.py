@@ -32,6 +32,7 @@ class MicrobiologySusceptibilityAnalyzer(BaseTableAnalyzer):
             # Load full table without filters (susceptibility doesn't have hospitalization_id)
             self.table = MicrobiologySusceptibility.from_file(
                 data_directory=self.data_dir,
+                clif_version=self.clif_version,
                 filetype=self.filetype,
                 timezone=self.timezone,
                 output_directory=clifpy_output_dir

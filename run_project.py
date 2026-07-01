@@ -1249,13 +1249,15 @@ Examples:
 
     # Validation options
     validation_group = parser.add_argument_group('Validation Options')
+    from modules.tables import NEW_3_0_TABLES as _NEW_3_0_TABLES
     validation_group.add_argument('--tables', nargs='+',
                                   choices=['patient', 'hospitalization', 'adt', 'code_status',
-                                          'crrt_therapy', 'hospital_diagnosis', 'labs',
+                                          'crrt_therapy', 'mcs', 'hospital_diagnosis', 'labs',
                                           'medication_admin_continuous', 'medication_admin_intermittent',
-                                          'microbiology_culture', 
+                                          'microbiology_culture',
                                           'microbiology_susceptibility', 'patient_assessments',
-                                          'patient_procedures', 'position', 'respiratory_support', 'vitals'],
+                                          'patient_procedures', 'position', 'respiratory_support', 'vitals']
+                                          + list(_NEW_3_0_TABLES),
                                   help='Specific tables to validate')
     validation_group.add_argument('--no-summary', action='store_true',
                                   help='Skip summary statistics generation (only run validation)')

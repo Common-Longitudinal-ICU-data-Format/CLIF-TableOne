@@ -44,6 +44,7 @@ class CodeStatusAnalyzer(BaseTableAnalyzer):
 
             self.table = CodeStatus.from_file(
                 data_directory=self.data_dir,
+                clif_version=self.clif_version,
                 filetype=self.filetype,
                 timezone=self.timezone,
                 output_directory=clifpy_output_dir
@@ -238,7 +239,8 @@ class CodeStatusAnalyzer(BaseTableAnalyzer):
 
         # Check for invalid code status categories (case-insensitive)
         if 'code_status_category' in df.columns:
-            valid_categories = ['DNR', 'DNAR', 'UDNR', 'DNR/DNI', 'DNAR/DNI', 'AND', 'Full', 'Presume Full', 'Other']
+            # CLIF 3.0 code_status_category permissible values (lowercase snake_case)
+            valid_categories = ['dnr', 'dnar', 'udnr', 'dnr_or_dni', 'dnar_or_dni', 'dni_only', 'and', 'full', 'presume_full', 'other']
             # Create lowercase version for case-insensitive comparison
             valid_categories_lower = [str(cat).lower() for cat in valid_categories]
 

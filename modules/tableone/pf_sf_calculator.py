@@ -30,7 +30,7 @@ logger = logging.getLogger(__name__)
 
 # Devices that qualify as respiratory failure onset
 QUALIFYING_DEVICES_ALWAYS = ['imv', 'nippv', 'cpap']
-HFNC_DEVICE = 'high flow nc'
+HFNC_DEVICE = 'hfnc'
 HFNC_LPM_THRESHOLD = 30
 
 # Outlier thresholds

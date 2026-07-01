@@ -108,6 +108,8 @@ Examples:
                             help='Analyze code status table')
     table_group.add_argument('--crrt_therapy', action='store_true',
                             help='Analyze CRRT therapy table')
+    table_group.add_argument('--mcs', action='store_true',
+                            help='Analyze MCS (mechanical circulatory support) table')
     table_group.add_argument('--hospital_diagnosis', action='store_true',
                             help='Analyze hospital diagnosis table')
     table_group.add_argument('--labs', action='store_true',
@@ -153,7 +155,7 @@ Examples:
 
     # Validate arguments
     has_table = (args.patient or args.hospitalization or args.adt or args.code_status or args.crrt_therapy or
-                 args.hospital_diagnosis or args.labs or args.medication_admin_continuous or
+                 args.mcs or args.hospital_diagnosis or args.labs or args.medication_admin_continuous or
                  args.medication_admin_intermittent or args.microbiology_culture or
                  args.microbiology_susceptibility or args.patient_assessments or args.patient_procedures or
                  args.position or args.respiratory_support or args.vitals or args.all)
@@ -166,10 +168,12 @@ Examples:
     # Determine which tables to analyze
     tables = []
     if args.all:
-        tables = ['patient', 'hospitalization', 'adt', 'code_status', 'crrt_therapy', 
+        from modules.tables import NEW_3_0_TABLES
+        tables = ['patient', 'hospitalization', 'adt', 'code_status', 'crrt_therapy', 'mcs',
                   'hospital_diagnosis', 'labs', 'medication_admin_continuous', 'medication_admin_intermittent',
                   'microbiology_culture',  'microbiology_susceptibility',
                   'patient_assessments', 'patient_procedures', 'position', 'respiratory_support', 'vitals']
+        tables += list(NEW_3_0_TABLES)
     else:
         if args.patient:
             tables.append('patient')
@@ -181,6 +185,8 @@ Examples:
             tables.append('code_status')
         if args.crrt_therapy:
             tables.append('crrt_therapy')
+        if args.mcs:
+            tables.append('mcs')
         if args.hospital_diagnosis:
             tables.append('hospital_diagnosis')
         if args.labs:

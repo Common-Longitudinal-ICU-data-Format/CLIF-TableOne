@@ -73,8 +73,8 @@ VASOACTIVE_MEDS = [
     'norepinephrine', 'epinephrine', 'phenylephrine',
     'vasopressin', 'dopamine', 'angiotensin',
 ]
-ADVANCED_RESP_DEVICES = ['imv', 'nippv', 'cpap', 'high flow nc']
-NIPPV_HFNC_DEVICES = ['nippv', 'high flow nc']
+ADVANCED_RESP_DEVICES = ['imv', 'nippv', 'cpap', 'hfnc']
+NIPPV_HFNC_DEVICES = ['nippv', 'hfnc']
 
 # Maps each stratum to its temporal window source.
 # 'icu' = ICU ADT windows, 'vaso' = first vasopressor → discharge,

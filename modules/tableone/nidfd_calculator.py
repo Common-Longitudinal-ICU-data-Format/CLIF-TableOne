@@ -82,7 +82,7 @@ def calculate_non_invasive_device_free_days(
     Args:
         resp_support_df: Respiratory support observations with columns:
             [id_col, recorded_dttm, device_category, lpm_set]
-            (lpm_set required only if device_category == 'high flow nc'
+            (lpm_set required only if device_category == 'hfnc'
             rows are present.)
         encounter_df: Encounter-level data with columns:
             [id_col, nippv_hfnc_enc, ni_device_start_dttm, death_dttm,
@@ -164,7 +164,7 @@ def calculate_non_invasive_device_free_days(
     dev = resp["device_category"].astype(str).str.lower()
     always_set = {str(d).lower() for d in ni_devices_always}
     resp["is_ni"] = dev.isin(always_set) | (
-        (dev == "high flow nc") & (resp["lpm_set"] >= hfnc_lpm_threshold)
+        (dev == "hfnc") & (resp["lpm_set"] >= hfnc_lpm_threshold)
     )
 
     resp = resp.sort_values([id_col, "recorded_dttm"])

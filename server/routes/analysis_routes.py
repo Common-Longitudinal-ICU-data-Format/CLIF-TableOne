@@ -327,7 +327,7 @@ def _run_bulk_analysis(task_id: str, config: dict,
             'patient_procedures': collector.collect_patient_procedures,
             'position': collector.collect_position,
             'crrt_therapy': collector.collect_crrt_stats,
-            'ecmo_mcs': collector.collect_ecmo_stats,
+            'mcs': collector.collect_mcs_stats,
             'hospital_diagnosis': collector.collect_hospital_diagnosis,
             'code_status': collector.collect_code_status,
         }
