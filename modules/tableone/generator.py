@@ -1293,12 +1293,28 @@ def main(memory_monitor=None, cohort_mode='critical_illness', force_refresh=Fals
 
     if _cache_valid:
         print(f"\nLoading cached waterfall from output/intermediate/{_waterfall_cache_path.name}...")
-        _cached_df = pd.read_parquet(_waterfall_cache_path)
-        # Scope to this run's adult_hosp_ids defensively (cache may contain
-        # a broader scope if it was written by a different configuration).
-        _cached_df = _cached_df[
-            _cached_df['hospitalization_id'].isin(adult_hosp_ids)
-        ].copy()
+        # Push the adult_hosp_ids filter into DuckDB's parquet scan so we
+        # never materialize the full multi-million-row waterfall cache in
+        # pandas. The prior pd.read_parquet + .isin() + .copy() sequence
+        # OOM'd on Windows at Toronto (July 2026) — pandas couldn't find a
+        # contiguous 646 MiB block for the .copy() on a 5.6M×15 frame. This
+        # streams via DuckDB, join-filters at scan time, and only returns
+        # matching rows. Mirrors the DuckDB helper used in the else branch.
+        import duckdb as _duckdb
+        _con = _duckdb.connect()
+        try:
+            _hosp_df = pd.DataFrame({
+                'hospitalization_id': sorted({str(h) for h in adult_hosp_ids})
+            })
+            _con.register('_adult_hosp_ids', _hosp_df)
+            _cached_df = _con.execute(
+                f"SELECT w.* "
+                f"FROM read_parquet('{_waterfall_cache_path.as_posix()}') AS w "
+                f"INNER JOIN _adult_hosp_ids AS h "
+                f"  ON CAST(w.hospitalization_id AS VARCHAR) = h.hospitalization_id"
+            ).fetchdf()
+        finally:
+            _con.close()
         # Downstream code only touches `.df` on `clif.respiratory_support`
         # (audited 2026-04-20), so a lightweight namespace shell is enough.
         clif.respiratory_support = _types.SimpleNamespace(df=_cached_df)
