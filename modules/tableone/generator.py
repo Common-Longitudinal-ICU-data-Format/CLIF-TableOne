@@ -99,15 +99,22 @@ def _chkpt(label: str):
         yield
     finally:
         elapsed = _time.perf_counter() - t0
+        # NB: never `return` from this finally — a return statement in a
+        # `finally` block silently swallows any exception being propagated
+        # from the `with` body. That masked a real clifpy dose-conversion
+        # failure at Michigan (2026-08-19). Use a flag so we don't double-
+        # print the fallback line, but always let the exception bubble.
+        _printed = False
         if _proc is not None:
             try:
                 rss_out = _proc.memory_info().rss / (1024 ** 2)
                 delta = rss_out - rss_in if rss_in is not None else 0.0
                 print(f"[CHKPT {label}] done in {elapsed:.1f}s rss={rss_out:,.0f}MiB (Δ{delta:+,.0f})", flush=True)
-                return
+                _printed = True
             except Exception:
                 pass
-        print(f"[CHKPT {label}] done in {elapsed:.1f}s", flush=True)
+        if not _printed:
+            print(f"[CHKPT {label}] done in {elapsed:.1f}s", flush=True)
 
 from clifpy.clif_orchestrator import ClifOrchestrator
 from clifpy.utils import apply_outlier_handling  # noqa: F401 — kept for any future per-table use
@@ -3803,16 +3810,32 @@ def main(memory_monitor=None, cohort_mode='critical_illness', force_refresh=Fals
             print(f"   ⚠️ {_missing_weight:,} med rows have no matching weight")
         del _weights_deduped
 
-    # Run clifpy's unit conversion with weight already attached (skips the slow ASOF JOIN)
+    # Run clifpy's unit conversion with weight already attached (skips the slow ASOF JOIN).
+    # Falls back gracefully if clifpy raises — e.g. Michigan 2026-08-19, where the
+    # medication_admin_continuous table contained non-continuous units (puff, syringe,
+    # kit, each) leaked from intermittent-med ETL. Without the fallback, one weird
+    # unit blows up the whole tableone run instead of just leaving those rows
+    # unconverted.
     from clifpy.utils.unit_converter import convert_dose_units_by_med_category
+    _converted_df = None
+    _counts_df = None
     with _chkpt("clifpy-dose-convert"):
         print(f"   Running dose unit conversion on {len(meds_raw):,} rows...")
-        _converted_df, _counts_df = convert_dose_units_by_med_category(
-            meds_raw,
-            preferred_units=preferred_units,
-            override=True,
-        )
-        print(f"   Conversion returned {len(_converted_df):,} rows")
+        try:
+            _converted_df, _counts_df = convert_dose_units_by_med_category(
+                meds_raw,
+                preferred_units=preferred_units,
+                override=True,
+            )
+            print(f"   Conversion returned {len(_converted_df):,} rows")
+        except Exception as _dose_conv_err:
+            print(f"   ⚠️ clifpy dose conversion FAILED: {type(_dose_conv_err).__name__}: {_dose_conv_err}")
+            print(f"   Falling back to unconverted doses — vasopressor units in mcg/kg/min")
+            print(f"   will only be present for rows already recorded that way at source.")
+            traceback.print_exc()
+            _converted_df = meds_raw.copy()
+            # Empty counts frame with the columns downstream code reads
+            _counts_df = pd.DataFrame(columns=['med_category', 'med_dose_unit', '_convert_status', 'count'])
     clif.medication_admin_continuous.df_converted = _converted_df
     clif.medication_admin_continuous.conversion_counts = _counts_df.to_df() if hasattr(_counts_df, 'to_df') else _counts_df
     del meds_raw

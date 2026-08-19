@@ -271,16 +271,13 @@ def run_adt_location_coverage(
     # Needed by each event-table summary below. Small (a row per location).
     dwell_summary = _compute_dwell_summary(adt_pl)
 
-    # ── 3. Process each event table sequentially: load → join → summarize → free
-    # Previously this loaded labs + vitals + resp all into memory, joined all
-    # three, THEN summarized — peaking at six large frames simultaneously
-    # (~26 GB at JHU: 108M labs × 3 cols, 380M vitals × 3 cols, 8.6M resp,
-    # plus their join_asof outputs). Sequential processing bounds peak to
-    # one source + one joined frame per stage and explicitly returns memory
-    # to the allocator via gc.collect between stages.
-    # load_filtered_clif_table returns datetimes in UTC (DuckDB session tz);
-    # ADT comes through clifpy.load_table in site tz. join_asof requires
-    # matching dtype, so convert before sort+join.
+    # ── 3. Push scan + ASOF-join + group-by through DuckDB per event source.
+    # The prior polars path materialized the full 94M-row vitals frame in
+    # memory then ran join_asof — Windows-polars segfaults on that (Michigan
+    # crash 2026-07-02), and Linux OOMs on the pre-join load (JHU 2026-07-31).
+    # DuckDB streams the parquet, filters by hosp_ids at scan time, runs the
+    # ASOF join in its own arena allocator, and returns only per-location
+    # counts (~5 rows). No large frame ever lands in Python.
     _labs_path = os.path.join(
         clif.data_directory, f"clif_labs.{clif.filetype}"
     )
@@ -289,74 +286,139 @@ def run_adt_location_coverage(
     )
     _site_tz = getattr(clif, 'timezone', None)
 
-    # ── 3a. Labs ────────────────────────────────────────────────────────────
-    print("Loading labs for coverage analysis...")
-    _events = load_filtered_clif_table(
-        _labs_path,
-        columns=["hospitalization_id", "lab_collect_dttm", "lab_category"],
-        hosp_ids=list(hospitalization_ids),
-    ).drop_nulls(["lab_collect_dttm"])
-    if _site_tz:
-        _events = _events.with_columns(
-            pl.col("lab_collect_dttm").dt.convert_time_zone(_site_tz)
-        )
-    _events = _events.sort(["hospitalization_id", "lab_collect_dttm"])
-    print(f"  Labs rows: {_events.height:,}")
-    _joined = _join_events_to_location(_events, "lab_collect_dttm", adt_for_join)
-    del _events
-    gc.collect()
-    labs_summary = _summarize_capture(_joined, "labs", dwell_summary)
-    del _joined
-    gc.collect()
+    import duckdb as _duckdb
+    _con = _duckdb.connect()
+    try:
+        _con.execute("SET timezone='UTC'")
 
-    # ── 3b. Vitals ──────────────────────────────────────────────────────────
-    print("Loading vitals for coverage analysis...")
-    _events = load_filtered_clif_table(
-        _vitals_path,
-        columns=["hospitalization_id", "recorded_dttm", "vital_category"],
-        hosp_ids=list(hospitalization_ids),
-    ).drop_nulls(["recorded_dttm"])
-    if _site_tz:
-        _events = _events.with_columns(
-            pl.col("recorded_dttm").dt.convert_time_zone(_site_tz)
-        )
-    _events = _events.sort(["hospitalization_id", "recorded_dttm"])
-    print(f"  Vitals rows: {_events.height:,}")
-    _joined = _join_events_to_location(_events, "recorded_dttm", adt_for_join)
-    del _events
-    gc.collect()
-    vitals_summary = _summarize_capture(_joined, "vitals", dwell_summary)
-    del _joined
-    gc.collect()
+        # Register the tiny cohort + ADT intervals once.
+        _hosp_df = pd.DataFrame({
+            'hospitalization_id': sorted({str(h) for h in hospitalization_ids})
+        })
+        _con.register('_cohort_hosps', _hosp_df)
 
-    # ── 3c. Respiratory support ─────────────────────────────────────────────
-    # Already loaded + cohort-filtered in generator (clif.respiratory_support.df).
-    # Its recorded_dttm tz state depends on the cached waterfall path that
-    # produced it (UTC from helper, site tz from older clifpy, or naive);
-    # only convert if tz-aware.
-    print("Building respiratory support frame for coverage analysis...")
-    _events = (
-        pl.from_pandas(
-            clif.respiratory_support.df[
-                clif.respiratory_support.df["hospitalization_id"].isin(hosp_set)
-            ][["hospitalization_id", "recorded_dttm", "device_category"]]
-        )
-        .drop_nulls(["recorded_dttm"])
-    )
-    if _site_tz:
-        _resp_dtype = _events.schema.get("recorded_dttm")
-        if _resp_dtype is not None and getattr(_resp_dtype, "time_zone", None) is not None:
-            _events = _events.with_columns(
-                pl.col("recorded_dttm").dt.convert_time_zone(_site_tz)
+        _adt_pd = adt_for_join.to_pandas()
+        _adt_pd['hospitalization_id'] = _adt_pd['hospitalization_id'].astype(str)
+        _con.register('_adt_intervals', _adt_pd)
+
+        def _events_per_location(
+            source_sql: str,
+            ts_expr: str,
+        ) -> pd.DataFrame:
+            """Run scan + INNER JOIN cohort + ASOF LEFT JOIN adt + GROUP BY.
+
+            source_sql produces (hospitalization_id, ts) with `ts` in the same
+            tz semantics as ADT in_dttm/out_dttm. DuckDB's ASOF JOIN with
+            `>=` gives the same result as polars' backward asof strategy.
+            """
+            sql = f"""
+                WITH events AS (
+                    {source_sql}
+                ),
+                events_in_cohort AS (
+                    SELECT e.hospitalization_id, e.ts
+                    FROM events AS e
+                    INNER JOIN _cohort_hosps AS h
+                      ON e.hospitalization_id = h.hospitalization_id
+                ),
+                classified AS (
+                    SELECT
+                        CASE
+                            WHEN a.out_dttm IS NOT NULL
+                             AND e.ts < a.out_dttm
+                            THEN a.location_category
+                            ELSE '{NO_MATCH}'
+                        END AS location_category
+                    FROM events_in_cohort AS e
+                    ASOF LEFT JOIN _adt_intervals AS a
+                      ON e.hospitalization_id = a.hospitalization_id
+                     AND e.ts >= a.in_dttm
+                )
+                SELECT location_category, COUNT(*) AS n_events
+                FROM classified
+                GROUP BY location_category
+            """
+            return _con.execute(sql).fetchdf()
+
+        def _finalize_summary(
+            per_loc_pd: pd.DataFrame,
+            table_label: str,
+        ) -> pl.DataFrame:
+            """Compute pct_events, join dwell, compute events_per_hour."""
+            per_loc = pl.from_pandas(per_loc_pd)
+            total = int(per_loc.select(pl.col('n_events').sum()).item() or 0)
+            per_loc = per_loc.with_columns(
+                (pl.col('n_events') / max(total, 1) * 100).alias('pct_events'),
+                pl.lit(table_label).alias('table'),
             )
-    _events = _events.sort(["hospitalization_id", "recorded_dttm"])
-    print(f"  Respiratory support rows: {_events.height:,}")
-    _joined = _join_events_to_location(_events, "recorded_dttm", adt_for_join)
-    del _events
-    gc.collect()
-    resp_summary = _summarize_capture(_joined, "respiratory_support", dwell_summary)
-    del _joined
-    gc.collect()
+            per_loc = per_loc.join(
+                dwell_summary.select(['location_category', 'total_hours']),
+                on='location_category',
+                how='left',
+            ).with_columns(
+                pl.when(
+                    (pl.col('location_category') != NO_MATCH)
+                    & pl.col('total_hours').is_not_null()
+                    & (pl.col('total_hours') > 0)
+                )
+                .then(pl.col('n_events') / pl.col('total_hours'))
+                .otherwise(None)
+                .alias('events_per_hour')
+            )
+            return per_loc.sort('n_events', descending=True)
+
+        # ── 3a. Labs ────────────────────────────────────────────────────────
+        print("Loading labs for coverage analysis (DuckDB ASOF join)...")
+        _labs_src_sql = (
+            f"SELECT CAST(hospitalization_id AS VARCHAR) AS hospitalization_id, "
+            f"       lab_collect_dttm AS ts "
+            f"FROM read_parquet('{_labs_path.replace(chr(92), '/')}') "
+            f"WHERE lab_collect_dttm IS NOT NULL"
+        )
+        labs_summary = _finalize_summary(
+            _events_per_location(_labs_src_sql, 'lab_collect_dttm'),
+            'labs',
+        )
+        print(f"  Labs summary: {labs_summary.height} location(s)")
+        gc.collect()
+
+        # ── 3b. Vitals ──────────────────────────────────────────────────────
+        print("Loading vitals for coverage analysis (DuckDB ASOF join)...")
+        _vitals_src_sql = (
+            f"SELECT CAST(hospitalization_id AS VARCHAR) AS hospitalization_id, "
+            f"       recorded_dttm AS ts "
+            f"FROM read_parquet('{_vitals_path.replace(chr(92), '/')}') "
+            f"WHERE recorded_dttm IS NOT NULL"
+        )
+        vitals_summary = _finalize_summary(
+            _events_per_location(_vitals_src_sql, 'recorded_dttm'),
+            'vitals',
+        )
+        print(f"  Vitals summary: {vitals_summary.height} location(s)")
+        gc.collect()
+
+        # ── 3c. Respiratory support (in-memory pandas → registered) ─────────
+        print("Building respiratory support frame for coverage analysis...")
+        _resp_pd = clif.respiratory_support.df[[
+            'hospitalization_id', 'recorded_dttm'
+        ]].copy()
+        _resp_pd = _resp_pd[_resp_pd['recorded_dttm'].notna()]
+        _resp_pd['hospitalization_id'] = _resp_pd['hospitalization_id'].astype(str)
+        _con.register('_resp_events', _resp_pd)
+        _resp_src_sql = (
+            "SELECT hospitalization_id, recorded_dttm AS ts "
+            "FROM _resp_events "
+            "WHERE recorded_dttm IS NOT NULL"
+        )
+        resp_summary = _finalize_summary(
+            _events_per_location(_resp_src_sql, 'recorded_dttm'),
+            'respiratory_support',
+        )
+        print(f"  Respiratory support summary: {resp_summary.height} location(s)")
+        del _resp_pd
+        gc.collect()
+    finally:
+        _con.close()
 
     # ── 4. Concatenate the small per-table summaries ────────────────────────
     capture_long = pl.concat([labs_summary, vitals_summary, resp_summary])
